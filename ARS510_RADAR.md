@@ -12,5 +12,5 @@
 ## 畫面標示（本分支額外修改）
 
 `openpilot/selfdrive/ui/sunnypilot/onroad/chevron_metrics.py`：前車由雷達提供（radarState.leadOne.radar 為 true）時，
-前車標記下方一定顯示該車車速，並加上「R」前綴，例如 `R 85 km/h`；純視覺前車維持原樣。
+前車標記下方一定顯示距離與車速兩行，距離加上「R」前綴，例如 `R 42 m` / `85 km/h`；純視覺前車維持原樣。
 需在 設定 → Visuals → Display Metrics Below Chevron 選 Off 以外的任一項才會顯示。

@@ -63,25 +63,26 @@ class ChevronMetrics:
   def _build_text_lines(d_rel: float, v_rel: float, v_ego: float, from_radar: bool = False) -> list[str]:
     """Build text lines based on chevron info setting.
 
-    ARS510: a lead measured by the radar (radarState.leadOne.radar) always gets its speed line, prefixed with "R",
-    whatever the chevron option, so a radar-tracked car is told apart from a vision-only one at a glance."""
+    ARS510: a lead measured by the radar (radarState.leadOne.radar) always gets its distance and speed lines, the
+    distance prefixed with "R", whatever the chevron option, so a radar-tracked car is told apart from a vision-only
+    one at a glance."""
     text_lines = []
 
-    # Distance
-    if ui_state.chevron_metrics == ChevronOptions.DISTANCE_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
+    # Distance (always shown for a radar-tracked lead, marked "R")
+    if from_radar or ui_state.chevron_metrics == ChevronOptions.DISTANCE_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
       val = max(0.0, d_rel)
       unit = "m" if ui_state.is_metric else "ft"
       if not ui_state.is_metric:
         val *= 3.28084
-      text_lines.append(f"{val:.0f} {unit}")
+      prefix = "R " if from_radar else ""
+      text_lines.append(f"{prefix}{val:.0f} {unit}")
 
-    # Speed (always shown for a radar-tracked lead, marked "R")
+    # Speed (always shown for a radar-tracked lead)
     if from_radar or ui_state.chevron_metrics == ChevronOptions.SPEED_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
       multiplier = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
       val = max(0.0, (v_rel + v_ego) * multiplier)
       unit = "km/h" if ui_state.is_metric else "mph"
-      prefix = "R " if from_radar else ""
-      text_lines.append(f"{prefix}{val:.0f} {unit}")
+      text_lines.append(f"{val:.0f} {unit}")
 
     # Time to collision
     if ui_state.chevron_metrics == ChevronOptions.TTC_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
