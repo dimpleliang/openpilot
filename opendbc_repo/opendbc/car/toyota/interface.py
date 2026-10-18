@@ -213,3 +213,12 @@ class CarInterface(CarInterfaceBase):
     # re-enable radar if alpha longitudinal toggled on radar-ACC car
     communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
     CarInterface.init(CP, can_recv, can_send, communication_control)
+
+# >>> ars510-radar: added by ars510-radar/openpilot/install.py; remove with install.py --uninstall
+try:
+  from opendbc.car.toyota.ars510_radar_interface import hook_car_interface as _ars510_hook_car_interface  # noqa: E402
+  CarInterface = _ars510_hook_car_interface(CarInterface)
+except Exception:
+  from opendbc.car.carlog import carlog  # noqa: E402
+  carlog.exception("ARS510: hook not installed, Toyota runs as shipped; run ars510-radar/openpilot/install.py again")
+# <<< ars510-radar
