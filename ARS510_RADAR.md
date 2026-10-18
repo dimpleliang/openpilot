@@ -5,7 +5,7 @@
 
 - 不需要 CAN filter 即可讀取雷達；但開啟 openpilot 縱向控制（Alpha）時雷達會被靜音，原廠 PCS/AEB 失效，儀表會顯示 PCS 故障。
 - 變更只在 `opendbc_repo/opendbc/car/toyota/`（新增 ars510 套件與 interface.py 結尾的 hook 區塊）與 `opendbc_repo/opendbc/dbc/ars510_acc_target.dbc`，其餘與 tn-prebuilt 相同。
-- 裝置安裝網址：`https://installer.comma.ai/dimpleliang/tn-prebuilt-ars510`
+- 裝置安裝網址：`https://installer.comma.ai/dimpleliang/ars510`
 - 要還原成純視覺：改裝回 sunnypilot 的 `tn-prebuilt`。
 - 更新做法：以上游 tn-prebuilt 重新套用安裝器後 force push 本分支。
 
