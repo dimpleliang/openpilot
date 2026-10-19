@@ -73,7 +73,7 @@ WANTED = {(RADAR_BUS, ID80_ADDR), (CAR_BUS, TOYOTA_SPEED_ADDR), (CAR_BUS, TOYOTA
 
 # ARS510 display: every settled radar object (before the path gates) goes to the UI on customReservedRawData0, a
 # service openpilot reserves for forks. Display only: radarTracks, which radard and the controls use, is unchanged.
-# Payload: b"A5" + version byte + count byte, then per object <fffB: dRel, yRel, vRel, flags (bit 0 = sent to radard).
+# Payload: b"A5" + version byte + count byte, then per object <fffB: dRel, yRel, vRel, flags (bit 0 = sent to radard, bit 1 = still settling).
 DISPLAY_SERVICE = "customReservedRawData0"
 DISPLAY_FMT = "<fffB"
 
@@ -94,7 +94,7 @@ class _DisplayPublisher:
       import struct
       pts = points[:64]
       payload = b"A5" + bytes([1, len(pts)]) + b"".join(
-        struct.pack(DISPLAY_FMT, d, y, v if v == v else 0.0, 1 if sent else 0) for d, y, v, sent in pts)
+        struct.pack(DISPLAY_FMT, d, y, v if v == v else 0.0, (1 if sent else 0) | (2 if settling else 0)) for d, y, v, sent, settling in pts)
       msg = self._messaging.new_message(None, valid=True)  # Data field: set, not init()
       setattr(msg, DISPLAY_SERVICE, payload)
       self.pm.send(DISPLAY_SERVICE, msg)

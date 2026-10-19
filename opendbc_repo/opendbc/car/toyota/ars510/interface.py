@@ -42,6 +42,8 @@ ACCEL_SCALE, ACCEL_ZERO = 0.075, 510.3  # 84|10 for the fork's aRel: m/s^2 per c
 GUARD_ID_STRIDE = 10_000_000  # added to a trackId after a guard episode, so radard restarts that track's filter
 RELINK_MIN_LOST_AGE = 30
 RELINK_MIN_PUBLISH_AGE = 6
+# Display only (the UI's radar markers): tracks from this age (radar cycles, ~0.06 s each) on are shown, settled or not.
+DISPLAY_MIN_AGE = 8
 
 
 @dataclass(frozen=True)
@@ -189,7 +191,8 @@ class Ars510NativeRadarInterface:
         self._acc_pos: tuple[float, float, float] | None = None  # (time, x, y)
         self._acc_assoc: tuple[int, float, float] | None = None  # (tid, last x, last y)
         self.path_gated = 0
-        # ARS510 display: every settled object of the last record, before the path gates: [dRel, yRel, vRel, published]
+        # ARS510 display: every object of the last record from DISPLAY_MIN_AGE on, before the path gates:
+        # [dRel, yRel, vRel, published, settling (younger than min_publish_age)]
         self.display_points: list[list] = []
         self._guard_state: dict[int, list] = {}  # tid -> [t_last, ref_v, episode_start | None, saturated_in_episode]
         self._guard_gen: dict[int, int] = {}
@@ -448,11 +451,12 @@ class Ars510NativeRadarInterface:
             if obj.age >= 2:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
+            if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
+                shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age]
+                display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
                 continue
-            shown = [float(d_rel), float(obj.y_rel), vrel, False]
-            display.append(shown)
             if cfg.far_acc_only_m > 0 and tid != acc_tid and d_rel > cfg.far_acc_only_m:
                 self.path_gated += 1
                 continue
