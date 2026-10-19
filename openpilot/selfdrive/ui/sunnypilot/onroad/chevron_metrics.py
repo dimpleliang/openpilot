@@ -44,6 +44,7 @@ class ChevronMetrics:
 
     d_rel = lead_data.dRel
     v_rel = lead_data.vRel
+    from_radar = bool(getattr(lead_data, "radar", False))
 
     if not lead_vehicle.chevron or len(lead_vehicle.chevron) < 2:
       return
@@ -52,27 +53,32 @@ class ChevronMetrics:
     chevron_y = lead_vehicle.chevron[1][1]
     sz = np.clip((25 * 30) / (d_rel / 3 + 30), 15.0, 30.0) * 2.35
 
-    text_lines = self._build_text_lines(d_rel, v_rel, v_ego)
+    text_lines = self._build_text_lines(d_rel, v_rel, v_ego, from_radar)
     if not text_lines:
       return
 
     self._render_text_lines(text_lines, chevron_x, chevron_y, sz, rect)
 
   @staticmethod
-  def _build_text_lines(d_rel: float, v_rel: float, v_ego: float) -> list[str]:
-    """Build text lines based on chevron info setting"""
+  def _build_text_lines(d_rel: float, v_rel: float, v_ego: float, from_radar: bool = False) -> list[str]:
+    """Build text lines based on chevron info setting.
+
+    ARS510: a lead measured by the radar (radarState.leadOne.radar) always gets its distance and speed lines, the
+    distance prefixed with "R", whatever the chevron option, so a radar-tracked car is told apart from a vision-only
+    one at a glance."""
     text_lines = []
 
-    # Distance
-    if ui_state.chevron_metrics == ChevronOptions.DISTANCE_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
+    # Distance (always shown for a radar-tracked lead, marked "R")
+    if from_radar or ui_state.chevron_metrics == ChevronOptions.DISTANCE_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
       val = max(0.0, d_rel)
       unit = "m" if ui_state.is_metric else "ft"
       if not ui_state.is_metric:
         val *= 3.28084
-      text_lines.append(f"{val:.0f} {unit}")
+      prefix = "R " if from_radar else ""
+      text_lines.append(f"{prefix}{val:.0f} {unit}")
 
-    # Speed
-    if ui_state.chevron_metrics == ChevronOptions.SPEED_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
+    # Speed (always shown for a radar-tracked lead)
+    if from_radar or ui_state.chevron_metrics == ChevronOptions.SPEED_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
       multiplier = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
       val = max(0.0, (v_rel + v_ego) * multiplier)
       unit = "km/h" if ui_state.is_metric else "mph"
