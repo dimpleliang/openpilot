@@ -206,7 +206,7 @@ class Ars510NativeRadarInterface:
         self.path_gated = 0
         self.oncoming_suppressed = 0
         # ARS510 display: every object of the last record from DISPLAY_MIN_AGE on, before the path gates:
-        # [dRel, yRel, vRel, published, settling (younger than min_publish_age)]
+        # [dRel, yRel, vRel, published, settling (younger than min_publish_age), radar object class 163|3]
         self.display_points: list[list] = []
         self._guard_state: dict[int, list] = {}  # tid -> [t_last, ref_v, episode_start | None, saturated_in_episode]
         self._guard_gen: dict[int, int] = {}
@@ -466,7 +466,7 @@ class Ars510NativeRadarInterface:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
-                shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age]
+                shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0]
                 display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1

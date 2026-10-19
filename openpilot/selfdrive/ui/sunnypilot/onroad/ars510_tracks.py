@@ -5,7 +5,7 @@ opendbc/car/toyota/ars510_radar_interface.py publishes the radar's settled objec
 customReservedRawData0. Each one gets a small marker with "R <distance>" and its speed. Green: within LANE_HALF_M of the
 model's predicted path at that distance (my lane); red: outside it (next lanes). The colour is the lane only; radard's
 lead choice does not depend on it. A track still settling (younger than the decoder's publish age, ~1.2 s in fused; its
-range and speed have not converged) is drawn faint with its distance only. Display only: nothing here feeds the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
+range and speed have not converged) is drawn faint with its distance only. Pedestrians and two-wheelers (radar class) get a label. Display only: nothing here feeds the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
 """
 import struct
 
@@ -30,7 +30,23 @@ COLOR_PATH = (60, 220, 120)
 COLOR_SIDE = (255, 60, 60)  # next lanes: red (cyan was hard to see)
 
 
-def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool]]:
+# Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
+# two-wheelers on sampled frames). Shown once the track has settled. Chinese only where the UI font carries the glyphs.
+CLASS_LABELS = {4: ("行人", "PED"), 6: ("機車", "MOTO")}
+
+
+def _label(cls: int, settling: bool) -> str:
+  if settling or cls not in CLASS_LABELS:
+    return ""
+  try:
+    from openpilot.system.ui.lib.multilang import multilang
+    zh = multilang.language == "zh-CHT"
+  except Exception:
+    zh = False
+  return CLASS_LABELS[cls][0 if zh else 1] + " "
+
+
+def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool, int]]:
   if len(payload) < 4 or payload[:2] != b"A5" or payload[2] != 1:
     return []
   n = payload[3]
@@ -40,14 +56,14 @@ def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool]]:
     if off + FMT_SIZE > len(payload):
       break
     d, y, v, flags = struct.unpack_from(FMT, payload, off)
-    out.append((d, y, v, bool(flags & 1), bool(flags & 2)))
+    out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7))
   return out
 
 
 class Ars510Tracks:
   def __init__(self):
     self._font = gui_app.font(FontWeight.SEMI_BOLD)
-    self._points: list[tuple[float, float, float, bool, bool]] = []
+    self._points: list[tuple[float, float, float, bool, bool, int]] = []
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -65,7 +81,7 @@ class Ars510Tracks:
             leads.append((lead.dRel, lead.yRel))
 
       v_ego = sm['carState'].vEgo
-      for d, y, v, _sent, settling in self._points:
+      for d, y, v, _sent, settling, cls in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
         if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
@@ -75,11 +91,11 @@ class Ars510Tracks:
         if pt is None:
           continue
         in_lane = abs(y_left - path_y(d)) < LANE_HALF_M
-        self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect, settling)
+        self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect, settling, cls)
     except Exception:
       self._points = []
 
-  def _draw_marker(self, pt, d: float, v_ground: float, rgb, rect: rl.Rectangle, settling: bool = False):
+  def _draw_marker(self, pt, d: float, v_ground: float, rgb, rect: rl.Rectangle, settling: bool = False, cls: int = 0):
     x, y = pt
     sz = float(np.clip((25 * 30) / (d / 3 + 30), 12.0, 30.0)) * 0.9
     color = rl.Color(*rgb, 110 if settling else 230)  # settling: range / speed not converged yet
@@ -89,9 +105,9 @@ class Ars510Tracks:
       rl.draw_line_ex(a, b, 4.0, color)
 
     if ui_state.is_metric:
-      dist, speed = f"R {max(0.0, d):.0f} m", f"{max(0.0, v_ground * CV.MS_TO_KPH):.0f} km/h"
+      dist, speed = f"{_label(cls, settling)}R {max(0.0, d):.0f} m", f"{max(0.0, v_ground * CV.MS_TO_KPH):.0f} km/h"
     else:
-      dist, speed = f"R {max(0.0, d) * 3.28084:.0f} ft", f"{max(0.0, v_ground * CV.MS_TO_MPH):.0f} mph"
+      dist, speed = f"{_label(cls, settling)}R {max(0.0, d) * 3.28084:.0f} ft", f"{max(0.0, v_ground * CV.MS_TO_MPH):.0f} mph"
 
     font_size, line_h, margin = 32, 38, 20
     text_y = y + 8
