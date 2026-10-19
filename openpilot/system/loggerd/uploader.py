@@ -140,8 +140,9 @@ class Uploader:
 
     # dimpleliang/ars510: also upload full rlogs (radar CAN for analysis) on their own, only while offroad on an
     # unmetered connection; full-resolution camera files still need a request from connect.
+    # Newest first, so the drive just finished is up before the backlog.
     if not metered and self.params.get_bool("IsOffroad"):
-      for name, key, fn in upload_files:
+      for name, key, fn in reversed(upload_files):
         if name in AUTO_RAW_LOGS:
           return name, key, fn
 
