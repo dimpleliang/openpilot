@@ -36,7 +36,8 @@ class UIStateSP:
     self.is_sp_release: bool = self.params.get_bool("IsReleaseSpBranch")
     self.sm_services_ext = [
       "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
-      "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay"
+      "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay",
+      "customReservedRawData0",  # ARS510: radar objects for display (sunnypilot/onroad/ars510_tracks.py)
     ]
 
     self.sunnylink_state = SunnylinkState()

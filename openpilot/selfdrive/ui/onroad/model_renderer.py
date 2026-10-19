@@ -128,6 +128,13 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       self._draw_lead_indicator()
       self.chevron_metrics.draw_lead_status(sm, radar_state, self._rect, self._lead_vehicles)
 
+    # ARS510: every radar object, next lanes included (display only)
+    if len(self._path.raw_points):
+      xs = self._path.raw_points[:, 0]
+      self.ars510_tracks.draw(sm, self._map_to_screen,
+                              lambda d: float(self._path.raw_points[self._get_path_length_idx(xs, d), 2]),
+                              self._camera_offset, self._path_offset_z, radar_state, self._rect)
+
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
     self._path.raw_points = np.array([model.position.x, np.array(model.position.y) + self._camera_offset, model.position.z], dtype=np.float32).T

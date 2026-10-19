@@ -71,6 +71,38 @@ WANTED = {(RADAR_BUS, ID80_ADDR), (CAR_BUS, TOYOTA_SPEED_ADDR), (CAR_BUS, TOYOTA
           (RADAR_BUS, ACC_TARGET_POS_ADDR)} | {(RADAR_BUS, a) for a in SUMMARY_ADDRS}
 
 
+# ARS510 display: every settled radar object (before the path gates) goes to the UI on customReservedRawData0, a
+# service openpilot reserves for forks. Display only: radarTracks, which radard and the controls use, is unchanged.
+# Payload: b"A5" + version byte + count byte, then per object <fffB: dRel, yRel, vRel, flags (bit 0 = sent to radard).
+DISPLAY_SERVICE = "customReservedRawData0"
+DISPLAY_FMT = "<fffB"
+
+
+class _DisplayPublisher:
+  def __init__(self):
+    self.pm = None
+    self.failed = False
+
+  def send(self, points) -> None:
+    if self.failed:
+      return
+    try:
+      if self.pm is None:
+        from openpilot.cereal import messaging
+        self.pm = messaging.PubMaster([DISPLAY_SERVICE])
+        self._messaging = messaging
+      import struct
+      pts = points[:64]
+      payload = b"A5" + bytes([1, len(pts)]) + b"".join(
+        struct.pack(DISPLAY_FMT, d, y, v if v == v else 0.0, 1 if sent else 0) for d, y, v, sent in pts)
+      msg = self._messaging.new_message(DISPLAY_SERVICE, valid=True)
+      setattr(msg, DISPLAY_SERVICE, payload)
+      self.pm.send(DISPLAY_SERVICE, msg)
+    except Exception:
+      self.failed = True
+      carlog.exception("ARS510: display publisher disabled")
+
+
 class Ars510RadarInterface(RadarInterfaceBase):
   def __init__(self, CP, *args, **kwargs):  # forks add arguments (sunnypilot: CP_SP)
     super().__init__(CP, *args, **kwargs)
@@ -82,6 +114,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
       self.standalone_fills_legacy = hasattr(module, "LEGACY")  # acc_summaries sets aRel / yvRel / measured itself
     else:
       self.ars = UpstreamCandidate() if profile is None else Ars510NativeRadarInterface(replace(profile, include_metadata=False))
+    self.display = _DisplayPublisher()
     self.start_s: float | None = None
     self.last_record_s: float | None = None
     self.warned = False
@@ -122,6 +155,9 @@ class Ars510RadarInterface(RadarInterfaceBase):
           out = self.ars.update_frame(now_s, src, address, dat)
           if out is not None:
             latest = out
+            display = getattr(self.ars, "display_points", None)
+            if display is not None:
+              self.display.send(display)
     if now_s is None:
       return None
     if self.start_s is None:

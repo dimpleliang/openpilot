@@ -189,6 +189,8 @@ class Ars510NativeRadarInterface:
         self._acc_pos: tuple[float, float, float] | None = None  # (time, x, y)
         self._acc_assoc: tuple[int, float, float] | None = None  # (tid, last x, last y)
         self.path_gated = 0
+        # ARS510 display: every settled object of the last record, before the path gates: [dRel, yRel, vRel, published]
+        self.display_points: list[list] = []
         self._guard_state: dict[int, list] = {}  # tid -> [t_last, ref_v, episode_start | None, saturated_in_episode]
         self._guard_gen: dict[int, int] = {}
         self.guard_rejected = 0
@@ -425,6 +427,7 @@ class Ars510NativeRadarInterface:
         seen = {tid for _, _, tid in decoded}
         acc_tid, acc_vrel = self._acc_target_match(time_s, decoded)
         points = []
+        display: list[list] = []
         for slot, obj, tid in decoded:
             if not obj.geometry_valid or not obj.lateral_valid:
                 continue
@@ -448,6 +451,8 @@ class Ars510NativeRadarInterface:
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
                 continue
+            shown = [float(d_rel), float(obj.y_rel), vrel, False]
+            display.append(shown)
             if cfg.far_acc_only_m > 0 and tid != acc_tid and d_rel > cfg.far_acc_only_m:
                 self.path_gated += 1
                 continue
@@ -480,6 +485,8 @@ class Ars510NativeRadarInterface:
                              move_state=obj.move_state, oncoming_flag=obj.oncoming_flag,
                              vrel_status=NATIVE_VREL_STATUS if v_ego is not None else UNRESOLVED_NAN)
             points.append(point)
+            shown[3] = True
+        self.display_points = display
         self._prune(time_s)
         errors = {"canError": False, "radarFault": False, "wrongConfig": False, "radarUnavailableTemporary": False}
         return {"time_s": float(time_s), "radarData": {"points": points, "errors": errors}}
