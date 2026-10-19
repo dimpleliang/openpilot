@@ -133,6 +133,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       xs = self._path.raw_points[:, 0]
       self.ars510_tracks.draw(sm, self._map_to_screen,
                               lambda d: float(self._path.raw_points[self._get_path_length_idx(xs, d), 2]),
+                              lambda d: float(np.interp(d, xs, self._path.raw_points[:, 1])),
                               self._camera_offset, self._path_offset_z, radar_state, self._rect)
 
   def _update_raw_points(self, model):

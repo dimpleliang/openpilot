@@ -19,5 +19,5 @@
 
 `opendbc_repo/opendbc/car/toyota/ars510_radar_interface.py` 把雷達每筆追穩的物體（path gate 之前）發到
 `customReservedRawData0`（openpilot 保留給 fork 的通道），由 `openpilot/selfdrive/ui/sunnypilot/onroad/ars510_tracks.py`
-畫成菱形標記，標示 `R 距離` 與車速：綠色＝在行車路徑上、有送給 radard；藍色＝雷達看得到但在路徑外（例如旁邊車道），
-不會成為前車。已經有雷達前車箭頭的那台不重複標示。只影響畫面，radarTracks 與控制邏輯不變。
+畫成菱形標記，標示 `R 距離` 與車速：綠色＝離模型預測的行車路徑 1.8 m 以內（我的車道）；藍色＝路徑外（旁邊車道）。顏色只代表車道位置，
+不影響 radard 選前車。已經有雷達前車箭頭的那台不重複標示。只影響畫面，radarTracks 與控制邏輯不變。

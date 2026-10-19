@@ -2,9 +2,9 @@
 ARS510: draw every object the radar tracks, including cars in the next lanes.
 
 opendbc/car/toyota/ars510_radar_interface.py publishes the radar's settled objects (before its path gates) on
-customReservedRawData0. Each one gets a small marker with "R <distance>" and its speed. Green: sent to radard (in the
-ego path); cyan: seen by the radar but outside the path, so it never becomes a lead. Display only: nothing here feeds
-the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
+customReservedRawData0. Each one gets a small marker with "R <distance>" and its speed. Green: within LANE_HALF_M of the
+model's predicted path at that distance (my lane); cyan: outside it (next lanes). The colour is the lane only; radard's
+lead choice does not depend on it. Display only: nothing here feeds the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
 """
 import struct
 
@@ -23,6 +23,7 @@ STALE_FRAMES = 10  # ui frames (20 Hz) without a radar record before the markers
 MAX_DRAW_M = 120.0
 LEAD_MATCH_D_M = 2.0
 LEAD_MATCH_Y_M = 1.2
+LANE_HALF_M = 1.8  # half a lane: an object's lateral distance from the predicted path below this is in my lane
 
 COLOR_PATH = (60, 220, 120)
 COLOR_SIDE = (70, 200, 255)
@@ -47,7 +48,7 @@ class Ars510Tracks:
     self._font = gui_app.font(FontWeight.SEMI_BOLD)
     self._points: list[tuple[float, float, float, bool]] = []
 
-  def draw(self, sm, map_to_screen, path_z, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
+  def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
       if SERVICE not in sm.data:
         return
@@ -68,10 +69,12 @@ class Ars510Tracks:
           continue
         if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
           continue
-        pt = map_to_screen(d, -y + camera_offset, path_z(d) + path_offset_z)
+        y_left = -y + camera_offset  # radar yRel is right-positive; model / path y is left-positive
+        pt = map_to_screen(d, y_left, path_z(d) + path_offset_z)
         if pt is None:
           continue
-        self._draw_marker(pt, d, v + v_ego, COLOR_PATH if sent else COLOR_SIDE, rect)
+        in_lane = abs(y_left - path_y(d)) < LANE_HALF_M
+        self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect)
     except Exception:
       self._points = []
 
