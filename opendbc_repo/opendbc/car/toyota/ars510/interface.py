@@ -127,8 +127,11 @@ class NativeInterfaceConfig:
     publish_speed_std_mps: float = 0.75
     # Oncoming filter (after dragonpilot's external-radar interface, which drops oncoming objects): a track other than
     # the ACC target's that the radar marks oncoming (oncoming_flag, or motion code 2) and whose over-ground speed is
-    # below -oncoming_min_mps (coming toward us) is withheld from radard; it stays on the display. 0 = off.
+    # below -oncoming_min_mps (coming toward us) is withheld from radard unless it is within oncoming_keep_path_m of the
+    # ego path; it stays on the display. 0 = off. Validated on route 0000000e: all 97 radar-oncoming tracks had a negative
+    # over-ground speed, and sampled frames showed oncoming / crossing traffic.
     oncoming_min_mps: float = 0.0
+    oncoming_keep_path_m: float = 1.5  # oncoming objects within this of the yaw-predicted ego path are kept
 
 
 # Toyota 0xB4 against carState.vEgo: 0.9865 on the owner car (0.987 / 0.991 on two more cars), constant over speed (docs/06).
@@ -470,8 +473,12 @@ class Ars510NativeRadarInterface:
                 continue
             if (cfg.oncoming_min_mps > 0 and tid != acc_tid and (obj.oncoming_flag or obj.movement_code == 2)
                     and v_ground < -cfg.oncoming_min_mps):
-                self.oncoming_suppressed += 1
-                continue
+                # keep an oncoming object in the ego path (a scooter coming at us in a narrow street): only off-path ones go
+                yaw = self._fresh_yaw_rate(time_s)
+                path_y = yaw / max(v_ego, 2.0) * d_rel * d_rel / 2 if (yaw is not None and v_ego is not None) else 0.0
+                if abs(obj.y_rel - path_y) > cfg.oncoming_keep_path_m:
+                    self.oncoming_suppressed += 1
+                    continue
             if cfg.far_acc_only_m > 0 and tid != acc_tid and d_rel > cfg.far_acc_only_m:
                 self.path_gated += 1
                 continue
