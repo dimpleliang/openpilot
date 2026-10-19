@@ -95,7 +95,7 @@ class _DisplayPublisher:
       pts = points[:64]
       payload = b"A5" + bytes([1, len(pts)]) + b"".join(
         struct.pack(DISPLAY_FMT, d, y, v if v == v else 0.0, 1 if sent else 0) for d, y, v, sent in pts)
-      msg = self._messaging.new_message(DISPLAY_SERVICE, valid=True)
+      msg = self._messaging.new_message(None, valid=True)  # Data field: set, not init()
       setattr(msg, DISPLAY_SERVICE, payload)
       self.pm.send(DISPLAY_SERVICE, msg)
     except Exception:
