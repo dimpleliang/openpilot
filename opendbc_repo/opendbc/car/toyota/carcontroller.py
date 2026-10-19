@@ -153,7 +153,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
       lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.
-      full_torque_condition = (abs(CS.out.steeringTorqueEps) < self.params.STEER_MAX and
+      lta_max_meas_torque = float(np.interp(CS.out.vEgoRaw, self.params.LTA_MAX_MEAS_TORQUE_BP, self.params.LTA_MAX_MEAS_TORQUE_V))
+      full_torque_condition = (abs(CS.out.steeringTorqueEps) < lta_max_meas_torque and
                                abs(CS.out.steeringTorque) < self.params.MAX_LTA_DRIVER_TORQUE_ALLOWANCE)
 
       # TORQUE_WIND_DOWN at 0 ramps down torque at roughly the max down rate of 1500 units/sec

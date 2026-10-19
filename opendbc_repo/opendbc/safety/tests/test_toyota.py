@@ -277,13 +277,16 @@ class TestToyotaSafetyAngle(TestToyotaSafetyBase, common.AngleSteeringSafetyTest
             self.assertEqual(should_tx, self._tx(self._lta_msg(req, req2, angle, torque_wind_down)))
 
     # Test max EPS torque and driver override thresholds (independent of angle, test a few representative angles)
-    for angle in (-89, 0, 89):
+    # dimpleliang/ars510: the EPS torque threshold depends on speed (2000 up to 70 km/h, 1500 from 80 km/h)
+    for speed, max_meas_torque in ((0., 2000), (10., 2000), (19., 2000), (24., 1500), (35., 1500)):
+     self._reset_speed_measurement(speed)
+     for angle in (-89, 0, 89):
       self.safety.set_controls_allowed(True)
       self._reset_angle_measurement(angle)
       self._set_prev_desired_angle(angle)
 
       cases = itertools.product(
-        (0, self.MAX_MEAS_TORQUE - 1, self.MAX_MEAS_TORQUE, self.MAX_MEAS_TORQUE + 1, self.MAX_MEAS_TORQUE * 2),
+        (0, max_meas_torque - 1, max_meas_torque, max_meas_torque + 1, max_meas_torque * 2),
         (0, self.MAX_LTA_DRIVER_TORQUE - 1, self.MAX_LTA_DRIVER_TORQUE, self.MAX_LTA_DRIVER_TORQUE + 1, self.MAX_LTA_DRIVER_TORQUE * 2)
       )
 
@@ -293,7 +296,7 @@ class TestToyotaSafetyAngle(TestToyotaSafetyBase, common.AngleSteeringSafetyTest
             self._rx(self._torque_meas_msg(sign * eps_torque, sign * driver_torque))
 
           # Toyota adds 1 to EPS torque since it is rounded after EPS factor
-          should_tx = (eps_torque - 1) <= self.MAX_MEAS_TORQUE and driver_torque <= self.MAX_LTA_DRIVER_TORQUE
+          should_tx = (eps_torque - 1) <= max_meas_torque and driver_torque <= self.MAX_LTA_DRIVER_TORQUE
           self.assertEqual(should_tx, self._tx(self._lta_msg(1, 1, angle, 100)))
           self.assertTrue(self._tx(self._lta_msg(1, 1, angle, 0)))  # should tx if we wind down torque
 

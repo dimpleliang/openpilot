@@ -37,6 +37,11 @@ class CarControllerParams:
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
+  # dimpleliang/ars510: LTA measured EPS torque above which TORQUE_WIND_DOWN ramps torque out, by speed (m/s).
+  # 2000 up to 70 km/h, back to the stock 1500 from 80 km/h. Must match TOYOTA_LTA_MAX_MEAS_TORQUE_LOOKUP in
+  # opendbc/safety/modes/toyota.h (panda firmware). The driver torque allowance is unchanged.
+  LTA_MAX_MEAS_TORQUE_BP = [19.44, 22.22]
+  LTA_MAX_MEAS_TORQUE_V = [2000, 1500]
 
   def __init__(self, CP):
     if CP.flags & ToyotaFlags.RAISED_ACCEL_LIMIT:
