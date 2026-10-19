@@ -54,7 +54,7 @@ from opendbc.car.toyota.ars510.support import RadarFaultFlag
 # over every object (docs/17). `install.py --profile` rewrites this one line.
 STANDALONE = {"acc": "ars510_acc_target", "acc_summaries": "ars510_acc_summaries", "shared_speed": "ars510_shared_speed", "shared_range": "ars510_shared_range"}
 PROFILES = {"fused": FUSED_CONFIG, "openpilot": None, "raw": BASE_CONFIG, **{k: k for k in STANDALONE}}
-PROFILE = PROFILES["acc"]
+PROFILE = PROFILES["fused"]
 
 # Radar-ACC platforms: every radar firmware they list (RAV4 8821F0R01100 / 8821F0R03100, C-HR 8821FF41xx00, Yaris
 # 8821F0D0xx00) is the Continental ARS510 sending the same bus-1 messages (docs/01), so the car model selects the parser.
