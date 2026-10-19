@@ -36,3 +36,8 @@
 的目標（ACC 目標、以及離行車路徑 1.5 m 內的對向物體除外，例如窄巷迎面機車）不送給 radard，畫面仍顯示。
 實車驗證（0000000e，31 分鐘）：97 個對向旗標目標的對地速度全為負，抽樣影格皆為對向或穿越車輛。dragonpilot 其餘做法（不等收斂、1.5 車道內全送、遠距不限、近距靜止物不擋）
 與 ARS510 實測問題衝突（見上游 docs/12），不採用。
+
+## 自動上傳完整 rlog
+
+`openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），
+不必在 comma connect 點選；由最新的行程開始上傳。完整解析度影片（fcamera/ecamera/dcamera）仍需從 connect 要求。每分鐘約 11 MB。

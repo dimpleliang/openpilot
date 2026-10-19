@@ -29,6 +29,9 @@ MAX_UPLOAD_SIZES = {
   "qcam": 5*1e6,
 }
 
+# dimpleliang/ars510: raw logs uploaded without a request (offroad, unmetered only)
+AUTO_RAW_LOGS = ("rlog", "rlog.zst")
+
 allow_sleep = bool(int(os.getenv("UPLOADER_SLEEP", "1")))
 force_wifi = os.getenv("FORCEWIFI") is not None
 fake_upload = os.getenv("FAKEUPLOAD") is not None
@@ -134,6 +137,14 @@ class Uploader:
     for name, key, fn in upload_files:
       if name in self.immediate_priority:
         return name, key, fn
+
+    # dimpleliang/ars510: also upload full rlogs (radar CAN for analysis) on their own, only while offroad on an
+    # unmetered connection; full-resolution camera files still need a request from connect.
+    # Newest first, so the drive just finished is up before the backlog.
+    if not metered and self.params.get_bool("IsOffroad"):
+      for name, key, fn in reversed(upload_files):
+        if name in AUTO_RAW_LOGS:
+          return name, key, fn
 
     return None
 
