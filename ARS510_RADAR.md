@@ -50,3 +50,8 @@ Toyota LTA 角度控制的轉角速度上限在 90 km/h 以下放寬：18 km/h �
 LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以下 1500→2000，70–80 km/h 漸變，80 km/h 以上維持 1500。
 駕駛手力門檻 150 不變（接手難易度不變）；橫向加速度仍受控制端 3.6 m/s² 上限限制。控制端 `car/toyota/carcontroller.py`、
 `values.py` 與 panda `safety/modes/toyota.h` 同步修改，Toyota 安全測試通過，panda 允許值於各車速皆 ≥ 控制端收力點。
+
+## 自動上傳完整 rlog
+
+`openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），
+不必在 comma connect 點選。完整解析度影片（fcamera/ecamera/dcamera）仍需從 connect 要求。每分鐘約 11 MB。
