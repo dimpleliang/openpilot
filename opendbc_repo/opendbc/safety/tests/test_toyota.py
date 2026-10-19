@@ -219,9 +219,9 @@ class TestToyotaSafetyAngle(TestToyotaSafetyBase, common.AngleSteeringSafetyTest
   STEER_ANGLE_MAX = 94.9461  # deg
   DEG_TO_CAN = 17.452007  # 1 / 0.0573 deg to can
 
-  ANGLE_RATE_BP = [5., 25., 25.]
-  ANGLE_RATE_UP = [0.3, 0.15, 0.15]  # windup limit
-  ANGLE_RATE_DOWN = [0.36, 0.26, 0.26]  # unwind limit
+  ANGLE_RATE_BP = [5., 10., 25.]
+  ANGLE_RATE_UP = [0.5, 0.35, 0.15]  # windup limit (dimpleliang/ars510: raised at low speed)
+  ANGLE_RATE_DOWN = [0.6, 0.45, 0.26]  # unwind limit
 
   MAX_LTA_ANGLE = 94.9461  # PCS faults if commanding above this, deg
   MAX_MEAS_TORQUE = 1500  # max allowed measured EPS torque before wind down

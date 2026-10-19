@@ -29,8 +29,11 @@ class CarControllerParams:
     # Worst case, the low speed limits will allow ~4.0 m/s^3 up (15 deg/s) and ~4.9 m/s^3 down (18 deg/s) at 75 mph,
     # however the EPS has its own internal limits at all speeds which are less than that:
     # Observed internal torque rate limit on TSS 2.5 Camry and RAV4 is ~1500 units/sec up and down when using LTA
-    ([5, 25], [0.3, 0.15]),
-    ([5, 25], [0.36, 0.26]),
+    # dimpleliang/ars510: low-speed rates raised (18 km/h: 15 -> 25 deg/s up, 18 -> 30 deg/s down; 36 km/h: 13 -> 17.5 / 16 -> 22.5),
+    # unchanged from 25 m/s up. Worst-case kinematic lateral jerk stays < 1 m/s^3 below 36 km/h, well under ISO 11270 / MAX_LATERAL_JERK.
+    # Must match TOYOTA_ANGLE_STEERING_LIMITS in opendbc/safety/modes/toyota.h (panda firmware).
+    ([5, 10, 25], [0.5, 0.35, 0.15]),
+    ([5, 10, 25], [0.6, 0.45, 0.26]),
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes

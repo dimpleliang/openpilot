@@ -36,3 +36,11 @@
 的目標（ACC 目標、以及離行車路徑 1.5 m 內的對向物體除外，例如窄巷迎面機車）不送給 radard，畫面仍顯示。
 實車驗證（0000000e，31 分鐘）：97 個對向旗標目標的對地速度全為負，抽樣影格皆為對向或穿越車輛。dragonpilot 其餘做法（不等收斂、1.5 車道內全送、遠距不限、近距靜止物不擋）
 與 ARS510 實測問題衝突（見上游 docs/12），不採用。
+
+## 低速轉角速度放寬（LTA，需 panda 韌體）
+
+Toyota LTA 角度控制的轉角速度上限在 90 km/h 以下放寬：18 km/h 以下 15→25°/s（回正 18→30°/s）、36 km/h 13→17.5°/s、
+54 km/h 11→14°/s，90 km/h 以上不變；±95° 指令上限與 EPS 扭力上限不變。最壞情況橫向 jerk 在 36 km/h 以下 < 1 m/s³、
+54 km/h 約 1.5 m/s³，皆低於 MAX_LATERAL_JERK（3.6）。opendbc `car/toyota/values.py` 與 panda 安全 `safety/modes/toyota.h`
+同步修改，`safety/tests/test_toyota.py` 通過；`panda/board/obj/panda_h7.bin.signed` 由 sunnypilot/panda 8a16e08 以 debug 金鑰重建
+（未修改版本可位元級重現原檔，修改版僅轉角表 16 bytes 不同）。還原：切回前一版，pandad 會自動刷回原韌體。
