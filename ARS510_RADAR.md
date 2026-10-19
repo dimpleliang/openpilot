@@ -20,4 +20,10 @@
 `opendbc_repo/opendbc/car/toyota/ars510_radar_interface.py` 把雷達每筆追穩的物體（path gate 之前）發到
 `customReservedRawData0`（openpilot 保留給 fork 的通道），由 `openpilot/selfdrive/ui/sunnypilot/onroad/ars510_tracks.py`
 畫成菱形標記，標示 `R 距離` 與車速：綠色＝離模型預測的行車路徑 1.8 m 以內（我的車道）；藍色＝路徑外（旁邊車道）。顏色只代表車道位置，
-不影響 radard 選前車。剛出現、追不到 3.6 秒的目標畫成半透明、只標距離（距離與速度尚未收斂）。已經有雷達前車箭頭的那台不重複標示。只影響畫面，radarTracks 與控制邏輯不變。
+不影響 radard 選前車。剛出現、追不到 1.2 秒的目標畫成半透明、只標距離（距離與速度尚未收斂）。已經有雷達前車箭頭的那台不重複標示。只影響畫面，radarTracks 與控制邏輯不變。
+
+## 發佈門檻（控制）
+
+`fused` 的 `min_publish_age` 由上游的 60 週期（約 3.6 秒）改為 20 週期（約 1.2 秒），雷達第一次看到就在路徑上的車可更早用於控制。
+仍保留 Kalman 速度收斂檢查（publish_speed_std_mps 0.75 m/s）；一般車速下 radard 另以鏡頭前車核對距離（25 % / 5 m）與速度。
+剩餘風險在低速（約 4 m/s 以下）：radard 不經鏡頭確認、直接採用正前方 25 m 內最近的雷達點。

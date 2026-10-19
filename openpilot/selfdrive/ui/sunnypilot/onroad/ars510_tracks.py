@@ -4,7 +4,7 @@ ARS510: draw every object the radar tracks, including cars in the next lanes.
 opendbc/car/toyota/ars510_radar_interface.py publishes the radar's settled objects (before its path gates) on
 customReservedRawData0. Each one gets a small marker with "R <distance>" and its speed. Green: within LANE_HALF_M of the
 model's predicted path at that distance (my lane); cyan: outside it (next lanes). The colour is the lane only; radard's
-lead choice does not depend on it. A track still settling (younger than the decoder's publish age, ~3.6 s; its
+lead choice does not depend on it. A track still settling (younger than the decoder's publish age, ~1.2 s in fused; its
 range and speed have not converged) is drawn faint with its distance only. Display only: nothing here feeds the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
 """
 import struct

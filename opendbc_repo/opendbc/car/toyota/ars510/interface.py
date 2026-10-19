@@ -145,7 +145,11 @@ BASE_CONFIG = NativeInterfaceConfig(
 # version (upstream/ars510_radar.py) is this profile in one file.
 FUSED_CONFIG = replace(BASE_CONFIG, range_fusion_gain=0.1, relink_max_gap_s=0.0, drop_saturated_codes=False,
                        fused_speed_filter=True, path_gate_m=2.5, acc_sigma_mps=0.13, far_acc_only_m=60.0,
-                       path_gate_stationary_mps=0.5)
+                       path_gate_stationary_mps=0.5,
+                       # dimpleliang/ars510: publish from 20 cycles (~1.2 s) instead of the base 60 (~3.6 s), so a car the radar first
+                       # sees in the ego path is used sooner. Still gated by publish_speed_std_mps; above V_EGO_STATIONARY radard also
+                       # checks every track against the camera's lead (25 % / 5 m), the low-speed override is the residual risk.
+                       min_publish_age=20)
 
 
 NATIVE_VREL_STATUS = "native_over_ground_minus_ego"
