@@ -27,3 +27,9 @@
 `fused` 的 `min_publish_age` 由上游的 60 週期（約 3.6 秒）改為 20 週期（約 1.2 秒），雷達第一次看到就在路徑上的車可更早用於控制。
 仍保留 Kalman 速度收斂檢查（publish_speed_std_mps 0.75 m/s）；一般車速下 radard 另以鏡頭前車核對距離（25 % / 5 m）與速度。
 剩餘風險在低速（約 4 m/s 以下）：radard 不經鏡頭確認、直接採用正前方 25 m 內最近的雷達點。
+
+## 對向來車過濾（參考 dragonpilot）
+
+參考 dragonpilot 外接雷達介面丟棄對向物體的做法：雷達標為對向（oncoming_flag 或 motion code 2）且對地速度低於 -2 m/s
+的目標（ACC 目標除外）不送給 radard，畫面仍顯示。dragonpilot 其餘做法（不等收斂、1.5 車道內全送、遠距不限、近距靜止物不擋）
+與 ARS510 實測問題衝突（見上游 docs/12），不採用。

@@ -125,6 +125,10 @@ class NativeInterfaceConfig:
     lead_accel_std_mps2: float = 1.5
     innovation_gate_sigma: float = 3.0
     publish_speed_std_mps: float = 0.75
+    # Oncoming filter (after dragonpilot's external-radar interface, which drops oncoming objects): a track other than
+    # the ACC target's that the radar marks oncoming (oncoming_flag, or motion code 2) and whose over-ground speed is
+    # below -oncoming_min_mps (coming toward us) is withheld from radard; it stays on the display. 0 = off.
+    oncoming_min_mps: float = 0.0
 
 
 # Toyota 0xB4 against carState.vEgo: 0.9865 on the owner car (0.987 / 0.991 on two more cars), constant over speed (docs/06).
@@ -149,7 +153,9 @@ FUSED_CONFIG = replace(BASE_CONFIG, range_fusion_gain=0.1, relink_max_gap_s=0.0,
                        # dimpleliang/ars510: publish from 20 cycles (~1.2 s) instead of the base 60 (~3.6 s), so a car the radar first
                        # sees in the ego path is used sooner. Still gated by publish_speed_std_mps; above V_EGO_STATIONARY radard also
                        # checks every track against the camera's lead (25 % / 5 m), the low-speed override is the residual risk.
-                       min_publish_age=20)
+                       min_publish_age=20,
+                       # dimpleliang/ars510: drop oncoming tracks (radar-marked and over-ground speed below -2 m/s) from radard.
+                       oncoming_min_mps=2.0)
 
 
 NATIVE_VREL_STATUS = "native_over_ground_minus_ego"
@@ -195,6 +201,7 @@ class Ars510NativeRadarInterface:
         self._acc_pos: tuple[float, float, float] | None = None  # (time, x, y)
         self._acc_assoc: tuple[int, float, float] | None = None  # (tid, last x, last y)
         self.path_gated = 0
+        self.oncoming_suppressed = 0
         # ARS510 display: every object of the last record from DISPLAY_MIN_AGE on, before the path gates:
         # [dRel, yRel, vRel, published, settling (younger than min_publish_age)]
         self.display_points: list[list] = []
@@ -460,6 +467,10 @@ class Ars510NativeRadarInterface:
                 display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
+                continue
+            if (cfg.oncoming_min_mps > 0 and tid != acc_tid and (obj.oncoming_flag or obj.movement_code == 2)
+                    and v_ground < -cfg.oncoming_min_mps):
+                self.oncoming_suppressed += 1
                 continue
             if cfg.far_acc_only_m > 0 and tid != acc_tid and d_rel > cfg.far_acc_only_m:
                 self.path_gated += 1
