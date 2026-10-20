@@ -114,7 +114,18 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
-def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track]):
+# dimpleliang/ars510: keep last cycle's radar lead when the camera's range drifts past the 25 % check (at speed the camera
+# often puts a car the radar holds at 33 m at 45 m; the lead then flips radar <-> camera and its distance jumps 10+ m).
+# Only a track no farther than the camera's lead (+ KEEP_FARTHER_M) is kept, so a closer car the camera sees first (a cut-in)
+# still takes over at once; the track must stay laterally on the camera's lead and pass the same speed check.
+# Replay of 106 min (20 Oct): radar<->camera flips 7.1 -> 5.0 per lead-minute, lead jumps > 5 m 22.8 -> 18.1 per minute.
+KEEP_DIST_FRAC = 0.5
+KEEP_DIST_MIN_M = 8.0
+KEEP_FARTHER_M = 2.0
+KEEP_LAT_M = 1.5
+
+
+def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track], keep_id: int | None = None):
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
   def prob(c):
@@ -133,8 +144,16 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
-  else:
-    return None
+
+  kept = tracks.get(keep_id) if keep_id is not None else None
+  if kept is not None:
+    keep_dist = abs(kept.dRel - offset_vision_dist) < max(offset_vision_dist * KEEP_DIST_FRAC, KEEP_DIST_MIN_M)
+    not_farther = kept.dRel < offset_vision_dist + KEEP_FARTHER_M
+    on_lead = abs(kept.yRel + lead.y[0]) < KEEP_LAT_M
+    keep_vel = (abs(kept.vRel + v_ego - lead.v[0]) < 10) or (v_ego + kept.vRel > 3)
+    if keep_dist and not_farther and on_lead and keep_vel:
+      return kept
+  return None
 
 
 def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, lead_prob: float):
@@ -156,10 +175,10 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-             low_speed_override: bool = True) -> dict[str, Any]:
+             low_speed_override: bool = True, keep_id: int | None = None) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
-    track = match_vision_to_track(v_ego, lead_msg, tracks)
+    track = match_vision_to_track(v_ego, lead_msg, tracks, keep_id)
   else:
     track = None
 
@@ -209,6 +228,7 @@ class RadarD:
     self.radar_state_valid = False
 
     self.ready = False
+    self.keep_ids: list[int | None] = [None, None]
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -258,9 +278,13 @@ class RadarD:
           self.lead_prob_filters[i].update(lead_prob)
 
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
-                                          self.CP, self.CP_SP, low_speed_override=True)
+                                          self.CP, self.CP_SP, low_speed_override=True, keep_id=self.keep_ids[0])
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
-                                          self.CP, self.CP_SP, low_speed_override=False)
+                                          self.CP, self.CP_SP, low_speed_override=False, keep_id=self.keep_ids[1])
+      self.keep_ids = [lead.radarTrackId if (lead.present and lead.radar) else None
+                       for lead in (self.radar_state.leadOne, self.radar_state.leadTwo)]
+    else:
+      self.keep_ids = [None, None]
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
