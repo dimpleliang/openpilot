@@ -52,3 +52,12 @@
 重播（實際 radard 程式碼、相同 106 分鐘）：雷達接手 90.0→91.1%，切換 7.1→5.0 次/分，前車距離跳 > 5 m 22.8→18.1 次/分。
 不限遠近的版本切換可降到 3.2 次/分，但 178 次保留中有 117 次之後證實前方有較近的車（切入），故不採用。
 解碼器參數（發布年齡 10、速度標準差 1.0、路徑門 3.5 m）重播改善 < 1 %，維持不變。
+
+## 遠端連線
+
+- **ssh.comma.ai**（comma prime）：Mac `~/.ssh/config` 設 `Host comma-*` 經 `ProxyCommand ssh %h@ssh.comma.ai -W %h:%p`，
+  金鑰為裝置上 GitHub 帳號抓到的那把；`ssh comma-<dongle_id>`。
+- **Tailscale**：`scripts/tailscale/install.sh` 把靜態 arm64 版裝進 `/data/tailscale`（AGNOS 更新只換系統分割區，`/data` 保留），
+  `launch_chffrplus.sh` 每次開機呼叫 `scripts/tailscale/start.sh` 帶起 `tailscaled`（未安裝則直接跳過，不影響 openpilot 啟動）。
+  首次需在裝置上 `sudo /data/tailscale/tailscale --socket=/data/tailscale/tailscaled.sock up --hostname=comma` 並開連結登入。
+  兩者都要 comma 開著（車子發動或熄火後尚未自動關機）。

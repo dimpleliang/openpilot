@@ -85,6 +85,8 @@ function launch {
   # hardware specific init
   if [ -f /AGNOS ]; then
     agnos_init
+    # dimpleliang/ars510: remote access. No-op unless Tailscale was installed into /data (scripts/tailscale/install.sh).
+    bash "$DIR/scripts/tailscale/start.sh" || true
   fi
 
   # write tmux scrollback to a file
