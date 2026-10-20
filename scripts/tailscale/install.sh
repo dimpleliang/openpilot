@@ -5,6 +5,7 @@
 # then authenticate once:
 #   sudo /data/tailscale/tailscale --socket=/data/tailscale/tailscaled.sock up --ssh=false --hostname=comma
 set -e
+HERE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 VER="${1:-1.104.1}"
 TS=/data/tailscale
 mkdir -p "$TS"
@@ -18,7 +19,7 @@ if [ ! -x "$TS/tailscaled" ] || [ "$(cat "$TS/VERSION" 2>/dev/null)" != "$VER" ]
   echo "$VER" > "$TS/VERSION"
 fi
 chmod +x "$TS/tailscaled" "$TS/tailscale"
-bash "$(dirname "$0")/start.sh"
+bash "$HERE/start.sh"
 sleep 2
 sudo "$TS/tailscale" --socket="$TS/tailscaled.sock" version
 echo "installed. authenticate with:"
