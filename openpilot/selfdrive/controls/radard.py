@@ -337,6 +337,8 @@ class RadarD:
       self.vru_override(sm['modelV2'].position)
     else:
       self.keep_ids = [None, None]
+      self.vru_cnt.clear()
+      self.vru_active = None
 
   def vru_override(self, position) -> None:
     """leadOne := a settled, moving two-wheeler in the ego path that is clearly closer than the lead chosen so far."""
@@ -366,10 +368,11 @@ class RadarD:
       self.vru_active = None
       return
     self.vru_active = pick.identifier
-    state = pick.get_RadarState(max(lead.modelProb if lead.present else 0.0, 0.5))
+    # This override has no camera association to the selected object, so it does not inherit the camera lead's modelProb.
+    state = pick.get_RadarState()
     for k, v in state.items():
       setattr(self.radar_state.leadOne, k, v)
-    self.keep_ids[0] = pick.identifier
+    # keep_ids belongs to the ordinary camera/radar match; the override keeps its own identity in vru_active.
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
