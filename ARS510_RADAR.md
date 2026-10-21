@@ -84,3 +84,11 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 後以該機車為 leadOne（有雷達距離與速度），保留條件放寬為路徑 1.3 m 內且仍比鏡頭前車近；低於 4 m/s 由原本的低速規則處理。
 對地速度 < 1 m/s（路邊停放）不採用。重播：37 次 / 82 秒，其中 28 次當下距離小於期望跟車距離（會減速拉開距離），約每 5 分鐘市區行駛 1 次。
 觸發時 cloudlog 記錄 `ARS510 two-wheeler lead override`。
+
+## 原廠 PCS 警報改從雷達匯流排讀（移植自 commaai/opendbc#3860 的 dea4a6aa）
+
+開啟 openpilot 縱向控制（Alpha）時原廠雷達被靜音，儀表匯流排的 PCS_HUD 不再回報 FCW；雷達自己的匯流排（bus 1）仍會送
+0x100 PCS_STATE，`carstate.py` 對 RADAR_ACC 車另開一個不必要（nan）的 bus 1 parser 讀 PCS_ALARM 補進 `stockFcw`。
+雷達通電第一幀全為 1（POWER_UP=255）時忽略。`ars510_acc_target.dbc` 同步更新為 PR 版本（多 POWER_UP 訊號）。
+bus 1 安靜時該 parser 全部訊息為 ignore_alive，不會造成 canValid 失效或 canTimeout。未開 Alpha 縱向時行為不變（PCS_HUD 仍是主要來源）。
+

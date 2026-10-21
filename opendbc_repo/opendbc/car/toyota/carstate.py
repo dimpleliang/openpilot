@@ -9,6 +9,7 @@ from opendbc.car.toyota.values import ToyotaFlags, CAR, DBC, STEER_THRESHOLD, NO
                                                   TSS2_CAR, EPS_SCALE
 from opendbc.sunnypilot.car.toyota.carstate_ext import CarStateExt
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
+from opendbc.car.toyota.ars510_acc_target import RADAR_DBC as ARS510_DBC
 
 ButtonType = structs.CarState.ButtonEvent.Type
 SteerControlType = structs.CarParams.SteerControlType
@@ -159,6 +160,13 @@ class CarState(CarStateBase, CarStateExt):
         self.acc_type = cp_acc.vl["ACC_CONTROL"]["ACC_TYPE"]
       ret.stockFcw = bool(cp_acc.vl["PCS_HUD"]["FCW"])
 
+    # dimpleliang/ars510 (commaai/opendbc#3860): radar-ACC cars' ARS510 also reports its PCS alarm on the radar bus (0x100),
+    # which keeps running when openpilot longitudinal disables the radar and PCS_HUD stops reporting FCW.
+    # POWER_UP is 255 on the radar's first frame after power-up (every bit set), so that frame is ignored.
+    if Bus.radar in can_parsers:
+      pcs = can_parsers[Bus.radar].vl["PCS_STATE"]
+      ret.stockFcw = ret.stockFcw or bool(pcs["PCS_ALARM"] and pcs["POWER_UP"] == 0)
+
     # some TSS2 cars have low speed lockout permanently set, so ignore on those cars
     # these cars are identified by an ACC_TYPE value of 2.
     # TODO: it is possible to avoid the lockout and gain stop and go if you
@@ -227,7 +235,12 @@ class CarState(CarStateBase, CarStateExt):
       ("RSA2", 0),
     ]
 
-    return {
+    parsers = {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, 0),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [] + cam_messages, 2),
     }
+    if CP.flags & ToyotaFlags.RADAR_ACC:
+      # dimpleliang/ars510: the ARS510's PCS state on the radar bus; not required (nan), so a quiet radar bus never
+      # makes CAN invalid or times out (every message state is ignore_alive)
+      parsers[Bus.radar] = CANParser(ARS510_DBC, [("PCS_STATE", float('nan'))], 1)
+    return parsers
