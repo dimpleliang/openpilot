@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import struct
 import numpy as np
 from collections import deque
 from typing import Any
@@ -125,6 +126,44 @@ KEEP_FARTHER_M = 2.0
 KEEP_LAT_M = 1.5
 
 
+# dimpleliang/ars510: a two-wheeler in the ego path. The camera's lead is often the car beyond a scooter riding in our lane
+# (Taiwan: 6/6 such episodes on 21 Oct verified on video, 33 episodes / 91 s in 206 min). The ARS510 classifies objects;
+# its display message (customReservedRawData0, see opendbc ars510_radar_interface.py) carries the class per published
+# track. A settled, moving two-wheeler whose track sits within VRU_PATH_M of the model's path and is VRU_CLOSER_M closer
+# than the lead we would otherwise pick becomes leadOne after VRU_MIN_CYCLES consecutive cycles; it is kept while it
+# stays within VRU_PATH_KEEP_M of the path and closer than the camera's lead.
+VRU_CLASSES = (5, 6)       # radar object class 163|3: two-wheelers (validated on route 0000000e)
+VRU_PATH_M = 1.0           # lateral overlap with the car (half car 0.95 + half scooter 0.4 = 1.35; 1.0 is conservative)
+VRU_PATH_KEEP_M = 1.3
+VRU_CLOSER_M = 5.0
+VRU_MIN_CYCLES = 10        # 0.5 s
+VRU_MAX_D = 60.0
+VRU_MIN_V_LEAD = 1.0       # m/s over ground: a parked scooter at the kerb is not a lead
+DISPLAY_FMT = "<fffB"
+DISPLAY_FMT_SIZE = struct.calcsize(DISPLAY_FMT)
+
+
+def parse_display_classes(payload: bytes) -> dict[tuple[float, float], tuple[int, bool]]:
+  """(dRel, yRel) -> (class, settling) from the ARS510 display message. Same float32 values as the radarTracks points."""
+  out: dict[tuple[float, float], tuple[int, bool]] = {}
+  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] != 1:
+    return out
+  for i in range(payload[3]):
+    off = 4 + i * DISPLAY_FMT_SIZE
+    if off + DISPLAY_FMT_SIZE > len(payload):
+      break
+    d, y, _v, flags = struct.unpack_from(DISPLAY_FMT, payload, off)
+    out[(d, y)] = ((flags >> 2) & 7, bool(flags & 2))
+  return out
+
+
+def path_lateral_error(track: Track, path_x, path_y) -> float:
+  """Lateral distance from the model path at the track's range. Model y is right-positive, radar yRel left-positive."""
+  if len(path_x) < 2:
+    return abs(track.yRel)
+  return abs(-track.yRel - float(np.interp(track.dRel, path_x, path_y)))
+
+
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track], keep_id: int | None = None):
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
@@ -229,6 +268,10 @@ class RadarD:
 
     self.ready = False
     self.keep_ids: list[int | None] = [None, None]
+    self.vru_classes: dict[int, int] = {}     # track id -> radar class, settled two-wheelers only
+    self.vru_cnt: dict[int, int] = {}         # consecutive cycles a two-wheeler qualified as an in-path override
+    self.vru_active: int | None = None        # track id currently overriding leadOne
+    self.vru_overrides = 0
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -244,6 +287,14 @@ class RadarD:
     for ids in list(self.tracks.keys()):
       if ids not in ar_pts:
         self.tracks.pop(ids, None)
+
+    # dimpleliang/ars510: radar classes for the current points (display message is published in the same decoder cycle)
+    classes = parse_display_classes(bytes(sm['customReservedRawData0'])) if 'customReservedRawData0' in sm.data else {}
+    self.vru_classes = {}
+    for pt in rr.points:
+      cls = classes.get((pt.dRel, pt.yRel))
+      if cls is not None and cls[0] in VRU_CLASSES and not cls[1]:
+        self.vru_classes[pt.trackId] = cls[0]
 
     # *** compute the tracks ***
     for ids in ar_pts:
@@ -283,8 +334,42 @@ class RadarD:
                                           self.CP, self.CP_SP, low_speed_override=False, keep_id=self.keep_ids[1])
       self.keep_ids = [lead.radarTrackId if (lead.present and lead.radar) else None
                        for lead in (self.radar_state.leadOne, self.radar_state.leadTwo)]
+      self.vru_override(sm['modelV2'].position)
     else:
       self.keep_ids = [None, None]
+
+  def vru_override(self, position) -> None:
+    """leadOne := a settled, moving two-wheeler in the ego path that is clearly closer than the lead chosen so far."""
+    lead = self.radar_state.leadOne
+    lead_d = lead.dRel if lead.present else float('inf')
+    path_x, path_y = list(position.x), list(position.y)
+    cands = {}
+    for tid, cls in self.vru_classes.items():
+      t = self.tracks.get(tid)
+      if t is None or not (0.75 < t.dRel < VRU_MAX_D) or t.vLead < VRU_MIN_V_LEAD:
+        continue
+      lat = path_lateral_error(t, path_x, path_y)
+      keep = tid == self.vru_active
+      if lat < (VRU_PATH_KEEP_M if keep else VRU_PATH_M) and t.dRel < lead_d - (0.0 if keep else VRU_CLOSER_M):
+        cands[tid] = t
+    self.vru_cnt = {tid: self.vru_cnt.get(tid, 0) + 1 for tid in cands}
+    pick = None
+    if self.vru_active in cands:
+      pick = cands[self.vru_active]
+    else:
+      ready = [t for tid, t in cands.items() if self.vru_cnt[tid] >= VRU_MIN_CYCLES]
+      if ready and self.v_ego > V_EGO_STATIONARY:
+        pick = min(ready, key=lambda t: t.dRel)
+        self.vru_overrides += 1
+        cloudlog.info(f"ARS510 two-wheeler lead override #{self.vru_overrides}: {pick.dRel:.1f} m, camera lead {lead_d:.1f} m, v_ego {self.v_ego:.1f}")
+    if pick is None:
+      self.vru_active = None
+      return
+    self.vru_active = pick.identifier
+    state = pick.get_RadarState(max(lead.modelProb if lead.present else 0.0, 0.5))
+    for k, v in state.items():
+      setattr(self.radar_state.leadOne, k, v)
+    self.keep_ids[0] = pick.identifier
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
@@ -309,7 +394,7 @@ def main() -> None:
   cloudlog.info("radard got CarParamsSP")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks', 'customReservedRawData0'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
   RD = RadarD(CP, CP_SP, CP.radarDelay)

@@ -75,3 +75,12 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
   `launch_chffrplus.sh` 每次開機呼叫 `scripts/tailscale/start.sh` 帶起 `tailscaled`（未安裝則直接跳過，不影響 openpilot 啟動）。
   首次需在裝置上 `sudo /data/tailscale/tailscale --socket=/data/tailscale/tailscaled.sock up --hostname=comma` 並開連結登入。
   兩者都要 comma 開著（車子發動或熄火後尚未自動關機）。
+
+## 車道內機車優先（radard）
+
+鏡頭的前車常是機車前方更遠的汽車（台灣路況）。10/20–10/21 共 206 分鐘紀錄：雷達類別為機車（163|3 = 5/6）、已收斂、
+落在模型路徑 1.0 m 內、比目前前車近 5 m 以上的目標 33 次 / 91 秒；10/21 的 6 次全部以影像核對為車道內機車。
+`openpilot/selfdrive/controls/radard.py` 訂閱雷達顯示訊息（customReservedRawData0）取得每個目標的類別；符合上述條件連續 0.5 秒
+後以該機車為 leadOne（有雷達距離與速度），保留條件放寬為路徑 1.3 m 內且仍比鏡頭前車近；低於 4 m/s 由原本的低速規則處理。
+對地速度 < 1 m/s（路邊停放）不採用。重播：37 次 / 82 秒，其中 28 次當下距離小於期望跟車距離（會減速拉開距離），約每 5 分鐘市區行駛 1 次。
+觸發時 cloudlog 記錄 `ARS510 two-wheeler lead override`。

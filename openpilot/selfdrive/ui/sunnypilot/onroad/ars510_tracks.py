@@ -86,11 +86,11 @@ class Ars510Tracks:
           continue
         if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
           continue
-        y_left = -y + camera_offset  # radar yRel is right-positive; model / path y is left-positive
-        pt = map_to_screen(d, y_left, path_z(d) + path_offset_z)
+        y_right = -y + camera_offset  # radar yRel is left-positive; the model path and map_to_screen use right-positive (calibrated frame)
+        pt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
         if pt is None:
           continue
-        in_lane = abs(y_left - path_y(d)) < LANE_HALF_M
+        in_lane = abs(y_right - path_y(d)) < LANE_HALF_M
         self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect, settling, cls)
     except Exception:
       self._points = []
