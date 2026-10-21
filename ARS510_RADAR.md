@@ -90,6 +90,9 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 同日 Patch 2：radard 把顯示訊息（customReservedRawData0）改為 optional service（ignore_alive / ignore_avg_freq / ignore_valid，
 與 plannerd 的做法相同），顯示 publisher 停止或延遲時不再拖垮 radarState.valid；類別只採用 150 ms 內的有效訊息，避免舊類別無限沿用。
 顯示排程延遲超過 150 ms 時機車 override 會被撤銷，若實際健康路線常超過此值，先修傳輸而不是放大 TTL。
+同日 Patch 3：`match_vision_to_track` 的鏡頭／雷達比對分數由三個 Laplace 機率相乘改為負對數相加（排名在正常數值下完全相同，
+20000 組隨機案例差異 0），避免機率乘積下溢成 0 後所有候選同分、由字典順序決定人選。原本會下溢的情況以 `ARS510 match underflow`
+記進 cloudlog（累計次數，每 5 秒最多一行），rlog 可回答實際發生頻率；門檻與 sticky 條件不變。
 
 ## 原廠 PCS 警報改從雷達匯流排讀（同步上游 ars510-radar fecbee8，對應 opendbc#3860）
 

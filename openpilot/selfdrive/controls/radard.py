@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 import struct
+import time
 import numpy as np
 from collections import deque
 from typing import Any
@@ -115,6 +116,9 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
+_UNDERFLOW = {"n": 0, "last_log": 0.0}  # dimpleliang/ars510: camera/radar match score underflow counter (see match_vision_to_track)
+
+
 # dimpleliang/ars510: keep last cycle's radar lead when the camera's range drifts past the 25 % check (at speed the camera
 # often puts a car the radar holds at 33 m at 45 m; the lead then flips radar <-> camera and its distance jumps 10+ m).
 # Only a track no farther than the camera's lead (+ KEEP_FARTHER_M) is kept, so a closer car the camera sees first (a cut-in)
@@ -167,15 +171,24 @@ def path_lateral_error(track: Track, path_x, path_y) -> float:
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track], keep_id: int | None = None):
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
-  def prob(c):
-    prob_d = laplacian_pdf(c.dRel, offset_vision_dist, lead.xStd[0])
-    prob_y = laplacian_pdf(c.yRel, -lead.y[0], lead.yStd[0])
-    prob_v = laplacian_pdf(c.vRel + v_ego, lead.v[0], lead.vStd[0])
+  def log_prob(c):
+    # dimpleliang/ars510: same ranking as the product of the three Laplace pdfs (laplacian_pdf), without the exponential
+    # underflow that made every candidate score 0.0 and left the pick to dict order.
+    return -(abs(c.dRel - offset_vision_dist) / max(lead.xStd[0], 1e-4)
+             + abs(c.yRel + lead.y[0]) / max(lead.yStd[0], 1e-4)
+             + abs(c.vRel + v_ego - lead.v[0]) / max(lead.vStd[0], 1e-4))
 
-    # This isn't exactly right, but it's a good heuristic
-    return prob_d * prob_y * prob_v
-
-  track = max(tracks.values(), key=prob)
+  track = max(tracks.values(), key=log_prob)
+  best = log_prob(track)
+  if math.exp(best) == 0.0:
+    # The original product would have underflowed to 0.0 for every candidate. Count it so rlogs can answer how often
+    # this actually happens; at most one log line per 5 s.
+    _UNDERFLOW["n"] += 1
+    now = time.monotonic()
+    if now - _UNDERFLOW["last_log"] > 5.0:
+      _UNDERFLOW["last_log"] = now
+      cloudlog.info(f"ARS510 match underflow #{_UNDERFLOW['n']}: {len(tracks)} tracks, best log score {best:.0f}, "
+                    f"picked {track.dRel:.1f} m vs camera {offset_vision_dist:.1f} m")
 
   # if no 'sane' match is found return -1
   # stationary radar points can be false positives
