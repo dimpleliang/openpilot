@@ -87,6 +87,9 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 2026-10-21（Codex gpt-6-astra 審查後）：override 的機車不再借用鏡頭前車的 modelProb（改為 0；MPC 只用 modelProb 判斷 FCW，不影響煞車權重），
 也不再把機車 ID 寫進一般鏡頭／雷達比對的 keep_ids（之前會讓下一輪一般比對先選到同一台機車、再與自己比距離而清掉 active，
 兩套保留條件互相混用）；模型沒有前車資料時一併清掉機車確認計數。尚未以 rlog 重播驗收，拒收門檻：真機車額外掉前車或切入接手延遲增加 > 0.10 秒。
+同日 Patch 2：radard 把顯示訊息（customReservedRawData0）改為 optional service（ignore_alive / ignore_avg_freq / ignore_valid，
+與 plannerd 的做法相同），顯示 publisher 停止或延遲時不再拖垮 radarState.valid；類別只採用 150 ms 內的有效訊息，避免舊類別無限沿用。
+顯示排程延遲超過 150 ms 時機車 override 會被撤銷，若實際健康路線常超過此值，先修傳輸而不是放大 TTL。
 
 ## 原廠 PCS 警報改從雷達匯流排讀（同步上游 ars510-radar fecbee8，對應 opendbc#3860）
 

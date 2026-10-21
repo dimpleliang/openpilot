@@ -288,8 +288,16 @@ class RadarD:
       if ids not in ar_pts:
         self.tracks.pop(ids, None)
 
-    # dimpleliang/ars510: radar classes for the current points (display message is published in the same decoder cycle)
-    classes = parse_display_classes(bytes(sm['customReservedRawData0'])) if 'customReservedRawData0' in sm.data else {}
+    # dimpleliang/ars510: radar classes for the current points (display message is published in the same decoder cycle).
+    # The display service is optional: it must never gate radarState.valid, and a stale copy (publisher stopped or
+    # delayed) must not keep feeding old classes, so only a fresh (<= 150 ms) valid message is used.
+    classes = {}
+    display_service = 'customReservedRawData0'
+    if display_service in sm.data:
+      now_ns = max(sm.logMonoTime[s] for s in ('modelV2', 'carState', 'radarTracks', display_service))
+      display_age_ns = now_ns - sm.logMonoTime[display_service]
+      if sm.seen[display_service] and sm.valid[display_service] and display_age_ns <= 150_000_000:
+        classes = parse_display_classes(bytes(sm[display_service]))
     self.vru_classes = {}
     for pt in rr.points:
       cls = classes.get((pt.dRel, pt.yRel))
@@ -397,7 +405,9 @@ def main() -> None:
   cloudlog.info("radard got CarParamsSP")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks', 'customReservedRawData0'], poll='modelV2')
+  optional_services = ['customReservedRawData0']  # dimpleliang/ars510: radar classes for the two-wheeler override only
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks', *optional_services], poll='modelV2',
+                           ignore_alive=optional_services, ignore_avg_freq=optional_services, ignore_valid=optional_services)
   pm = messaging.PubMaster(['radarState'])
 
   RD = RadarD(CP, CP_SP, CP.radarDelay)
