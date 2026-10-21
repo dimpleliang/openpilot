@@ -85,10 +85,10 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 對地速度 < 1 m/s（路邊停放）不採用。重播：37 次 / 82 秒，其中 28 次當下距離小於期望跟車距離（會減速拉開距離），約每 5 分鐘市區行駛 1 次。
 觸發時 cloudlog 記錄 `ARS510 two-wheeler lead override`。
 
-## 原廠 PCS 警報改從雷達匯流排讀（移植自 commaai/opendbc#3860 的 dea4a6aa）
+## 原廠 PCS 警報改從雷達匯流排讀（同步上游 ars510-radar fecbee8，對應 opendbc#3860）
 
 開啟 openpilot 縱向控制（Alpha）時原廠雷達被靜音，儀表匯流排的 PCS_HUD 不再回報 FCW；雷達自己的匯流排（bus 1）仍會送
-0x100 PCS_STATE，`carstate.py` 對 RADAR_ACC 車另開一個不必要（nan）的 bus 1 parser 讀 PCS_ALARM 補進 `stockFcw`。
-雷達通電第一幀全為 1（POWER_UP=255）時忽略。`ars510_acc_target.dbc` 同步更新為 PR 版本（多 POWER_UP 訊號）。
-bus 1 安靜時該 parser 全部訊息為 ignore_alive，不會造成 canValid 失效或 canTimeout。未開 Alpha 縱向時行為不變（PCS_HUD 仍是主要來源）。
-
+0x100 PCS_STATE。上游安裝器 fecbee8 起在 `ars510_radar_interface.py` 的 hook 多包一層 `CarInterface.update`，直接從原始
+CAN 幀讀 0x100 byte 0 bit 1（`ars510/support.py` 的 `pcs_alarm`）併進 `carState.stockFcw`，雷達通電第一幀 FF FF 忽略；
+carstate.py 維持原樣。`ars510_acc_target.dbc` 同步為 PR 版本（多 POWER_UP 訊號）。openpilot 對 stockFcw 只記錄不顯示警示。
+上游另有選用的 `openpilot/radard_vision_fusion.patch`（radard 融合鏡頭前車速度），本分支未套用。
