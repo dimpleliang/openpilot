@@ -40,15 +40,22 @@
 ## 低速轉角速度放寬（LTA，需 panda 韌體）
 
 Toyota LTA 角度控制的轉角速度上限在 90 km/h 以下放寬：18 km/h 以下 15→25°/s（回正 18→30°/s）、36 km/h 13→17.5°/s、
-54 km/h 11→14°/s，90 km/h 以上不變；±95° 指令上限與 EPS 扭力上限不變。最壞情況橫向 jerk 在 36 km/h 以下 < 1 m/s³、
-54 km/h 約 1.5 m/s³，皆低於 MAX_LATERAL_JERK（3.6）。opendbc `car/toyota/values.py` 與 panda 安全 `safety/modes/toyota.h`
+54 km/h 11→14°/s，90 km/h 以上不變；±95° 指令上限與 EPS 扭力上限不變。由轉角速度表換算的最壞情況橫向 jerk
+（平路、定速、軸距 2.69 m、轉向比 13.7，進彎／回正）：18 km/h 0.30／0.36、36 km/h 0.83／1.07、54 km/h 1.51／2.06、
+72 km/h 2.05／3.06、90 km/h 2.22／3.85 m/s³（90 km/h 起為原廠表）；用本車 steerRatio 14.3 約低 4 %。
+控制端另有 `drive_helpers.clip_curvature` 的曲率 jerk 上限 5.0 m/s³；opendbc `car/lateral.py` 的 MAX_LATERAL_JERK（約 3.6）
+Toyota 的 LTA 路徑沒有使用（那是 AngleSteeringLimitsVM 品牌用的）。2026-10-21 依 Codex 審查修正，原文誤寫為「36 km/h 以下 < 1、54 km/h 約 1.5」。
+opendbc `car/toyota/values.py` 與 panda 安全 `safety/modes/toyota.h`
 同步修改，`safety/tests/test_toyota.py` 通過；`panda/board/obj/panda_h7.bin.signed` 由 sunnypilot/panda 8a16e08 以 debug 金鑰重建
 （未修改版本可位元級重現原檔，修改版僅轉角表 16 bytes 不同）。還原：切回前一版，pandad 會自動刷回原韌體。
 
 ## 低速 LTA 扭力上限放寬（需 panda 韌體）
 
 LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以下 1500→2000，70–80 km/h 漸變，80 km/h 以上維持 1500。
-駕駛手力門檻 150 不變（接手難易度不變）；橫向加速度仍受控制端 3.6 m/s² 上限限制。控制端 `car/toyota/carcontroller.py`、
+駕駛手力門檻 150 不變；橫向加速度仍受控制端 `drive_helpers.clip_curvature` 的 3.0 m/s²（加路面傾斜補償 g·roll，
+約 3 % 傾斜時單側約 3.6）上限限制，Toyota LTA 沒有另一道 3.6 的直接橫向加速度保護。2026-10-21 依 Codex 審查修正：原文「3.6 m/s² 上限」
+與「接手難易度不變」皆過度推論，多出的 500 單位以 EPS 約 1500 units/s 卸力約需多 0.33 秒，接手感受可能改變；
+2000 平台一路到 70 km/h 目前沒有 EPS 能力或實測橫向加速度證據（詳見 tasks/lta-curve-torque-codex-2026-10-21.md）。控制端 `car/toyota/carcontroller.py`、
 `values.py` 與 panda `safety/modes/toyota.h` 同步修改，Toyota 安全測試通過，panda 允許值於各車速皆 ≥ 控制端收力點。
 
 ## 自動上傳完整 rlog
