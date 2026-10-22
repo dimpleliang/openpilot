@@ -54,7 +54,10 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 6.0
+STOP_DISTANCE = 6.0           # 高速 (>= STOP_BLEND_HI_MPS) 的停車距離，維持原廠餘裕
+STOP_DISTANCE_LOW = 4.5       # 塞車低速 (<= STOP_BLEND_LO_MPS) 的停車距離
+STOP_BLEND_LO_MPS = 10.0
+STOP_BLEND_HI_MPS = 20.0
 MIN_X_LEAD_FACTOR = 0.5
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -81,7 +84,14 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
+def get_stop_distance(v_ego):
+  # 低速 4.5 m，高速 6.0 m，中間線性過渡。只用 abs/四則運算，numpy 與 casadi 符號皆可用。
+  s = (v_ego - STOP_BLEND_LO_MPS) / (STOP_BLEND_HI_MPS - STOP_BLEND_LO_MPS)
+  frac = 0.5 * (abs(s) - abs(s - 1.0) + 1.0)  # clip(s, 0, 1)
+  return STOP_DISTANCE_LOW + (STOP_DISTANCE - STOP_DISTANCE_LOW) * frac
+
 def get_safe_obstacle_distance(v_ego, t_follow):
+  # 已編譯的求解器內固定使用 STOP_DISTANCE；低速縮短的部分在 update() 以平移障礙物位置實現
   return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
 
 def gen_long_model():
@@ -329,7 +339,10 @@ class LongitudinalMpc:
 
     self.params[:,0] = ACCEL_MIN
     self.params[:,1] = ACCEL_MAX
-    self.params[:,2] = np.min(x_obstacles, axis=1)
+    # 求解器內建的期望距離含固定 STOP_DISTANCE；把障礙物前移 (STOP_DISTANCE - 目前車速對應的停車距離)，
+    # 等效於低速時停車距離較短、高速維持 STOP_DISTANCE，不需要重新編譯 acados 求解器。
+    stop_shift = STOP_DISTANCE - get_stop_distance(max(float(self.x0[1]), 0.0))
+    self.params[:,2] = np.min(x_obstacles, axis=1) + stop_shift
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
     self.params[:,5] = LEAD_DANGER_FACTOR
