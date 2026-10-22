@@ -15,7 +15,7 @@ BORDER_COLORS_SP = {
 }
 
 
-BLIND_SPOT_BORDER_COLOR = rl.Color(0xB4, 0x5F, 0xFF, 0xFF)  # 盲點有車時，該側邊框改成紫色
+BLIND_SPOT_BORDER_COLOR = rl.Color(0xFF, 0x8C, 0x00, 0xFF)  # 盲點有車時，該側邊框改成柳橙色
 
 
 class AugmentedRoadViewSP:
