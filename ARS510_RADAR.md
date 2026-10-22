@@ -108,3 +108,11 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 CAN 幀讀 0x100 byte 0 bit 1（`ars510/support.py` 的 `pcs_alarm`）併進 `carState.stockFcw`，雷達通電第一幀 FF FF 忽略；
 carstate.py 維持原樣。`ars510_acc_target.dbc` 同步為 PR 版本（多 POWER_UP 訊號）。openpilot 對 stockFcw 只記錄不顯示警示。
 上游另有選用的 `openpilot/radard_vision_fusion.patch`（radard 融合鏡頭前車速度），本分支未套用。
+
+## 遠距停止車輛（far_slow_keep_mps）
+
+60 m 外的遠距規則原本只放行 ACC 目標的軌跡（遠距移動目標有假接近速度）。對地速度 < 3 m/s 的靜止／慢速目標速度穩定，
+且 radard 仍要鏡頭前車同意才採用，故改為在路徑門內繼續發布（`far_slow_keep_mps=3.0`）。10/20–10/22 三天重播：60 m 外雷達接手
+59.6→61.0%，幽靈前車與切換次數不變；三次「以 40–50 km/h 接近停止車輛」的事件中一次雷達提前到 77 m（原 69 m），
+另兩次原本就由 ACC 目標在 81 m／53 m 接手。注意：這顆雷達在高速時會刪掉大部分新出現的靜止物（上游 docs/08：>10 m/s 僅保留 7 %），
+高速公路上的停止車輛主要靠 ACC 目標與鏡頭，目前尚無 >80 km/h 的實測事件。

@@ -104,6 +104,11 @@ class NativeInterfaceConfig:
     # published, as Toyota's own ACC acts on its ACC target alone. Far non-ACC tracks carry the object list's false
     # closings. 0 = off (fused: 60)
     far_acc_only_m: float = 0.0
+    # dimpleliang/ars510: a stopped or crawling object in the path beyond far_acc_only_m is still published (|over-ground
+    # speed| below this; still path-gated). The far rule targets the object list's false closings on moving far tracks; a
+    # stationary track's speed is near zero and robust, and radard only uses it once the camera's lead agrees (speed check),
+    # so this gives the planner radar range on a stopped car from ~100 m instead of 60 m. 0 = off (fused: 3.0)
+    far_slow_keep_mps: float = 0.0
     # Stationary tracks (|over-ground speed| < path_gate_stationary_mps) within path_gate_min_range_m are path-gated to
     # path_gate_stationary_m of the path curved with max(v_ego, 2 m/s): parked cars and roadside objects close in stay out
     # of the lane, where radard's low-speed rule would otherwise stop for them as the path curves away. 0 = off (fused: 0.5 m/s, 1.5 m)
@@ -158,7 +163,9 @@ FUSED_CONFIG = replace(BASE_CONFIG, range_fusion_gain=0.1, relink_max_gap_s=0.0,
                        # checks every track against the camera's lead (25 % / 5 m), the low-speed override is the residual risk.
                        min_publish_age=20,
                        # dimpleliang/ars510: drop oncoming tracks (radar-marked and over-ground speed below -2 m/s) from radard.
-                       oncoming_min_mps=2.0)
+                       oncoming_min_mps=2.0,
+                       # dimpleliang/ars510: stopped cars in the path keep publishing beyond 60 m (see far_slow_keep_mps).
+                       far_slow_keep_mps=3.0)
 
 
 NATIVE_VREL_STATUS = "native_over_ground_minus_ego"
@@ -479,7 +486,8 @@ class Ars510NativeRadarInterface:
                 if abs(obj.y_rel - path_y) > cfg.oncoming_keep_path_m:
                     self.oncoming_suppressed += 1
                     continue
-            if cfg.far_acc_only_m > 0 and tid != acc_tid and d_rel > cfg.far_acc_only_m:
+            if (cfg.far_acc_only_m > 0 and tid != acc_tid and d_rel > cfg.far_acc_only_m
+                    and not (cfg.far_slow_keep_mps > 0 and abs(v_ground) < cfg.far_slow_keep_mps)):
                 self.path_gated += 1
                 continue
             still = cfg.path_gate_stationary_mps > 0 and abs(v_ground) < cfg.path_gate_stationary_mps and d_rel <= cfg.path_gate_min_range_m
