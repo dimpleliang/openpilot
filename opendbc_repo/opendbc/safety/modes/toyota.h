@@ -242,11 +242,11 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
     },
   };
 
-  // dimpleliang/ars510: measured EPS torque allowed with full LTA torque, by speed: 2000 up to 70 km/h, stock 1500 from
+  // dimpleliang/ars510: measured EPS torque allowed with full LTA torque, by speed: 2500 up to 70 km/h, stock 1500 from
   // 80 km/h. Must match LTA_MAX_MEAS_TORQUE_BP / _V in opendbc/car/toyota/values.py. Speed fudged down by 1 m/s.
   static const struct lookup_t TOYOTA_LTA_MAX_MEAS_TORQUE_LOOKUP = {
     {19.44, 22.22, 22.22},
-    {2000., 1500., 1500.},
+    {2500., 1500., 1500.},
   };
   const int TOYOTA_LTA_MAX_DRIVER_TORQUE = 150;
 

@@ -277,8 +277,8 @@ class TestToyotaSafetyAngle(TestToyotaSafetyBase, common.AngleSteeringSafetyTest
             self.assertEqual(should_tx, self._tx(self._lta_msg(req, req2, angle, torque_wind_down)))
 
     # Test max EPS torque and driver override thresholds (independent of angle, test a few representative angles)
-    # dimpleliang/ars510: the EPS torque threshold depends on speed (2000 up to 70 km/h, 1500 from 80 km/h)
-    for speed, max_meas_torque in ((0., 2000), (10., 2000), (19., 2000), (24., 1500), (35., 1500)):
+    # dimpleliang/ars510: the EPS torque threshold depends on speed (2500 up to 70 km/h, 1500 from 80 km/h)
+    for speed, max_meas_torque in ((0., 2500), (10., 2500), (19., 2500), (24., 1500), (35., 1500)):
      self._reset_speed_measurement(speed)
      for angle in (-89, 0, 89):
       self.safety.set_controls_allowed(True)

@@ -51,11 +51,12 @@ opendbc `car/toyota/values.py` 與 panda 安全 `safety/modes/toyota.h`
 
 ## 低速 LTA 扭力上限放寬（需 panda 韌體）
 
-LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以下 1500→2000，70–80 km/h 漸變，80 km/h 以上維持 1500。
+LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以下 1500→2500（2026-10-21 先放寬到 2000，10/23 再到 2500），70–80 km/h 漸變，80 km/h 以上維持 1500。
 駕駛手力門檻 150 不變；橫向加速度仍受控制端 `drive_helpers.clip_curvature` 的 3.0 m/s²（加路面傾斜補償 g·roll，
 約 3 % 傾斜時單側約 3.6）上限限制，Toyota LTA 沒有另一道 3.6 的直接橫向加速度保護。2026-10-21 依 Codex 審查修正：原文「3.6 m/s² 上限」
 與「接手難易度不變」皆過度推論，多出的 500 單位以 EPS 約 1500 units/s 卸力約需多 0.33 秒，接手感受可能改變；
-2000 平台一路到 70 km/h 目前沒有 EPS 能力或實測橫向加速度證據（詳見 tasks/lta-curve-torque-codex-2026-10-21.md）。控制端 `car/toyota/carcontroller.py`、
+2000 平台一路到 70 km/h 目前沒有 EPS 能力或實測橫向加速度證據（詳見 tasks/lta-curve-torque-codex-2026-10-21.md）。
+2026-10-23 實測：13:27 下匝道（58→48 km/h，需 2.7 m/s²）EPS 扭力到 1964 後觸發收力，扭力掉到 ~850、方向盤停住約 1 秒，再爬回 1971 又收力，形成約 1 Hz 的鬆緊循環，角度落後 9–11° 直到駕駛接手；12:54 匝道（2.37 m/s²）峰值 1934 未觸發。2000 約只撐到 2.4 m/s²，故再放寬到 2500。LTA 模式下 EPS 自身的扭力上限仍無數據，需上車驗證。控制端 `car/toyota/carcontroller.py`、
 `values.py` 與 panda `safety/modes/toyota.h` 同步修改，Toyota 安全測試通過，panda 允許值於各車速皆 ≥ 控制端收力點。
 
 ## 自動上傳完整 rlog
