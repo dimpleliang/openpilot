@@ -20,11 +20,19 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import Lon
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 J_CRUISE_BP = [0., 10.0, 25., 40.]
 A_CRUISE_MIN = -0.5
+# ars510: firmer cruise deceleration when the target speed (set speed, SCC-Vision, speed limit)
+# is well below the current speed, so the car actually slows before a ramp or curve
+# instead of coasting at -0.5 m/s^2. Indexed by (v_ego - v_cruise) in m/s.
+A_CRUISE_MIN_BP = [1.0, 4.0, 8.0]
+A_CRUISE_MIN_V = [A_CRUISE_MIN, -1.0, -1.5]
+# ars510: no acceleration while a turn signal is on at low speed (turning / preparing to turn)
+BLINKER_NO_ACCEL_V = 30. * CV.KPH_TO_MS
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 
 def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, dt):
-  target_accel = np.clip(v_cruise - v_ego, A_CRUISE_MIN, ACCEL_MAX)
+  a_min = float(np.interp(v_ego - v_cruise, A_CRUISE_MIN_BP, A_CRUISE_MIN_V))
+  target_accel = np.clip(v_cruise - v_ego, a_min, ACCEL_MAX)
   j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
   target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
@@ -117,6 +125,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+
+    # ars510: hold speed (coast) instead of accelerating while signalling at low speed
+    CS = sm['carState']
+    if (CS.leftBlinker or CS.rightBlinker) and v_ego < BLINKER_NO_ACCEL_V:
+      output_a_target = min(output_a_target, 0.0)
+
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
