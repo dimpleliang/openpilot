@@ -79,6 +79,17 @@ DiagnosticSessionControl 0x60（`0x750` 子位址 `0x41`/`0x42`），之後每�
 程式：`opendbc/sunnypilot/car/toyota/enhanced_bsm.py`、`toyotacan.py`、`carstate.py`、`carcontroller.py`、
 `dbc/generator/toyota/_sp_debug_toyota.dbc`。
 
+## panda 韌體重建方式（prebuilt 分支，`panda/board/obj/panda_h7.bin.signed` 進版控）
+
+本分支是 prebuilt，車機不會自己編 panda 韌體；`safety/modes/toyota.h` 改了之後**必須**重建並提交
+`panda/board/obj/panda_h7.bin.signed`，否則車上的 panda 仍是舊規則（10/23 的 2500 門檻和 10/24 的 eBSM UDS 放行
+一開始就漏了這步，10/24 晚上補上）。重建步驟（可位元級重現 10/21 的檔案）：
+sunnypilot/panda 8a16e08、去掉 .git（版本字串才會是 `DEV-unknown-DEBUG`）、xPack arm-none-eabi-gcc **13.2.1**（14.x 產生的
+二進位不同）、`PYTHONPATH` 指向本分支的 `opendbc_repo`、`scons -j4`，debug 金鑰簽章；只複製 `panda_h7.bin.signed`
+（其餘 obj 檔是 sunnypilot 原始 prebuilt 產物，10/21 起就沒跟著更新）。panda 端的 EPS 扭力門檻比較的是乘過 EPS_SCALE
+（本車 73 %）的值：panda 2000 ≈ 原始 2740、2500 ≈ 原始 3425，所以 panda 門檻一向比控制端寬，舊韌體不會擋 LTA，
+但會擋 eBSM 的 0x750 診斷訊息。
+
 ## 自動上傳完整 rlog
 
 `openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），
