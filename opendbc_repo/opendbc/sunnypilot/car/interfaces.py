@@ -18,7 +18,7 @@ from opendbc.car.gm.values import GMFlags
 from opendbc.car.honda.values import HondaFlags
 from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.car.subaru.values import SubaruFlags
-from opendbc.car.toyota.values import ToyotaFlags
+from opendbc.car.toyota.values import SECOC_CAR, TSS2_CAR, ToyotaFlags
 from opendbc.car.volkswagen.values import VolkswagenFlags
 from opendbc.car.toyota.values import ToyotaSafetyFlags
 from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_tracks as hyundai_enable_radar_tracks
@@ -101,6 +101,8 @@ def has_bsm(CP: structs.CarParams, CP_SP: structs.CarParamsSP | None) -> bool:
     return True
   if CP.brand == "rivian":
     return CP_SP is not None and bool(CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE)
+  if CP.brand == "toyota" and CP_SP is not None and bool(CP_SP.flags & ToyotaFlagsSP.SP_ENHANCED_BSM):
+    return True
   return CP.brand in BSM_FLAGS and bool(CP.flags & BSM_FLAGS[CP.brand])
 
 
@@ -194,3 +196,8 @@ def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params
 
     if toyota_stop_and_go_hack and CP.openpilotLongitudinalControl:
       CP_SP.flags |= ToyotaFlagsSP.STOP_AND_GO_HACK.value
+
+    # dimpleliang/ars510: enhanced BSM (UDS polling of the blind spot ECUs) on TSS2 non-SecOC cars, always on.
+    # 0x750 is only in the panda TX allowlist with openpilot longitudinal, so it stays off with stock longitudinal.
+    if CP.carFingerprint in (TSS2_CAR - SECOC_CAR) and CP.openpilotLongitudinalControl:
+      CP_SP.flags |= ToyotaFlagsSP.SP_ENHANCED_BSM.value

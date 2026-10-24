@@ -67,6 +67,18 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 （50 幀 = 1 s）內轉角速率上限由 0 線性爬回正常值，方向盤從放手位置以漸增的速率走回規劃路徑。命令仍逐幀受速率限制，
 panda 檢查不受影響。副作用：手放在方向盤上讓 steeringPressed（扭力 >100）反覆跳動時，每次都會重新進入 1 s 的漸進期。
 
+## 盲點偵測加速（Enhanced BSM，UDS 輪詢）
+
+原廠 `BSM`（0x3F6）只以 1 Hz 廣播（10/24 實測 59 秒 64 幀），穿越盲區不到 1 秒的車可能整個漏掉、顯示延遲最多 1 秒。
+移植 sunnypilot/opendbc#502（arne182 / rav4kumar，未合併）：車速 >6 m/s 時對左右盲點 ECU 各送一次
+DiagnosticSessionControl 0x60（`0x750` 子位址 `0x41`/`0x42`），之後每側每 0.2 秒讀 `0x21 0x69`，回應 `0x758`（DBC `DEBUG`：
+`BLINDSPOTSIDE`、`BLINDSPOTD1/D2`，>35 視為有車；1–31 是雜訊帶）。停車（<1 m/s 達 2 秒）時送 0x10 0x01 離開診斷模式，
+因 PR 註明 ECU 在診斷模式下低速時環景攝影機會停擺；進入模式只在轉換時送一次（重送會讓 ECU 間歇丟失偵測狀態）。
+結果與原廠 1 Hz 訊號 OR 後寫入 `leftBlindspot`/`rightBlindspot`，顯示邏輯不變。只在 openpilot 縱向控制下啟用
+（原廠縱向時 panda 不放行 0x750）。panda `toyota.h` 只放行這 6 則固定內容的 UDS 訊息，安全測試已補。
+程式：`opendbc/sunnypilot/car/toyota/enhanced_bsm.py`、`toyotacan.py`、`carstate.py`、`carcontroller.py`、
+`dbc/generator/toyota/_sp_debug_toyota.dbc`。
+
 ## 自動上傳完整 rlog
 
 `openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），

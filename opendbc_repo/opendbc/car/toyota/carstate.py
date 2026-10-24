@@ -8,6 +8,7 @@ from opendbc.car.interfaces import CarStateBase
 from opendbc.car.toyota.values import ToyotaFlags, CAR, DBC, STEER_THRESHOLD, NO_STOP_TIMER_CAR, \
                                                   TSS2_CAR, EPS_SCALE
 from opendbc.sunnypilot.car.toyota.carstate_ext import CarStateExt
+from opendbc.sunnypilot.car.toyota.enhanced_bsm import EnhancedBsmCarState
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -54,6 +55,8 @@ class CarState(CarStateBase, CarStateExt):
     self.lkas_hud = {}
     self.gvc = 0.0
     self.secoc_synchronization = None
+
+    self.enhanced_bsm = EnhancedBsmCarState(CP, CP_SP)
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -181,6 +184,12 @@ class CarState(CarStateBase, CarStateExt):
     if self.CP.flags & ToyotaFlags.HAS_BSM:
       ret.leftBlindspot = (cp.vl["BSM"]["L_ADJACENT"] == 1) or (cp.vl["BSM"]["L_APPROACHING"] == 1)
       ret.rightBlindspot = (cp.vl["BSM"]["R_ADJACENT"] == 1) or (cp.vl["BSM"]["R_APPROACHING"] == 1)
+
+    # dimpleliang/ars510: enhanced BSM (5 Hz UDS polling) OR-ed with the 1 Hz stock BSM broadcast
+    if self.enhanced_bsm.enabled:
+      e_left, e_right = self.enhanced_bsm.update(cp)
+      ret.leftBlindspot = ret.leftBlindspot or e_left
+      ret.rightBlindspot = ret.rightBlindspot or e_right
 
     if self.CP.carFingerprint != CAR.TOYOTA_PRIUS_V:
       self.lkas_hud = copy.copy(cp_cam.vl["LKAS_HUD"])
