@@ -38,8 +38,9 @@ class CarControllerParams:
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
-  # dimpleliang/ars510: max distance (deg) of the LTA angle command from the measured angle while the driver overrides
-  OVERRIDE_ANGLE_BAND = 10.0
+  # dimpleliang/ars510: after the driver releases the wheel, the LTA angle rate limit ramps from 0 back to full
+  # over this many LTA frames (50 Hz): 50 frames = 1.0 s
+  OVERRIDE_RELEASE_RAMP_FRAMES = 50
   # dimpleliang/ars510: LTA measured EPS torque above which TORQUE_WIND_DOWN ramps torque out, by speed (m/s).
   # 2500 up to 70 km/h, back to the stock 1500 from 80 km/h. Must match TOYOTA_LTA_MAX_MEAS_TORQUE_LOOKUP in
   # opendbc/safety/modes/toyota.h (panda firmware). The driver torque allowance is unchanged.

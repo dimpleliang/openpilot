@@ -57,6 +57,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.params = CarControllerParams(self.CP)
     self.last_torque = 0
     self.last_angle = 0
+    self.release_frames = 10**6  # dimpleliang/ars510: LTA frames since the driver released the wheel
     self.alert_active = False
     self.last_standstill = False
     self.standstill_req = False
@@ -128,16 +129,29 @@ class CarController(CarControllerBase, GasInterceptorCarController):
         apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
         measured_angle = CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
 
-        # dimpleliang/ars510: while the driver is overriding, keep the angle command within a band of the
-        # measured angle. Otherwise the command keeps tracking the planner's path (possibly tens of degrees
-        # away) and when the driver lets go the EPS snaps the wheel to it at its own full rate.
+        # dimpleliang/ars510: while the driver is overriding, the angle command follows the measured angle.
+        # Otherwise the command keeps tracking the planner's path (possibly tens of degrees away) and when the
+        # driver lets go the EPS snaps the wheel to it at its own full rate.
         if CS.out.steeringPressed:
-          apply_angle = float(np.clip(apply_angle, measured_angle - self.params.OVERRIDE_ANGLE_BAND,
-                                      measured_angle + self.params.OVERRIDE_ANGLE_BAND))
+          apply_angle = measured_angle
+          self.release_frames = 0
+        else:
+          self.release_frames += 1
 
         # Angular rate limit based on speed
+        prev_angle = self.last_angle
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        measured_angle, CC.latActive, self.params.ANGLE_LIMITS)
+
+        # dimpleliang/ars510: after the driver lets go, ramp the angle rate limit back up from zero over
+        # OVERRIDE_RELEASE_RAMP_FRAMES so the wheel walks back to the planned path instead of jumping.
+        if CC.latActive and not CS.out.steeringPressed and self.release_frames < self.params.OVERRIDE_RELEASE_RAMP_FRAMES:
+          frac = (self.release_frames + 1) / self.params.OVERRIDE_RELEASE_RAMP_FRAMES
+          steer_up = prev_angle * self.last_angle >= 0. and abs(self.last_angle) > abs(prev_angle)
+          limits = self.params.ANGLE_LIMITS
+          rate_limits = limits.ANGLE_RATE_LIMIT_UP if steer_up else limits.ANGLE_RATE_LIMIT_DOWN
+          rate_lim = frac * float(np.interp(CS.out.vEgoRaw, rate_limits[0], rate_limits[1]))
+          self.last_angle = float(np.clip(self.last_angle, prev_angle - rate_lim, prev_angle + rate_lim))
 
     self.last_torque = apply_torque
 
