@@ -59,6 +59,13 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 2026-10-23 實測：13:27 下匝道（58→48 km/h，需 2.7 m/s²）EPS 扭力到 1964 後觸發收力，扭力掉到 ~850、方向盤停住約 1 秒，再爬回 1971 又收力，形成約 1 Hz 的鬆緊循環，角度落後 9–11° 直到駕駛接手；12:54 匝道（2.37 m/s²）峰值 1934 未觸發。2000 約只撐到 2.4 m/s²，故再放寬到 2500。LTA 模式下 EPS 自身的扭力上限仍無數據，需上車驗證。控制端 `car/toyota/carcontroller.py`、
 `values.py` 與 panda `safety/modes/toyota.h` 同步修改，Toyota 安全測試通過，panda 允許值於各車速皆 ≥ 控制端收力點。
 
+## 駕駛接手時 LTA 轉角命令貼近實際角度（OVERRIDE_ANGLE_BAND）
+
+2026-10-24 18:04 右彎匝道（30 km/h）：駕駛握著方向盤轉到 −97°，模型路徑同時放寬到 −46°，命令已拉到 −68°，
+放手瞬間 EPS 以 138°/s 把方向盤往左拉回 −45°（EPS 扭力 2288→394 後再出力），駕駛感受為「突然往左的大力道」。
+修正：`steeringPressed` 時把轉角命令限制在量測角 ±10° 內（`OVERRIDE_ANGLE_BAND`），再過原本的轉角速率限制，
+放手時命令離實際角度 ≤10°，之後以正常速率走回規劃路徑。命令仍逐幀受速率限制，panda 檢查不受影響。
+
 ## 自動上傳完整 rlog
 
 `openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），

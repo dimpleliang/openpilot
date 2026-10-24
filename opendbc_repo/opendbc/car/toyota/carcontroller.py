@@ -126,11 +126,18 @@ class CarController(CarControllerBase, GasInterceptorCarController):
       if self.frame % 2 == 0:
         # EPS uses the torque sensor angle to control with, offset to compensate
         apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
+        measured_angle = CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
+
+        # dimpleliang/ars510: while the driver is overriding, keep the angle command within a band of the
+        # measured angle. Otherwise the command keeps tracking the planner's path (possibly tens of degrees
+        # away) and when the driver lets go the EPS snaps the wheel to it at its own full rate.
+        if CS.out.steeringPressed:
+          apply_angle = float(np.clip(apply_angle, measured_angle - self.params.OVERRIDE_ANGLE_BAND,
+                                      measured_angle + self.params.OVERRIDE_ANGLE_BAND))
 
         # Angular rate limit based on speed
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
-                                                       CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg,
-                                                       CC.latActive, self.params.ANGLE_LIMITS)
+                                                       measured_angle, CC.latActive, self.params.ANGLE_LIMITS)
 
     self.last_torque = apply_torque
 
