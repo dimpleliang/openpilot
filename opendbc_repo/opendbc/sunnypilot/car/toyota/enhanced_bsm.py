@@ -4,11 +4,13 @@ responses on 0x758) so the blind spot state updates every 0.2 s instead of the 1
 
 Ported from sunnypilot/opendbc#502 (@arne182, @rav4kumar) for dimpleliang/ars510. Differences from the PR:
 - the polled state is OR-ed with the stock BSM signal in carstate instead of replacing it
-- debug mode is only entered above ENABLE_V and is left again after standing still (the 360° camera stops
-  working while the BSM ECUs are in the extended diagnostic session at low speed)
+- debug mode is only entered above ENABLE_V (PR 502: the 360° camera stops working if it is switched on at low speed)
+  and is kept through standstill, so the blind spot state keeps updating while stopped (the stock 1 Hz broadcast
+  mostly reports nothing below ~16 km/h). It is left in reverse or park, where the 360° camera is used.
 """
 
 from opendbc.car import structs
+from opendbc.car.structs import CarState
 from opendbc.car.can_definitions import CanData
 from opendbc.car.toyota import toyotacan
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
@@ -25,8 +27,7 @@ BLINDSPOT_NOISE_FLOOR = 35
 POLL_PERIOD = 20          # frames (100 Hz) between polls of one side -> 5 Hz per side, 10 UDS requests/s in total
 SILENCE_TIMEOUT = 100     # frames without a response from a side before its state is cleared
 ENABLE_V = 6.0            # m/s, enter debug mode above this speed
-DISABLE_V = 1.0           # m/s, leave debug mode once below this speed for DISABLE_FRAMES
-DISABLE_FRAMES = 200      # 2 s
+DISABLE_FRAMES = 20       # leave debug mode after 0.2 s in reverse or park
 START_FRAME = 200         # let the car settle after start before the first diagnostic request
 
 
@@ -100,7 +101,8 @@ class EnhancedBsmCarController(EnhancedBsm):
         self.slow_frames = 0
       return can_sends
 
-    self.slow_frames = self.slow_frames + 1 if v_ego < DISABLE_V else 0
+    exit_gear = CS.out.gearShifter in (CarState.GearShifter.reverse, CarState.GearShifter.park)
+    self.slow_frames = self.slow_frames + 1 if exit_gear else 0
     if self.slow_frames >= DISABLE_FRAMES:
       can_sends.append(toyotacan.create_set_bsm_debug_mode(LEFT_BLINDSPOT, False))
       can_sends.append(toyotacan.create_set_bsm_debug_mode(RIGHT_BLINDSPOT, False))

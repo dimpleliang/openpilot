@@ -43,6 +43,11 @@ class CarControllerParams:
   OVERRIDE_EXIT_FRAMES = 10        # ... held for this long: 0.2 s
   OVERRIDE_RELEASE_RAMP_FRAMES = 50  # after release, the allowed command-to-measured gap grows over 1.0 s
   OVERRIDE_RELEASE_BAND_DEG = 15.0   # ... from 0 to this; beyond the ramp the gap is unlimited as before
+  # dimpleliang/ars510: LTA fault avoidance - drop the LTA request while the wheel turns faster than LTA_CUT_RATE or
+  # is beyond LTA_CUT_ANGLE (the EPS ignores commands above ~94.95 deg), and for LTA_CUT_HOLD_FRAMES (0.2 s) after
+  LTA_CUT_RATE = 100.0  # deg/s, as MAX_STEER_RATE for LKA torque control
+  LTA_CUT_ANGLE = 100.0  # deg, above the ~94.95 deg command limit so openpilot at its own limit never trips it
+  LTA_CUT_HOLD_FRAMES = 10
   # dimpleliang/ars510: LTA measured EPS torque above which TORQUE_WIND_DOWN ramps torque out, by speed (m/s).
   # 2500 up to 70 km/h, back to the stock 1500 from 80 km/h. Must match TOYOTA_LTA_MAX_MEAS_TORQUE_LOOKUP in
   # opendbc/safety/modes/toyota.h (panda firmware). The driver torque allowance is unchanged.

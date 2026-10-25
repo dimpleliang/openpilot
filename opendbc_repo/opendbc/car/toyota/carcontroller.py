@@ -62,6 +62,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.override_active = False
     self.override_exit_frames = 0
     self.release_frames = 10**6  # frames since the driver released the wheel
+    self.lta_cut_frames = 0  # LTA fault avoidance hold (LTA frames)
+    self.lta_cut = False
     self.alert_active = False
     self.last_standstill = False
     self.standstill_req = False
@@ -152,6 +154,18 @@ class CarController(CarControllerBase, GasInterceptorCarController):
         else:
           self.release_frames += 1
 
+        # dimpleliang/ars510: LTA fault avoidance. The EPS faults LTA for ~2 s (steerFaultTemporary) when the wheel
+        # spins fast or sits beyond the +/-95 deg command range while a request is active, e.g. unwinding after a
+        # hand-over-hand turn. Drop the request (command = measured angle, as when inactive) while that is the case
+        # and for LTA_CUT_HOLD_FRAMES after, then hand back through the release ramp below.
+        if abs(CS.out.steeringRateDeg) >= self.params.LTA_CUT_RATE or abs(measured_angle) > self.params.LTA_CUT_ANGLE:
+          self.lta_cut_frames = self.params.LTA_CUT_HOLD_FRAMES
+        elif self.lta_cut_frames > 0:
+          self.lta_cut_frames -= 1
+          if self.lta_cut_frames == 0 and not self.override_active:
+            self.release_frames = 0
+        self.lta_cut = self.lta_cut_frames > 0
+
         if self.override_active:
           # while overriding, the command follows the measured angle instead of the planner's path, so the
           # EPS neither fights the driver nor holds a target tens of degrees away for the moment they let go
@@ -165,7 +179,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
         # Angular rate limit based on speed
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
-                                                       measured_angle, CC.latActive, self.params.ANGLE_LIMITS)
+                                                       measured_angle, CC.latActive and not self.lta_cut,
+                                                       self.params.ANGLE_LIMITS)
 
     self.last_torque = apply_torque
 
@@ -185,7 +200,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     # STEERING_LTA does not seem to allow more rate by sending faster, and may wind up easier
     if self.frame % 2 == 0 and self.CP.flags & ToyotaFlags.TSS2:
-      lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle
+      lta_active = lat_active and self.CP.steerControlType == SteerControlType.angle and not self.lta_cut
       # cut steering torque with TORQUE_WIND_DOWN when either EPS torque or driver torque is above
       # the threshold, to limit max lateral acceleration and for driver torque blending respectively.
       lta_max_meas_torque = float(np.interp(CS.out.vEgoRaw, self.params.LTA_MAX_MEAS_TORQUE_BP, self.params.LTA_MAX_MEAS_TORQUE_V))

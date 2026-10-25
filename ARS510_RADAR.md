@@ -72,13 +72,21 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
   `OVERRIDE_RELEASE_BAND_DEG`（15°）；EPS 位置控制的出力大致與命令−實際的差成正比，直接限制這個差就是限制力道
   （第一版限制的是命令速率，駕駛仍輕扶時差距照樣累積，改掉）。之後再過原本的轉角速率限制，panda 檢查不受影響。
 
+## LTA 故障迴避（方向盤超出範圍或快速回正時暫停 LTA 請求）
+
+2026-10-25 市區行程 46 次 `steerTempUnavailableSilent`（LTA 停 2 秒）：全部發生在駕駛手動把方向盤轉過 ±95°（最多 400°）後放手、
+方向盤以 150–200°/s 自行回正的過程，前一版（route 48）也有同類事件。修正（`carcontroller.py`）：方向盤轉速 ≥ `LTA_CUT_RATE`
+（100°/s，同 Toyota 扭力控制的 MAX_STEER_RATE）或角度超過 `LTA_CUT_ANGLE`（100°，高於 LTA 指令上限 94.95°，openpilot 自己打滿時不會觸發）
+時送 LTA 請求 = 0、命令 = 量測角（與未啟用時相同，panda 允許），條件解除後再保持 0.2 s，然後經放手接回帶寬恢復。
+以 10/25 資料回放：48 次故障前全部滿足觸發條件；觸發時段前後 1 秒內一定有駕駛出力，不會在 openpilot 自己轉向時誤觸發。
+
 ## 盲點偵測加速（Enhanced BSM，UDS 輪詢）
 
 原廠 `BSM`（0x3F6）只以 1 Hz 廣播（10/24 實測 59 秒 64 幀），穿越盲區不到 1 秒的車可能整個漏掉、顯示延遲最多 1 秒。
 移植 sunnypilot/opendbc#502（arne182 / rav4kumar，未合併）：車速 >6 m/s 時對左右盲點 ECU 各送一次
 DiagnosticSessionControl 0x60（`0x750` 子位址 `0x41`/`0x42`），之後每側每 0.2 秒讀 `0x21 0x69`，回應 `0x758`（DBC `DEBUG`：
-`BLINDSPOTSIDE`、`BLINDSPOTD1/D2`，>35 視為有車；1–31 是雜訊帶）。停車（<1 m/s 達 2 秒）時送 0x10 0x01 離開診斷模式，
-因 PR 註明 ECU 在診斷模式下低速時環景攝影機會停擺；進入模式只在轉換時送一次（重送會讓 ECU 間歇丟失偵測狀態）。
+`BLINDSPOTSIDE`、`BLINDSPOTD1/D2`，>35 視為有車；1–31 是雜訊帶）。10/25 起停車時不再離開診斷模式（原廠 1 Hz 廣播在 16 km/h 以下大多不報：10/25 資料 <6 km/h 時 eBSM 189 次有車、原廠 169 次沒報，
+靜止時後照鏡亮但 comma 不顯示），改為倒車或 P 檔 0.2 s 才送 0x10 0x01 離開，因 PR 註明低速開啟診斷模式時環景攝影機會停擺；進入模式只在轉換時送一次（重送會讓 ECU 間歇丟失偵測狀態）。
 結果與原廠 1 Hz 訊號 OR 後寫入 `leftBlindspot`/`rightBlindspot`，顯示邏輯不變。只在 openpilot 縱向控制下啟用
 （原廠縱向時 panda 不放行 0x750）。panda `toyota.h` 只放行這 6 則固定內容的 UDS 訊息，安全測試已補。
 程式：`opendbc/sunnypilot/car/toyota/enhanced_bsm.py`、`toyotacan.py`、`carstate.py`、`carcontroller.py`、
