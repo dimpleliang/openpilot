@@ -16,12 +16,13 @@ SOFT_STOP_MAX_V = 1.0          # m/s, only soften the last metre: if stopping is
 SOFT_STOP_ACCEL = -0.3         # m/s^2, brake request to ease toward while still rolling
 SOFT_STOP_RELEASE_RATE = 1.5   # m/s^3, how fast the brake is eased off
 # The brake responds ~0.25-0.4 s late, so the release has to start before the stopping state (v < 0.3 m/s): in the
-# final approach the decel request is capped by speed, like a driver easing off the pedal. Not applied when the plan
-# asks for harder braking than SOFT_STOP_URGENT_ACCEL. Simulated (0.25-0.4 s lag): decel at the stop -0.8..-1.3 ->
-# about -0.35 m/s^2, at the cost of 0.15-0.7 m and up to ~1 s longer to stop.
-SOFT_STOP_CAP_BP = [0.3, 0.8, 2.0]   # m/s
-SOFT_STOP_CAP_V = [0.3, 0.55, 1.2]   # m/s^2, max decel request
-SOFT_STOP_URGENT_ACCEL = -1.5        # m/s^2
+# final approach the decel request is capped by speed, like a driver easing off the pedal. The cap fades out
+# continuously both with speed (gone at 3 m/s) and with how hard the plan brakes (full cap at -1.2, none at -1.8 m/s^2),
+# so the request never jumps when either crosses a threshold. Simulated (0.25-0.4 s lag): decel at the stop
+# -0.8..-1.3 -> about -0.35 m/s^2, at the cost of 0.15-0.7 m and up to ~1 s longer to stop.
+SOFT_STOP_CAP_BP = [0.3, 0.8, 2.0, 3.0]   # m/s
+SOFT_STOP_CAP_V = [0.3, 0.55, 1.2, 3.5]   # m/s^2, max decel request (3.5 = ACCEL_MIN, i.e. no cap)
+SOFT_STOP_URGENT_BP = [-1.8, -1.2]        # m/s^2, a_target: cap fully released at -1.8, fully applied at -1.2
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -95,8 +96,10 @@ class LongControl:
       error = a_target - CS.aEgo
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
-      if CS.vEgo < SOFT_STOP_CAP_BP[-1] and a_target > SOFT_STOP_URGENT_ACCEL:
-        output_accel = max(output_accel, -float(np.interp(CS.vEgo, SOFT_STOP_CAP_BP, SOFT_STOP_CAP_V)))
+      if CS.vEgo < SOFT_STOP_CAP_BP[-1]:
+        cap = float(np.interp(CS.vEgo, SOFT_STOP_CAP_BP, SOFT_STOP_CAP_V))
+        weight = float(np.interp(a_target, SOFT_STOP_URGENT_BP, [0.0, 1.0]))  # 1 = apply the cap, 0 = urgent, no cap
+        output_accel = weight * max(output_accel, -cap) + (1.0 - weight) * output_accel
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
