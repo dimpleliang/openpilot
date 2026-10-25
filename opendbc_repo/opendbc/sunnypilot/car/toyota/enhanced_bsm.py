@@ -4,9 +4,11 @@ responses on 0x758) so the blind spot state updates every 0.2 s instead of the 1
 
 Ported from sunnypilot/opendbc#502 (@arne182, @rav4kumar) for dimpleliang/ars510. Differences from the PR:
 - the polled state is OR-ed with the stock BSM signal in carstate instead of replacing it
-- debug mode is only entered above ENABLE_V (PR 502: the 360° camera stops working if it is switched on at low speed)
-  and is kept through standstill, so the blind spot state keeps updating while stopped (the stock 1 Hz broadcast
-  mostly reports nothing below ~16 km/h). It is left in reverse or park, where the 360° camera is used.
+- debug mode is entered at any speed whenever the car is out of reverse / park (PR 502 only enters it above 6 m/s
+  because the stock Toyota 360° camera stops working if it is switched on at low speed; this car's 360° camera is
+  aftermarket, so that does not apply) and is kept through standstill, so the blind spot state keeps updating while
+  stopped (the stock 1 Hz broadcast mostly reports nothing below ~16 km/h). It is left in reverse or park, where the
+  stock rear cross traffic alert works, as before.
 """
 
 from opendbc.car import structs
@@ -26,8 +28,7 @@ BLINDSPOT_NOISE_FLOOR = 35
 
 POLL_PERIOD = 20          # frames (100 Hz) between polls of one side -> 5 Hz per side, 10 UDS requests/s in total
 SILENCE_TIMEOUT = 100     # frames without a response from a side before its state is cleared
-ENABLE_V = 6.0            # m/s, enter debug mode above this speed
-DISABLE_FRAMES = 20       # leave debug mode after 0.2 s in reverse or park
+GEAR_FRAMES = 20          # 0.2 s in / out of reverse or park before leaving / entering debug mode
 START_FRAME = 200         # let the car settle after start before the first diagnostic request
 
 
@@ -82,31 +83,26 @@ class EnhancedBsmCarController(EnhancedBsm):
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
     super().__init__(CP, CP_SP)
     self.debug_enabled = False
-    self.slow_frames = 0
+    self.gear_frames = 0  # consecutive frames the gear has disagreed with the current debug mode state
 
   def update(self, CS, frame: int) -> list[CanData]:
     if frame <= START_FRAME:
       return []
 
     can_sends: list[CanData] = []
-    v_ego = CS.out.vEgo
+    want = CS.out.gearShifter not in (CarState.GearShifter.reverse, CarState.GearShifter.park)
+    self.gear_frames = self.gear_frames + 1 if want != self.debug_enabled else 0
 
-    if not self.debug_enabled:
-      if v_ego > ENABLE_V:
-        # DiagnosticSessionControl(0x60) once per side; re-sending it while already in the session makes the
-        # ECU intermittently drop its detection state (PR 502), so it is sent only on the transition
-        can_sends.append(toyotacan.create_set_bsm_debug_mode(LEFT_BLINDSPOT, True))
-        can_sends.append(toyotacan.create_set_bsm_debug_mode(RIGHT_BLINDSPOT, True))
-        self.debug_enabled = True
-        self.slow_frames = 0
+    if self.gear_frames >= GEAR_FRAMES:
+      # DiagnosticSessionControl 0x60 (enter) / 0x01 (leave) once per side on the transition only: re-sending it
+      # while already in the session makes the ECU intermittently drop its detection state (PR 502)
+      can_sends.append(toyotacan.create_set_bsm_debug_mode(LEFT_BLINDSPOT, want))
+      can_sends.append(toyotacan.create_set_bsm_debug_mode(RIGHT_BLINDSPOT, want))
+      self.debug_enabled = want
+      self.gear_frames = 0
       return can_sends
 
-    exit_gear = CS.out.gearShifter in (CarState.GearShifter.reverse, CarState.GearShifter.park)
-    self.slow_frames = self.slow_frames + 1 if exit_gear else 0
-    if self.slow_frames >= DISABLE_FRAMES:
-      can_sends.append(toyotacan.create_set_bsm_debug_mode(LEFT_BLINDSPOT, False))
-      can_sends.append(toyotacan.create_set_bsm_debug_mode(RIGHT_BLINDSPOT, False))
-      self.debug_enabled = False
+    if not self.debug_enabled:
       return can_sends
 
     if frame % POLL_PERIOD == 0:

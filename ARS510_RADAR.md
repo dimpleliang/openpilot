@@ -83,10 +83,11 @@ LTA 開始收力（TORQUE_WIND_DOWN）的 EPS 量測扭力門檻：70 km/h 以�
 ## 盲點偵測加速（Enhanced BSM，UDS 輪詢）
 
 原廠 `BSM`（0x3F6）只以 1 Hz 廣播（10/24 實測 59 秒 64 幀），穿越盲區不到 1 秒的車可能整個漏掉、顯示延遲最多 1 秒。
-移植 sunnypilot/opendbc#502（arne182 / rav4kumar，未合併）：車速 >6 m/s 時對左右盲點 ECU 各送一次
+移植 sunnypilot/opendbc#502（arne182 / rav4kumar，未合併）：離開 R/P 檔時對左右盲點 ECU 各送一次
 DiagnosticSessionControl 0x60（`0x750` 子位址 `0x41`/`0x42`），之後每側每 0.2 秒讀 `0x21 0x69`，回應 `0x758`（DBC `DEBUG`：
 `BLINDSPOTSIDE`、`BLINDSPOTD1/D2`，>35 視為有車；1–31 是雜訊帶）。10/25 起停車時不再離開診斷模式（原廠 1 Hz 廣播在 16 km/h 以下大多不報：10/25 資料 <6 km/h 時 eBSM 189 次有車、原廠 169 次沒報，
-靜止時後照鏡亮但 comma 不顯示），改為倒車或 P 檔 0.2 s 才送 0x10 0x01 離開，因 PR 註明低速開啟診斷模式時環景攝影機會停擺；進入模式只在轉換時送一次（重送會讓 ECU 間歇丟失偵測狀態）。
+靜止時後照鏡亮但 comma 不顯示），改為倒車或 P 檔 0.2 s 才送 0x10 0x01 離開。10/25 再取消 >6 m/s 才進入的限制：只要不在 R/P 檔 0.2 s 就進入（N/D 靜止也可），
+PR 的限制是因為原廠環景攝影機在低速開啟診斷模式時會停擺，本車環景為副廠，不受影響；進入模式只在轉換時送一次（重送會讓 ECU 間歇丟失偵測狀態）。
 結果與原廠 1 Hz 訊號 OR 後寫入 `leftBlindspot`/`rightBlindspot`，顯示邏輯不變。只在 openpilot 縱向控制下啟用
 （原廠縱向時 panda 不放行 0x750）。panda `toyota.h` 只放行這 6 則固定內容的 UDS 訊息，安全測試已補。
 程式：`opendbc/sunnypilot/car/toyota/enhanced_bsm.py`、`toyotacan.py`、`carstate.py`、`carcontroller.py`、
