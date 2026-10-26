@@ -3,3 +3,18 @@ BO_ 1880 DEBUG: 8 XXX
  SG_ BLINDSPOT : 38|1@0+ (1,0) [0|15] "" XXX
  SG_ BLINDSPOTD1 : 47|8@0+ (1,0) [0|255] "" XXX
  SG_ BLINDSPOTD2 : 55|8@0+ (1,0) [0|255] "" XXX
+
+BO_ 933 AVN1S13: 8 XXX
+ SG_ HUD_DISP : 7|1@0+ (1,0) [0|1] "" XXX
+ SG_ DRVSIDE : 6|1@0+ (1,0) [0|1] "" XXX
+ SG_ DT_GP : 5|6@0+ (1,0) [0|63] "" XXX
+ SG_ DT_UNIT : 15|3@0+ (1,0) [0|7] "" XXX
+ SG_ DIR_TURN : 12|5@0+ (11.25,0) [0|348.75] "degree" XXX
+ SG_ ROTARY : 23|1@0+ (1,0) [0|1] "" XXX
+ SG_ ROAD_TP1 : 22|15@0+ (1,0) [0|32767] "" XXX
+ SG_ ROAD_TP2 : 39|16@0+ (1,0) [0|65535] "" XXX
+ SG_ N_H_UP : 55|1@0+ (1,0) [0|1] "" XXX
+ SG_ COMPASS : 54|6@0+ (11.25,0) [0|708.75] "degree" XXX
+ SG_ DIR : 63|6@0+ (11.25,0) [0|708.75] "degree" XXX
+
+CM_ BO_ 933 "dimpleliang/ars510: head unit (AVN) turn-by-turn / HUD guidance, layout from toyota_2017_ref_pt.dbc (AVN1S13). Signal meanings beyond the names are unverified.";

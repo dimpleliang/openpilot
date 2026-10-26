@@ -116,6 +116,18 @@ sunnypilot/panda 8a16e08、去掉 .git（版本字串才會是 `DEV-unknown-DEBU
 （本車 73 %）的值：panda 2000 ≈ 原始 2740、2500 ≈ 原始 3425，所以 panda 門檻一向比控制端寬，舊韌體不會擋 LTA，
 但會擋 eBSM 的 0x750 診斷訊息。
 
+## 儀表 TBT（轉向導航）測試
+
+12.3 吋儀表有「設定 → 計量設定 → 彈出顯示 → TbT 導航」，但台灣 Garmin 主機（原廠導航與 iOS 27 CarPlay）都不會讓儀表跳出箭頭。
+`toyota_2017_ref_pt.dbc`（Toyota 參考 DBC）有主機 AVN 系列訊息，其中 `AVN1S13`（0x3A5）為 TBT/HUD 導引：HUD_DISP、DT_GP/DT_UNIT（距離）、
+DIR_TURN（11.25° 一格）、ROTARY、ROAD_TP1/2、COMPASS、DIR；`AVN1S17`～`AVN1S19` 為車道導引。架構上主機在 Bus 3、儀表在 Bus 5、
+comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表，從 Bus 1 送出的 0x3A5 很可能到不了儀表，此測試用來確認。
+- `_sp_debug_toyota.dbc` 加入 AVN1S13；panda `toyota.h` 縱向 TX 白名單加入 0x3A5（bus 0，不檢查 relay），safety 測試同步。
+- `opendbc/sunnypilot/car/toyota/tbt_test.py`：只有 `/data/ars510_tbt_test` 存在、靜止且 P 檔、openpilot 未啟用時，以 5 Hz 送 0x3A5，
+  每 40 s 循環四個 10 s 階段（右 90°/單位 1、左 270°/單位 2、迴轉 180°/單位 3、直行 0°/單位 0，距離值 30），目前階段寫入
+  `/data/ars510_tbt_test.phase`。
+- `tools/ars510/can_capture.py <標籤> <秒數>`：錄 pandad 的 can，輸出 `/data/ars510_can_<標籤>.csv.gz` 並列出各匯流排上的 AVN 訊息。
+
 ## 自動上傳完整 rlog
 
 `openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），

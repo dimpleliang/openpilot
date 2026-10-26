@@ -28,6 +28,8 @@
   {0x411, 0, 8, .check_relay = false}, \
   /* radar diagnostic address */       \
   {0x750, 0, 8, .check_relay = false}, \
+  /* dimpleliang/ars510: head unit turn-by-turn guidance (AVN1S13), cluster TBT test */ \
+  {0x3A5, 0, 8, .check_relay = false}, \
   /* ACC */                            \
   {0x343, 0, 8, .check_relay = true},  \
 
