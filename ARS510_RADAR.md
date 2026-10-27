@@ -144,6 +144,10 @@ comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表�
 - `opendbc/sunnypilot/car/toyota/tbt_test.py`：只有 `/data/ars510_tbt_test` 存在、靜止且 P 檔、openpilot 未啟用時，以 5 Hz 送 0x3A5，
   每 40 s 循環四個 10 s 階段（右 90°/單位 1、左 270°/單位 2、迴轉 180°/單位 3、直行 0°/單位 0，距離值 30），目前階段寫入
   `/data/ars510_tbt_test.phase`。
+- `tools/ars510/lat_limits.py <route 或 rlog…>`（10/28）：仿 sunnypilot/opendbc#299 的驗證方法，只計 openpilot 自己轉向的時間
+  （LTA 啟用、前後 0.5 s 無駕駛出力、非變道、> 3 m/s），按車速列出命令角（carOutput 經車輛模型）與 IMU 實測的最大側向加速度、
+  0.5 s 窗口側向 jerk，對照 ISO 3.0 m/s²／5.0 m/s³，並檢查 LTA 每步命令是否超過 ANGLE_LIMITS。route 52 兩段測試：
+  最大 2.41 m/s²、0.95 m/s³，命令最快 33°/s，沒有超表。
 - `tools/ars510/can_capture.py <標籤> <秒數>`：錄 pandad 的 can，輸出 `/data/ars510_can_<標籤>.csv.gz` 並列出各匯流排上的 AVN 訊息。
 
 ## 自動上傳完整 rlog
