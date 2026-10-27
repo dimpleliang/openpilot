@@ -1,3 +1,5 @@
+from collections import deque
+
 import numpy as np
 from opendbc.car.structs import car
 from openpilot.common.realtime import DT_CTRL
@@ -15,20 +17,27 @@ SOFT_STOP_V = 0.05             # m/s, below this (or at standstill) ramp to stop
 SOFT_STOP_MAX_V = 1.0          # m/s, only soften the last metre: if stopping is requested faster (e.g. model shouldStop), brake as before
 SOFT_STOP_ACCEL = -0.3         # m/s^2, brake request to ease toward while still rolling
 SOFT_STOP_RELEASE_RATE = 1.5   # m/s^3, how fast the brake is eased off
-# The brake responds ~0.25-0.4 s late, so the release has to start before the stopping state (v < 0.3 m/s): in the
-# final approach the decel request is capped by speed, like a driver easing off the pedal. The cap fades out
-# continuously both with speed (gone at 3 m/s) and with how hard the plan brakes (full cap at -1.2, none at -1.8 m/s^2),
-# so the request never jumps when either crosses a threshold. Simulated (0.25-0.4 s lag): decel at the stop
-# -0.8..-1.3 -> about -0.35 m/s^2, at the cost of 0.15-0.7 m and up to ~1 s longer to stop.
-SOFT_STOP_CAP_BP = [0.3, 0.8, 2.0, 3.0]   # m/s
-SOFT_STOP_CAP_V = [0.3, 0.55, 1.2, 3.5]   # m/s^2, max decel request (3.5 = ACCEL_MIN, i.e. no cap)
-SOFT_STOP_URGENT_BP = [-1.8, -1.2]        # m/s^2, a_target: cap fully released at -1.8, fully applied at -1.2
+# The soft request is only kept while the car is really slowing down. At crawl speed the Toyota PCM barely brakes for
+# small requests (idle creep: 10/27 route 4f, -0.2..-0.35 commanded gave 0..-0.1 m/s^2 for 1-3 s), so a fixed soft
+# request can leave the car creeping. While rolling and not slowing, brake harder at the stock stopping rate instead.
+SOFT_STOP_SLOWING_A = -0.1     # m/s^2, aEgo above this while rolling = not slowing
+STOPPING_DECEL_RATE = 1.0      # m/s^3, stock rate toward stopAccel
 # Toyota wheel speed reads 0 while the car still creeps at ~0.2-0.3 m/s (10/27 IMU: wheel speed 0.22 -> 0.03 m/s in
 # 0.2 s, but the body kept decelerating for another ~0.7 s and the real stop came with -0.4 m/s^2 and a +0.2 jolt,
 # because the ramp to stopAccel had already started). After the reading drops to standstill, hold the soft request for
 # the time the car still needs to stop (last rolling speed / |SOFT_STOP_ACCEL| + margin), then ramp to stopAccel.
+# Only once per stop: if the wheels report rolling again, the closed-loop rolling branch takes over.
 SOFT_STOP_SETTLE_MARGIN = 0.2       # s
 SOFT_STOP_SETTLE_RANGE = (0.3, 1.2) # s, min / max hold
+# Creep stall: the planner only enters the stopping state below 0.3 m/s. If the PCM does not follow a small decel
+# request, the car can hang at 0.3-0.6 m/s creeping toward the lead (10/27 15:04: 0.34-0.46 m/s for 3 s, gap 2.9 ->
+# 1.6 m, driver had to brake). If the planner keeps asking to slow down but the speed has dropped less than
+# STALL_DROP over the last STALL_WINDOW, treat it as a stop request until the planner wants to accelerate again.
+STALL_MAX_V = 0.6              # m/s
+STALL_A_TARGET = -0.05         # m/s^2, planner must ask for at least this much decel during the whole window
+STALL_WINDOW = 1.0             # s
+STALL_DROP = 0.1               # m/s
+STALL_CLEAR_A_TARGET = 0.1     # m/s^2, same threshold as should_stop: the planner wants to move again
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -72,58 +81,82 @@ class LongControl:
     self.last_output_accel = 0.0
     self.prev_v_ego = 0.0
     self.settle_frames = 0       # frames left to hold the soft request after the speed reading drops to standstill
+    self.settle_used = False     # the settle hold runs once per stop
     self.was_rolling = False
+    self.stall_v_hist = deque(maxlen=int(round(STALL_WINDOW / DT_CTRL)) + 1)
+    self.stall_stop = False
 
   def reset(self):
     self.pid.reset()
+
+  def ramp_to_stop(self, output_accel):
+    # stock stopping ramp: m/s^2/s toward stopAccel, never releasing a harder request
+    # TODO: can we just go straight to stopAccel?
+    if output_accel > self.CP.stopAccel:
+      output_accel = max(output_accel - STOPPING_DECEL_RATE * DT_CTRL, self.CP.stopAccel)
+    return output_accel
+
+  def update_stall(self, active, CS, a_target):
+    """Latch a stop request when the car hangs at crawl speed although the planner keeps asking to slow down."""
+    if not active or CS.brakePressed or CS.gasPressed or a_target >= STALL_CLEAR_A_TARGET:
+      self.stall_stop = False
+    crawling = (active and self.long_control_state == LongCtrlState.pid and not CS.standstill and
+                SOFT_STOP_V < CS.vEgo < STALL_MAX_V and a_target < STALL_A_TARGET)
+    if not crawling:
+      self.stall_v_hist.clear()
+      return
+    self.stall_v_hist.append(CS.vEgo)
+    if len(self.stall_v_hist) == self.stall_v_hist.maxlen and self.stall_v_hist[0] - CS.vEgo < STALL_DROP:
+      self.stall_stop = True
+      self.stall_v_hist.clear()
 
   def update(self, active, CS, a_target, should_stop, accel_limits):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
 
+    self.update_stall(active, CS, a_target)
     self.long_control_state = long_control_state_trans(self.CP_SP, active, self.long_control_state,
-                                                       should_stop, CS.brakePressed,
+                                                       should_stop or self.stall_stop, CS.brakePressed,
                                                        CS.cruiseState.standstill)
     if self.long_control_state == LongCtrlState.off:
       self.reset()
       output_accel = 0.
 
     elif self.long_control_state == LongCtrlState.stopping:
-      output_accel = self.last_output_accel
+      output_accel = min(self.last_output_accel, 0.0)
       rolling = SOFT_STOP_V < CS.vEgo < SOFT_STOP_MAX_V and not CS.standstill
       if rolling:
-        # still rolling: release toward SOFT_STOP_ACCEL (or brake gently toward it if coming from above)
-        output_accel = min(output_accel, 0.0)
-        output_accel += float(np.clip(SOFT_STOP_ACCEL - output_accel, -1.0 * DT_CTRL, SOFT_STOP_RELEASE_RATE * DT_CTRL))
+        if CS.aEgo < SOFT_STOP_SLOWING_A:
+          # slowing down: ease the request toward SOFT_STOP_ACCEL (or brake gently toward it if coming from above)
+          output_accel += float(np.clip(SOFT_STOP_ACCEL - output_accel, -STOPPING_DECEL_RATE * DT_CTRL, SOFT_STOP_RELEASE_RATE * DT_CTRL))
+        else:
+          # not slowing (idle creep / PCM not braking yet): brake harder at the stock rate until it does
+          output_accel = self.ramp_to_stop(output_accel)
         self.was_rolling = True
       else:
-        if self.was_rolling:
-          # the speed reading just dropped to standstill but the car is still creeping: keep the soft request until
+        if self.was_rolling and not self.settle_used:
+          # the speed reading just dropped to standstill but the car is still creeping: keep the request until
           # it has really stopped, so the stop does not come with the ramp to stopAccel already under way
           settle_s = float(np.clip(self.prev_v_ego / abs(SOFT_STOP_ACCEL) + SOFT_STOP_SETTLE_MARGIN, *SOFT_STOP_SETTLE_RANGE))
           self.settle_frames = int(settle_s / DT_CTRL)
-          self.was_rolling = False
+          self.settle_used = True
+        self.was_rolling = False
         if self.settle_frames > 0:
           self.settle_frames -= 1
-        elif output_accel > self.CP.stopAccel:
-          output_accel = min(output_accel, 0.0)
-          # TODO: can we just go straight to stopAccel?
-          output_accel -= 1.0 * DT_CTRL  # m/s^2/s while trying to stop
+        else:
+          output_accel = self.ramp_to_stop(output_accel)
       self.reset()
 
     else:  # LongCtrlState.pid
       error = a_target - CS.aEgo
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
-      if CS.vEgo < SOFT_STOP_CAP_BP[-1]:
-        cap = float(np.interp(CS.vEgo, SOFT_STOP_CAP_BP, SOFT_STOP_CAP_V))
-        weight = float(np.interp(a_target, SOFT_STOP_URGENT_BP, [0.0, 1.0]))  # 1 = apply the cap, 0 = urgent, no cap
-        output_accel = weight * max(output_accel, -cap) + (1.0 - weight) * output_accel
 
     if self.long_control_state != LongCtrlState.stopping:
       self.was_rolling = False
       self.settle_frames = 0
+      self.settle_used = False
     self.prev_v_ego = CS.vEgo
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
