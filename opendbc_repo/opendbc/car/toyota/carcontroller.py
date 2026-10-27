@@ -27,6 +27,7 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 ACCEL_WINDUP_LIMIT = 4.0 * DT_CTRL * 3  # m/s^2 / frame
 ACCEL_WINDDOWN_LIMIT = -4.0 * DT_CTRL * 3  # m/s^2 / frame
 ACCEL_PID_UNWIND = 0.03 * DT_CTRL * 3  # m/s^2 / frame
+STOPPING_PID_UNWIND = 0.5 * DT_CTRL * 3  # m/s^2 / frame, dimpleliang/ars510: while stopping
 
 MAX_PITCH_COMPENSATION = 1.5  # m/s^2
 
@@ -308,6 +309,11 @@ class CarController(CarControllerBase, GasInterceptorCarController):
             pitch_compensation = float(np.clip(math.sin(self.pitch_hp.x) * ACCELERATION_DUE_TO_GRAVITY,
                                                -MAX_PITCH_COMPENSATION, MAX_PITCH_COMPENSATION))
             pcm_accel_cmd += pitch_compensation
+
+          if stopping:
+            # dimpleliang/ars510: unwind the frozen integrator while stopping, so the soft stop request reaches the PCM
+            # as requested (10/27: -0.13 left over from the crawl turned a -0.30 request into -0.43 at the stop)
+            self.long_pid.i -= float(np.clip(self.long_pid.i, -STOPPING_PID_UNWIND, STOPPING_PID_UNWIND))
 
           pcm_accel_cmd = self.long_pid.update(error_future,
                                                speed=CS.out.vEgo,

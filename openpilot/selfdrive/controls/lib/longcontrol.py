@@ -38,6 +38,17 @@ STALL_A_TARGET = -0.05         # m/s^2, planner must ask for at least this much 
 STALL_WINDOW = 1.0             # s
 STALL_DROP = 0.1               # m/s
 STALL_CLEAR_A_TARGET = 0.1     # m/s^2, same threshold as should_stop: the planner wants to move again
+# True stop detection (when locationd's calibrated pose is valid; otherwise the timer-based settle hold above).
+# 10/27 route 52 IMU: Toyota wheel speed stops updating at ~0.2 m/s, but the car kept rolling 0.45-1.3 s. In one stop
+# the settle timer (0.75 s) ran out while the car was still rolling at ~0.1 m/s; the ramp to stopAccel then bit right
+# at the real stop (-0.4 m/s^2, +0.23 rebound). Below SOFT_STOP_WHEEL_VALID_V the true speed is integrated from the
+# pose acceleration (gravity compensated) and the request is held until the car has really stopped, then ramped.
+# If the car is not slowing at all while held (creep), brake is added; never longer than SOFT_STOP_MAX_COAST.
+SOFT_STOP_WHEEL_VALID_V = 0.22  # m/s, Toyota wheel speed below this is a decay artifact
+SOFT_STOP_TRUE_STOP_V = 0.02    # m/s
+SOFT_STOP_POSE_TAU = 0.2        # s, filter on the pose acceleration
+SOFT_STOP_COAST_MIN_DECEL = 0.03  # m/s^2, filtered decel below this while held = not slowing: add brake
+SOFT_STOP_MAX_COAST = 2.5       # s
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -85,6 +96,12 @@ class LongControl:
     self.was_rolling = False
     self.stall_v_hist = deque(maxlen=int(round(STALL_WINDOW / DT_CTRL)) + 1)
     self.stall_stop = False
+    # pose-based soft stop
+    self.v_est = 0.0
+    self.coast_frames = 0
+    self.pose_a_f = 0.0
+    self.coast_active = False
+    self.true_stopped = False
 
   def reset(self):
     self.pid.reset()
@@ -110,10 +127,35 @@ class LongControl:
       self.stall_stop = True
       self.stall_v_hist.clear()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits):
-    """Update longitudinal control. This updates the state machine and runs a PID loop"""
+  def update_v_est(self, CS, pose_accel):
+    """True speed: wheel speed while it is valid, below that integrate the pose acceleration."""
+    if pose_accel is None or CS.vEgoRaw >= SOFT_STOP_WHEEL_VALID_V:
+      self.v_est = CS.vEgoRaw
+      self.coast_frames = 0
+    else:
+      self.v_est = max(0.0, self.v_est + pose_accel * DT_CTRL)
+      self.coast_frames += 1
+
+  def coast_to_true_stop(self, output_accel, pose_accel):
+    """Wheel speed reads standstill: hold the request until the pose says the car has really stopped."""
+    if not self.coast_active:
+      self.pose_a_f = pose_accel
+      self.coast_active = True
+    self.pose_a_f += (pose_accel - self.pose_a_f) * DT_CTRL / SOFT_STOP_POSE_TAU
+    if self.true_stopped or self.v_est <= SOFT_STOP_TRUE_STOP_V or self.coast_frames * DT_CTRL >= SOFT_STOP_MAX_COAST:
+      self.true_stopped = True
+      return self.ramp_to_stop(output_accel)
+    if -self.pose_a_f < SOFT_STOP_COAST_MIN_DECEL:
+      # not slowing (idle creep): add brake at the stock rate until it does
+      return self.ramp_to_stop(output_accel)
+    return output_accel
+
+  def update(self, active, CS, a_target, should_stop, accel_limits, pose_accel=None):
+    """Update longitudinal control. This updates the state machine and runs a PID loop.
+    pose_accel: calibrated longitudinal acceleration from locationd (m/s^2), None if not valid."""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
+    self.update_v_est(CS, pose_accel)
 
     self.update_stall(active, CS, a_target)
     self.long_control_state = long_control_state_trans(self.CP_SP, active, self.long_control_state,
@@ -134,6 +176,10 @@ class LongControl:
           # not slowing (idle creep / PCM not braking yet): brake harder at the stock rate until it does
           output_accel = self.ramp_to_stop(output_accel)
         self.was_rolling = True
+      elif pose_accel is not None and (self.was_rolling or self.coast_active):
+        # wheel speed reads standstill but the car may still be rolling: wait for the true stop (pose based)
+        self.was_rolling = False
+        output_accel = self.coast_to_true_stop(output_accel, pose_accel)
       else:
         if self.was_rolling and not self.settle_used:
           # the speed reading just dropped to standstill but the car is still creeping: keep the request until
@@ -157,6 +203,8 @@ class LongControl:
       self.was_rolling = False
       self.settle_frames = 0
       self.settle_used = False
+      self.coast_active = False
+      self.true_stopped = False
     self.prev_v_ego = CS.vEgo
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel

@@ -135,7 +135,13 @@ class Controls(ControlsExt):
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
+    # dimpleliang/ars510: calibrated longitudinal acceleration from locationd for the soft stop (true stop detection)
+    pose_accel = None
+    if self.calibrated_pose is not None and self.pose_calibrator.calib_valid and \
+       self.sm.valid['deviceMotion'] and self.sm.alive['deviceMotion']:
+      pose_accel = float(self.calibrated_pose.acceleration.x)
+    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
+                                            pose_accel=pose_accel))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
