@@ -62,6 +62,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     # dimpleliang/ars510: driver override tracking for LTA (frames are LTA frames, 50 Hz)
     self.override_active = False
     self.override_exit_frames = 0
+    self.override_enter_frames = 0
     self.release_frames = 10**6  # frames since the driver released the wheel
     self.lta_cut_frames = 0  # LTA fault avoidance hold (LTA frames)
     self.lta_cut = False
@@ -139,22 +140,27 @@ class CarController(CarControllerBase, GasInterceptorCarController):
         apply_angle = actuators.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
         measured_angle = CS.out.steeringAngleDeg + CS.out.steeringAngleOffsetDeg
 
-        # dimpleliang/ars510: driver override state with hysteresis. steeringPressed (|torque| > 100) enters it;
-        # it is left only after |torque| < OVERRIDE_EXIT_TORQUE for OVERRIDE_EXIT_FRAMES, so a hand resting on
-        # the wheel flickering around the threshold does not restart the release ramp every few frames.
-        if CS.out.steeringPressed:
-          self.override_active = True
-          self.override_exit_frames = 0
-        elif self.override_active:
-          if abs(CS.out.steeringTorque) < self.params.OVERRIDE_EXIT_TORQUE:
-            self.override_exit_frames += 1
-            if self.override_exit_frames >= self.params.OVERRIDE_EXIT_FRAMES:
-              self.override_active = False
-              self.release_frames = 0
-          else:
+        # dimpleliang/ars510: driver override state with hysteresis. Entered only when the driver clearly steers
+        # (|torque| > OVERRIDE_ENTER_TORQUE for OVERRIDE_ENTER_FRAMES, the same 150 at which the EPS LTA torque is
+        # wound down), left after |torque| < OVERRIDE_EXIT_TORQUE for OVERRIDE_EXIT_FRAMES. Hands resting on the wheel
+        # (10/25-26 logs: median 50-65, p75 ~100) must not count: with the earlier steeringPressed (> 100) entry and
+        # < 50 exit, openpilot stopped steering for ~45 % of engaged time and reacted late in curves.
+        driver_torque = abs(CS.out.steeringTorque)
+        if not self.override_active:
+          self.override_enter_frames = self.override_enter_frames + 1 if driver_torque > self.params.OVERRIDE_ENTER_TORQUE else 0
+          if self.override_enter_frames >= self.params.OVERRIDE_ENTER_FRAMES:
+            self.override_active = True
             self.override_exit_frames = 0
+          else:
+            self.release_frames += 1
+        elif driver_torque < self.params.OVERRIDE_EXIT_TORQUE:
+          self.override_exit_frames += 1
+          if self.override_exit_frames >= self.params.OVERRIDE_EXIT_FRAMES:
+            self.override_active = False
+            self.override_enter_frames = 0
+            self.release_frames = 0
         else:
-          self.release_frames += 1
+          self.override_exit_frames = 0
 
         # dimpleliang/ars510: LTA fault avoidance. The EPS faults LTA for ~2 s (steerFaultTemporary) when the wheel
         # spins fast or sits beyond the +/-95 deg command range while a request is active, e.g. unwinding after a

@@ -39,7 +39,9 @@ class CarControllerParams:
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
   # dimpleliang/ars510: LTA driver override handling (frames are LTA frames, 50 Hz)
-  OVERRIDE_EXIT_TORQUE = 50        # driver torque below which an override ends (entry is STEER_THRESHOLD = 100)
+  OVERRIDE_ENTER_TORQUE = 150      # driver torque above which the driver is overriding (= MAX_LTA_DRIVER_TORQUE_ALLOWANCE)
+  OVERRIDE_ENTER_FRAMES = 5        # ... held for this long: 0.1 s
+  OVERRIDE_EXIT_TORQUE = 100       # driver torque below which an override ends
   OVERRIDE_EXIT_FRAMES = 10        # ... held for this long: 0.2 s
   OVERRIDE_RELEASE_RAMP_FRAMES = 50  # after release, the allowed command-to-measured gap grows over 1.0 s
   OVERRIDE_RELEASE_BAND_DEG = 15.0   # ... from 0 to this; beyond the ramp the gap is unlimited as before
