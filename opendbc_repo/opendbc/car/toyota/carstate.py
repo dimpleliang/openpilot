@@ -25,6 +25,12 @@ TEMP_STEER_FAULTS = (0, 9, 11, 21, 25)
 # - prolonged high driver torque: 17 (permanent)
 PERM_STEER_FAULTS = (3, 17)
 
+# dimpleliang/ars510: speedometer over-read of this car (2023 RAV4, TW). 10/27 highway: wheel speed = GPS (ratio 0.999)
+# at 108.0 km/h while the dash showed 112. The PCM's own SET_SPEED is ~6% below the dash set speed (30->27, 45->41,
+# 80->75, 115->108 km/h), i.e. tuned for a larger over-read, so with openpilot long the car settled ~3 km/h below the set
+# speed on the dash. With openpilot long, target the speed at which the dash shows the set speed instead.
+DASH_SPEED_RATIO = 1.037
+
 
 class CarState(CarStateBase, CarStateExt):
   def __init__(self, CP, CP_SP):
@@ -93,7 +99,7 @@ class CarState(CarStateBase, CarStateExt):
       cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_RL"],
       cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_RR"],
     )
-    ret.vEgoCluster = ret.vEgo * 1.015  # minimum of all the cars
+    ret.vEgoCluster = ret.vEgo * DASH_SPEED_RATIO  # dimpleliang/ars510: this car's dash (upstream: 1.015, minimum of all the cars)
 
     ret.standstill = abs(ret.vEgoRaw) < 1e-3
 
@@ -156,6 +162,9 @@ class CarState(CarStateBase, CarStateExt):
     if ret.cruiseState.speed != 0:
       conversion_factor = CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS
       ret.cruiseState.speedCluster = cluster_set_speed * conversion_factor
+      if self.CP.openpilotLongitudinalControl and ret.cruiseState.speedCluster > 0:
+        # dimpleliang/ars510: dash set speed -> true speed with this car's speedometer over-read (see DASH_SPEED_RATIO)
+        ret.cruiseState.speed = ret.cruiseState.speedCluster / DASH_SPEED_RATIO
 
     if self.CP.flags & ToyotaFlags.TSS2 and not self.CP.flags & ToyotaFlags.DISABLE_RADAR.value:
       if not (self.CP_SP.flags & ToyotaFlagsSP.SMART_DSU.value):
