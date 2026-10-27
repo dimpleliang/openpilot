@@ -14,7 +14,10 @@ class ToyotaFlagsSP(IntFlag):
   ZSS = 4
   STOCK_LONGITUDINAL = 8
   STOP_AND_GO_HACK = 16
-  SP_ENHANCED_BSM = 32
+  # dimpleliang/ars510: renumbered off 32 (upstream #440 TSS2_SMOOTH) and 64 (#502 SP_NEED_DEBUG_BSM)
+  SP_ENHANCED_BSM = 128
+  AUTO_LOCK = 256    # dimpleliang/ars510: sunnypilot/opendbc#354 (renumbered: its 8/16 are taken upstream)
+  AUTO_UNLOCK = 512
 
 
 class ToyotaSafetyFlagsSP:

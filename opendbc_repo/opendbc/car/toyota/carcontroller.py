@@ -13,6 +13,7 @@ from opendbc.car.toyota.values import CAR, NO_STOP_TIMER_CAR, TSS2_CAR, \
 from opendbc.can import CANPacker
 
 from opendbc.sunnypilot.car.toyota.enhanced_bsm import EnhancedBsmCarController
+from opendbc.sunnypilot.car.toyota.auto_lock_unlock import AutoLockController
 from opendbc.sunnypilot.car.toyota.tbt_test import TbtTest
 from opendbc.sunnypilot.car.toyota.gas_interceptor import GasInterceptorCarController
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
@@ -92,6 +93,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.secoc_prev_reset_counter = 0
 
     self.enhanced_bsm = EnhancedBsmCarController(CP, CP_SP)
+    self.auto_lock = AutoLockController(CP_SP)  # dimpleliang/ars510: sunnypilot/opendbc#354
     self.tbt_test = TbtTest()  # dimpleliang/ars510: cluster TBT bench test, off unless /data/ars510_tbt_test exists
 
   def update(self, CC, CC_SP, CS, now_nanos):
@@ -386,6 +388,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     if self.enhanced_bsm.enabled:
       can_sends.extend(self.enhanced_bsm.update(CS, self.frame))
+    if self.auto_lock.enabled:
+      can_sends.extend(self.auto_lock.update(CS))
 
     if self.CP.openpilotLongitudinalControl and not self.CP.flags & ToyotaFlags.SECOC.value:
       can_sends.extend(self.tbt_test.update(self.packer, CC, CS, self.frame))

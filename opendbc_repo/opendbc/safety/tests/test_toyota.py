@@ -115,6 +115,8 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       b"\x42\x02\x10\x60\x00\x00\x00\x00",  # enable right
       b"\x42\x02\x10\x01\x00\x00\x00\x00",  # disable right
       b"\x42\x02\x21\x69\x00\x00\x00\x00",  # poll right
+      b"\x40\x05\x30\x11\x00\x40\x00\x00",  # unlock doors (sunnypilot/opendbc#354)
+      b"\x40\x05\x30\x11\x00\x80\x00\x00",  # lock doors
     ]
     for msg in valid_msgs:
       pkt = libsafety_py.make_CANPacket(0x750, 0, msg)
@@ -128,6 +130,8 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       b"\x43\x02\x10\x60\x00\x00\x00\x00",  # wrong sub-address (not left/right)
       b"\x41\x02\x10\x60\x01\x00\x00\x00",  # non-zero trailing bytes
       b"\x41\x02\x21\x6a\x00\x00\x00\x00",  # wrong data identifier
+      b"\x40\x05\x30\x11\x00\xc0\x00\x00",  # door command with another value
+      b"\x40\x05\x30\x12\x00\x80\x00\x00",  # other IO identifier on the body ECU
     ]
     for msg in invalid_msgs:
       pkt = libsafety_py.make_CANPacket(0x750, 0, msg)

@@ -405,7 +405,10 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
                             (uds_msg == 0x0000000069210241ULL) ||  // poll left BSM status
                             (uds_msg == 0x0000000001100242ULL) ||  // disable right BSM debug
                             (uds_msg == 0x0000000060100242ULL) ||  // enable right BSM debug
-                            (uds_msg == 0x0000000069210242ULL);   // poll right BSM status
+                            (uds_msg == 0x0000000069210242ULL) ||  // poll right BSM status
+                            // dimpleliang/ars510: automatic door lock / unlock (sunnypilot/opendbc#354), main body ECU 0x40
+                            (uds_msg == 0x0000400011300540ULL) ||  // unlock doors
+                            (uds_msg == 0x0000800011300540ULL);    // lock doors
 
     if (invalid_uds_msg && !sp_valid_uds_msg) {
       tx = false;

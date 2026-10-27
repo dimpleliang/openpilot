@@ -239,3 +239,13 @@ carstate.py 維持原樣。`ars510_acc_target.dbc` 同步為 PR 版本（多 POW
 - `longitudinal_planner.py`：打燈不加速門檻 30 → 50 km/h；方向盤 > 45°（< 30° 解除）且車速 > 3 m/s 時不加速，與是否打燈無關
   （3 m/s 以下不擋，方向盤打著也能起步）。回放 21:41：21:41:42 的 +0.53 會被壓成 0。
 - `desire_helper.py`：計時式自動變道只在 60 km/h 以上；以下要推方向盤才變道。高速公路行為不變。
+
+## 自動上鎖／解鎖（移植 sunnypilot/opendbc#354，10/28）
+
+rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 檔、車門關閉、車速 ≥ 10 km/h 時上鎖一次；換到 P 檔時解鎖。
+透過 0x750 子位址 0x40（主車身 ECU）的 UDS IO 控制（`40 05 30 11 00 80` 上鎖、`… 40` 解鎖）。
+- `opendbc/sunnypilot/car/toyota/auto_lock_unlock.py`；只在 openpilot 縱向、非 SecOC 時啟用（panda 只在此時放行 0x750）。
+- 先以檔案開啟：`/data/ars510_door_lock`（內容 `lock`、`unlock` 或留空 = 兩者都要），刪掉即關閉。
+- 旗標改號：PR 的 8/16 已被上游占用；`SP_ENHANCED_BSM` 32 → 128（上游 #440 用 32、#502 用 64），AUTO_LOCK 256、AUTO_UNLOCK 512。
+- panda `toyota.h` 0x750 放行加入這兩則固定訊息，safety 測試同步（含其他值／其他 IO 代號應被擋）；panda 韌體重建。
+- 未確認：本車 comma 接在 ADAS 匯流排，0x40 主車身 ECU 在另一條匯流排，要靠閘道轉送診斷位址才會動作；不動作時無副作用。
