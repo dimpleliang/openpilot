@@ -9,6 +9,10 @@ LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = custom.ModelDataV2SP.TurnDirection
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
+# dimpleliang/ars510: the timed (nudgeless) auto lane change only from this speed; below it a nudge is needed. In town a
+# turn signal usually means a turn at the next junction (10/27 21:41: left signal at 45 km/h before a left turn started a
+# lane change 1 s later and steered the car left).
+AUTO_LANE_CHANGE_MIN_V = 60 * CV.KPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
 
@@ -73,7 +77,7 @@ class DesireHelper:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
           self.lane_change_timer = 0.0
-        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
+        elif (torque_applied or (self.alc.auto_lane_change_allowed and v_ego >= AUTO_LANE_CHANGE_MIN_V)) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
           self.lane_change_timer = 0.0
 

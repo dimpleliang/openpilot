@@ -25,8 +25,16 @@ A_CRUISE_MIN = -0.5
 # instead of coasting at -0.5 m/s^2. Indexed by (v_ego - v_cruise) in m/s.
 A_CRUISE_MIN_BP = [1.0, 4.0, 8.0]
 A_CRUISE_MIN_V = [A_CRUISE_MIN, -1.0, -1.5]
-# ars510: no acceleration while a turn signal is on at low speed (turning / preparing to turn)
-BLINKER_NO_ACCEL_V = 30. * CV.KPH_TO_MS
+# ars510: no acceleration while a turn signal is on at low speed (turning / preparing to turn).
+# 10/27: raised from 30 km/h; at 21:41 the car was at 31-32 km/h in a left turn when the lead left the view and it
+# accelerated toward the set speed.
+BLINKER_NO_ACCEL_V = 50. * CV.KPH_TO_MS
+# ars510: no acceleration while the wheel is turned far (turning at a junction), with or without a signal, so losing
+# the lead mid-turn does not make the car speed up. Enters above TURN_NO_ACCEL_ANGLE, leaves below TURN_NO_ACCEL_EXIT_ANGLE.
+# Not below TURN_NO_ACCEL_MIN_V, so the car still pulls away from a stop with the wheel turned.
+TURN_NO_ACCEL_ANGLE = 45.        # deg, steering wheel
+TURN_NO_ACCEL_EXIT_ANGLE = 30.   # deg
+TURN_NO_ACCEL_MIN_V = 3.         # m/s
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 
@@ -52,6 +60,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_cruise = init_a
     self.output_a_target = init_a
     self.output_should_stop = False
+    self.turning = False  # ars510: wheel turned far (junction turn), see TURN_NO_ACCEL_ANGLE
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -126,9 +135,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
 
-    # ars510: hold speed (coast) instead of accelerating while signalling at low speed
+    # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
-    if (CS.leftBlinker or CS.rightBlinker) and v_ego < BLINKER_NO_ACCEL_V:
+    steer_angle = abs(CS.steeringAngleDeg)
+    if steer_angle > TURN_NO_ACCEL_ANGLE:
+      self.turning = True
+    elif steer_angle < TURN_NO_ACCEL_EXIT_ANGLE:
+      self.turning = False
+    if ((CS.leftBlinker or CS.rightBlinker) and v_ego < BLINKER_NO_ACCEL_V) or \
+       (self.turning and v_ego > TURN_NO_ACCEL_MIN_V):
       output_a_target = min(output_a_target, 0.0)
 
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
