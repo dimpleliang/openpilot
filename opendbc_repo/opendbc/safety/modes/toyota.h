@@ -236,11 +236,11 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
     // dimpleliang/ars510: low-speed rates raised, unchanged from 25 m/s up; must match ANGLE_LIMITS in opendbc/car/toyota/values.py
     .angle_rate_up_lookup = {
       {5., 10., 25.},
-      {0.5, 0.35, 0.15}
+      {1.0, 0.35, 0.15}
     },
     .angle_rate_down_lookup = {
       {5., 10., 25.},
-      {0.6, 0.45, 0.26}
+      {1.2, 0.45, 0.26}
     },
   };
 

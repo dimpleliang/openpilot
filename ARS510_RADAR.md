@@ -48,6 +48,10 @@ Toyota 的 LTA 路徑沒有使用（那是 AngleSteeringLimitsVM 品牌用的）
 opendbc `car/toyota/values.py` 與 panda 安全 `safety/modes/toyota.h`
 同步修改，`safety/tests/test_toyota.py` 通過；`panda/board/obj/panda_h7.bin.signed` 由 sunnypilot/panda 8a16e08 以 debug 金鑰重建
 （未修改版本可位元級重現原檔，修改版僅轉角表 16 bytes 不同）。還原：切回前一版，pandad 會自動刷回原韌體。
+- 10/27 再放寬 18 km/h 以下：進彎 25→50°/s、回正 30→60°/s（5 m/s 那一列 0.5/0.6 → 1.0/1.2 °/frame），36 km/h 以上不變。
+  route 52 18:15:47 路口轉彎：模型 2.3 s 內要求 13→83°，命令被 24°/s 卡住，方向盤最多落後 25°，駕駛接手。
+  最壞橫向 jerk 18 km/h 0.59／0.71 m/s³（原 0.30／0.36）；60°/s 低於 LTA 暫停門檻 100°/s。panda 韌體重建，
+  與前一版只差這兩個浮點數各 1 byte（加簽章）。注意事項：EPS 扭力在 18:15:48 已到 1400～1700，轉更快可能接近 2500 的收力點。
 
 ## 低速 LTA 扭力上限放寬（需 panda 韌體）
 

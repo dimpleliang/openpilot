@@ -29,12 +29,15 @@ class CarControllerParams:
     # Worst case, the low speed limits will allow ~4.0 m/s^3 up (15 deg/s) and ~4.9 m/s^3 down (18 deg/s) at 75 mph,
     # however the EPS has its own internal limits at all speeds which are less than that:
     # Observed internal torque rate limit on TSS 2.5 Camry and RAV4 is ~1500 units/sec up and down when using LTA
-    # dimpleliang/ars510: low-speed rates raised (18 km/h: 15 -> 25 deg/s up, 18 -> 30 deg/s down; 36 km/h: 13 -> 17.5 / 16 -> 22.5),
-    # unchanged from 25 m/s up. Worst-case kinematic lateral jerk (flat road, SR 13.7, up/down): 0.83/1.07 m/s^3 at 36 km/h,
-    # 1.51/2.06 at 54 km/h, 2.05/3.06 at 72 km/h; the stock 25 m/s row already gives 2.22/3.85 (see ARS510_RADAR.md).
+    # dimpleliang/ars510: low-speed rates raised (18 km/h: 15 -> 50 deg/s up, 18 -> 60 deg/s down; 36 km/h: 13 -> 17.5 / 16 -> 22.5),
+    # unchanged from 25 m/s up. 10/27: 25 deg/s at 18 km/h could not follow turns at junctions (route 52 18:15:47: request
+    # 13 -> 83 deg in 2.3 s, command rate-limited, wheel up to 25 deg behind), so the 5 m/s row is doubled; from 36 km/h up
+    # the table is as before. Worst-case kinematic lateral jerk (flat road, SR 13.7, up/down): 0.59/0.71 m/s^3 at 18 km/h,
+    # 0.83/1.07 at 36 km/h, 1.51/2.06 at 54 km/h, 2.05/3.06 at 72 km/h; the stock 25 m/s row already gives 2.22/3.85
+    # (see ARS510_RADAR.md). 60 deg/s stays below LTA_CUT_RATE (100 deg/s).
     # Must match TOYOTA_ANGLE_STEERING_LIMITS in opendbc/safety/modes/toyota.h (panda firmware).
-    ([5, 10, 25], [0.5, 0.35, 0.15]),
-    ([5, 10, 25], [0.6, 0.45, 0.26]),
+    ([5, 10, 25], [1.0, 0.35, 0.15]),
+    ([5, 10, 25], [1.2, 0.45, 0.26]),
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
