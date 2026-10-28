@@ -29,7 +29,15 @@ STOPPING_DECEL_RATE = 1.0      # m/s^3, stock rate toward stopAccel: after the t
 # car does not slow down at all for SOFT_STOP_NO_DECEL_T (idle creep winning) is the stock rate used again.
 SOFT_STOP_ADD_RATE = 0.3       # m/s^3
 SOFT_STOP_NO_DECEL_A = -0.03   # m/s^2, deceleration (aEgo, or pose while coasting) above this = not slowing at all
-SOFT_STOP_NO_DECEL_T = 1.0     # s
+SOFT_STOP_NO_DECEL_T = 1.5     # s
+# 10/28 route 59: at crawl (0.2-0.3 m/s) the PCM brakes nothing for requests down to about -0.33 and then grabs: the
+# wheels stopped when the request reached -0.44..-0.48 (added at 0.3 m/s^3 through the band in 0.4 s, lag 0.35-0.45 s),
+# the body then decelerated at -0.35..-0.4 and rebounded +0.2. Inside the engagement band the request is therefore
+# added at SOFT_STOP_BAND_RATE, so the lag overshoots the engagement point by ~0.04 instead of ~0.12, and the onset of
+# braking is taken from the filtered pose acceleration (threshold SOFT_STOP_ONSET_A) instead of the wheel-speed aEgo.
+SOFT_STOP_BAND_A = -0.33       # m/s^2, requests below this engage the friction brake at crawl speed
+SOFT_STOP_BAND_RATE = 0.1      # m/s^3
+SOFT_STOP_ONSET_A = -0.08      # m/s^2, filtered pose deceleration beyond this while rolling = the brake has engaged
 # The stopping state ignores the plan. With the gentle rate, follow the plan when it asks for clearly more braking than
 # the current request (lead closer than expected), so the soft logic never brakes less than an urgent plan.
 SOFT_STOP_URGENT_MARGIN = 0.3  # m/s^2
@@ -126,10 +134,13 @@ class LongControl:
       output_accel = max(output_accel - rate * DT_CTRL, self.CP.stopAccel)
     return output_accel
 
-  def add_brake_rate(self, decel_signal):
-    """Rate for adding brake before the true stop: gentle, unless the car has not slowed down at all for a while."""
+  def add_brake_rate(self, decel_signal, output_accel):
+    """Rate for adding brake before the true stop: gentle, slower still inside the brake engagement band, and the stock
+    rate only if the car has not slowed down at all for a long while."""
     self.no_decel_frames = self.no_decel_frames + 1 if decel_signal > SOFT_STOP_NO_DECEL_A else 0
-    return STOPPING_DECEL_RATE if self.no_decel_frames * DT_CTRL >= SOFT_STOP_NO_DECEL_T else SOFT_STOP_ADD_RATE
+    if self.no_decel_frames * DT_CTRL >= SOFT_STOP_NO_DECEL_T:
+      return STOPPING_DECEL_RATE
+    return SOFT_STOP_BAND_RATE if output_accel <= SOFT_STOP_BAND_A else SOFT_STOP_ADD_RATE
 
   def update_stall(self, active, CS, a_target):
     """Latch a stop request when the car hangs at crawl speed although the planner keeps asking to slow down."""
@@ -156,14 +167,11 @@ class LongControl:
 
   def coast_to_true_stop(self, output_accel, pose_accel):
     """Wheel speed reads standstill: hold the request until the pose says the car has really stopped."""
-    if not self.coast_active:
-      self.pose_a_f = pose_accel
-      self.coast_active = True
-    self.pose_a_f += (pose_accel - self.pose_a_f) * DT_CTRL / SOFT_STOP_POSE_TAU
+    self.coast_active = True
     if self.true_stopped or self.v_est <= SOFT_STOP_TRUE_STOP_V or self.coast_frames * DT_CTRL >= SOFT_STOP_MAX_COAST:
       self.true_stopped = True
       return self.ramp_to_stop(output_accel)
-    rate = self.add_brake_rate(self.pose_a_f)
+    rate = self.add_brake_rate(self.pose_a_f, output_accel)
     if -self.pose_a_f < SOFT_STOP_COAST_MIN_DECEL:
       # not slowing (idle creep): add brake (gently, at the stock rate if it keeps creeping) until it does
       return self.ramp_to_stop(output_accel, rate)
@@ -175,6 +183,10 @@ class LongControl:
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
     self.update_v_est(CS, pose_accel)
+    if pose_accel is not None:
+      self.pose_a_f += (pose_accel - self.pose_a_f) * DT_CTRL / SOFT_STOP_POSE_TAU
+    else:
+      self.pose_a_f = CS.aEgo
 
     self.update_stall(active, CS, a_target)
     self.long_control_state = long_control_state_trans(self.CP_SP, active, self.long_control_state,
@@ -191,8 +203,10 @@ class LongControl:
         self.brake_added = True
       rolling = SOFT_STOP_V < CS.vEgo < SOFT_STOP_MAX_V and not CS.standstill
       if rolling:
-        rate = self.add_brake_rate(CS.aEgo)
-        if CS.aEgo < SOFT_STOP_SLOWING_A:
+        # the pose acceleration shows the brake engaging ~0.3 s before the wheel-speed aEgo does
+        decel = min(CS.aEgo, self.pose_a_f) if pose_accel is not None else CS.aEgo
+        rate = self.add_brake_rate(decel, output_accel)
+        if CS.aEgo < SOFT_STOP_SLOWING_A or (pose_accel is not None and self.pose_a_f < SOFT_STOP_ONSET_A):
           if not self.brake_added:
             # slowing down: ease the request toward SOFT_STOP_ACCEL (or brake gently toward it if coming from above)
             output_accel += float(np.clip(SOFT_STOP_ACCEL - output_accel, -SOFT_STOP_ADD_RATE * DT_CTRL, SOFT_STOP_RELEASE_RATE * DT_CTRL))
