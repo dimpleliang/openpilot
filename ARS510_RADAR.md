@@ -288,3 +288,18 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 每格 0.095 m/s²、RADAR_FAULT）、0x235–0x23B ACC 目標、0x202 / 0x24F、0x680。只給 Cabana 與離線分析用，控制程式沒有讀它
 （雷達介面在 Python 自行解碼）；0x80 物件清單是 ISO-TP，不在 DBC 裡。Cabana 開 bus 1 選這個 DBC 即可。
 
+## 雷達模式改為 acc_summaries ＋ 物件清單只給畫面與機車（10/29）
+
+上游 ars510-radar 10/25（#231）撤下 `fused`：第二台 RAV4（DustyL，issue #66）新的 38 趟裡 `fused` 每小時比 `acc` 多約 2 秒不必要
+煞車，含一次對距離不變的物件清單軌跡（接近速度讀 23.7 m/s）要求 −3.31 m/s²，主因是物件清單 0x80 速度的 1–10 秒偏移（多在 40 m 外）。
+作者在 issue #66 建議改用 `acc` 或 `acc_summaries`。本分支改為：
+- radarTracks（radard 與控制用）＝`acc_summaries`：ACC 目標，加最多 2 台 40 m 內的摘要車；同步上游新版
+  （摘要車速度改為以雷達 0x190 週期時鐘計時的等速 Kalman 濾波，取代 8 點最小平方斜率）。
+- 物件清單（FUSED_CONFIG，含對向車過濾、發佈年齡 20、遠距停止車）照常解碼，只用於：(1) 畫面標示每個目標（不變），
+  (2) 它會發佈的二輪車（類別 5/6、已收斂、過路徑門）且 ≤ 40 m 者，以 trackId `1<<30 + id` 加進 radarTracks；與 ACC／摘要點
+  相距 1 m／0.5 m 內視為同一物件不加。radard 依 trackId 範圍直接視為二輪車，機車優先邏輯（路徑 1.0 m、比鏡頭前車近 5 m、0.5 s）不變。
+- 失去：遠距停止車（far_slow_keep）對控制不再有作用；實測只有一次提早 8 m（40–50 km/h），高速時雷達本就刪掉 93 % 新靜止物。
+- 畫面的「已送 radard」旗標改為：是二輪車點，或與 ACC／摘要點相同位置。
+- 關閉物件清單（只跑 acc_summaries）：`ars510_radar_interface.py` 的 `STANDALONE_DISPLAY = False`；改回 fused：`PROFILE = PROFILES["fused"]`。
+重播 route 5a（5 段 300 s 市區）：6000 次回報、無錯誤，點數 ACC 5397、摘要 3097、二輪車 124（10 個不同軌跡，多在右側 −2.9～−3.5 m 機車道）。
+

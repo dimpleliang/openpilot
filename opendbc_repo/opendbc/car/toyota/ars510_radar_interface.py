@@ -57,7 +57,19 @@ from opendbc.car.toyota.ars510.support import RadarFaultFlag, pcs_alarm
 # over every object (docs/17). `install.py --profile` rewrites this one line.
 STANDALONE = {"acc": "ars510_acc_target", "acc_summaries": "ars510_acc_summaries", "shared_speed": "ars510_shared_speed", "shared_range": "ars510_shared_range"}
 PROFILES = {"fused": FUSED_CONFIG, "openpilot": None, "raw": BASE_CONFIG, **{k: k for k in STANDALONE}}
-PROFILE = PROFILES["fused"]
+PROFILE = PROFILES["acc_summaries"]
+# dimpleliang/ars510 (10/29): `acc_summaries` drives radard (upstream withdrew `fused`: on a second RAV4's 38 drives it added
+# ~2 s/h of unnecessary braking over `acc`, incl. one hard brake, from object-list speed excursions, mostly beyond 40 m).
+# The fused object-list decoder still runs beside it, for the display (every object, as before) and for one thing only on
+# radarTracks: two-wheelers it publishes (settled, path-gated) within VRU_MAX_D_M, as extra points with trackId
+# VRU_TRACK_ID_BASE + id, for radard's in-lane two-wheeler override (the camera lead is often the car beyond a scooter;
+# the ACC target and the summaries usually hold the car). A VRU point within SAME_D_M / SAME_Y_M of an ACC / summary point
+# is that object and is not added. Set STANDALONE_DISPLAY = False to run the standalone profile alone.
+STANDALONE_DISPLAY = True
+VRU_CLASSES = (5, 6)  # radar object class 163|3: provisional two-wheeler, two-wheeler
+VRU_MAX_D_M = 40.0
+VRU_TRACK_ID_BASE = 1 << 30  # must match radard.VRU_TRACK_ID_BASE; above every standalone (0-127) and fused trackId, below Int32 radarTrackId
+VRU_SAME_D_M, VRU_SAME_Y_M = 1.0, 0.5
 
 # Radar-ACC platforms: every radar firmware they list (RAV4 8821F0R01100 / 8821F0R03100, C-HR 8821FF41xx00, Yaris
 # 8821F0D0xx00) is the Continental ARS510 sending the same bus-1 messages (docs/01), so the car model selects the parser.
@@ -117,6 +129,12 @@ class Ars510RadarInterface(RadarInterfaceBase):
       module = importlib.import_module(f"opendbc.car.toyota.{STANDALONE[profile]}")
       self.standalone = module.RadarInterface(CP, *args, **kwargs)
       self.standalone_fills_legacy = hasattr(module, "LEGACY")  # acc_summaries sets aRel / yvRel / measured itself
+      self.ars = None
+      if STANDALONE_DISPLAY and str(CP.carFingerprint) not in ACC_ONLY_PLATFORMS:
+        self.ars = Ars510NativeRadarInterface(replace(FUSED_CONFIG, include_metadata=False))
+      self.vru_points: list = []
+      self.vru_time_s: float | None = None
+      self.last_out: list[tuple[float, float]] = []  # (dRel, yRel) of the last radarTracks points from the standalone profile
     else:
       self.ars = UpstreamCandidate() if profile is None else Ars510NativeRadarInterface(replace(profile, include_metadata=False))
     self.display = _DisplayPublisher()
@@ -145,9 +163,12 @@ class Ars510RadarInterface(RadarInterfaceBase):
 
   def _update(self, can_packets):
     if self.standalone is not None:
+      now_s = self._feed_display(can_packets) if self.ars is not None else None
       ret = self.standalone.update(can_packets)
       if ret is not None and ret.points and LEGACY_FIELDS and not self.standalone_fills_legacy:  # as for the upstream version
         ret.points = [_point({"trackId": p.trackId, "dRel": p.dRel, "yRel": p.yRel, "vRel": p.vRel, **ACC_LEGACY}) for p in ret.points]
+      if ret is not None and self.ars is not None:
+        ret = self._add_vru(ret, now_s)
       return ret
     self.frame += 1
     latest = None
@@ -186,6 +207,44 @@ class Ars510RadarInterface(RadarInterfaceBase):
     ret = structs.RadarData()
     # Every profile withholds points with a NaN vRel, which would poison radard's per-track Kalman filter.
     ret.points = [_point(p) for p in latest["radarData"]["points"]]
+    return ret
+
+  def _feed_display(self, can_packets):
+    """Object-list decoder beside a standalone profile: display every object, keep the in-range two-wheelers it publishes."""
+    now_s = None
+    for nanos, frames in can_packets:
+      now_s = nanos * 1e-9
+      for address, dat, src in frames:
+        if (src, address) not in WANTED:
+          continue
+        out = self.ars.update_frame(now_s, src, address, dat)
+        if out is None:
+          continue
+        display = getattr(self.ars, "display_points", None) or []
+        cls = {(row[0], row[1]): row[5] for row in display}
+        self.vru_points = [p for p in out["radarData"]["points"]
+                           if cls.get((p["dRel"], p["yRel"])) in VRU_CLASSES and p["dRel"] <= VRU_MAX_D_M]
+        self.vru_time_s = out["time_s"]
+        vru_xy = {(p["dRel"], p["yRel"]) for p in self.vru_points}
+        for row in display:  # "sent to radard": a VRU point, or the object the ACC target / a summary reports
+          row[3] = (row[0], row[1]) in vru_xy or any(abs(row[0] - d) < VRU_SAME_D_M and abs(row[1] - y) < VRU_SAME_Y_M
+                                                       for d, y in self.last_out)
+        self.display.send(display)
+    return now_s
+
+
+  def _add_vru(self, ret, now_s):
+    base = list(ret.points)
+    self.last_out = [(p.dRel, p.yRel) for p in base]
+    if ret.errors.radarUnavailableTemporary or self.vru_time_s is None or now_s is None or now_s - self.vru_time_s > STALE_S:
+      return ret
+    extra = []
+    for p in self.vru_points:
+      if any(abs(p["dRel"] - q.dRel) < VRU_SAME_D_M and abs(p["yRel"] - q.yRel) < VRU_SAME_Y_M for q in base):
+        continue
+      extra.append(_point({**ACC_LEGACY, **p, "trackId": VRU_TRACK_ID_BASE + int(p["trackId"])}))
+    if extra:
+      ret.points = base + extra
     return ret
 
 

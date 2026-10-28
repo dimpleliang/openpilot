@@ -143,6 +143,10 @@ VRU_CLOSER_M = 5.0
 VRU_MIN_CYCLES = 10        # 0.5 s
 VRU_MAX_D = 60.0
 VRU_MIN_V_LEAD = 1.0       # m/s over ground: a parked scooter at the kerb is not a lead
+# 10/29: with the `acc_summaries` profile the radar interface adds the object list's two-wheelers (within 40 m, settled,
+# path-gated) to radarTracks with trackId VRU_TRACK_ID_BASE + id; those are two-wheelers by construction, so the class no
+# longer has to be looked up in the display message (whose record may be one radar cycle newer than the points).
+VRU_TRACK_ID_BASE = 1 << 30  # must match opendbc car/toyota/ars510_radar_interface.py (radarTrackId is Int32)
 DISPLAY_FMT = "<fffB"
 DISPLAY_FMT_SIZE = struct.calcsize(DISPLAY_FMT)
 
@@ -313,6 +317,9 @@ class RadarD:
         classes = parse_display_classes(bytes(sm[display_service]))
     self.vru_classes = {}
     for pt in rr.points:
+      if pt.trackId >= VRU_TRACK_ID_BASE:
+        self.vru_classes[pt.trackId] = 6
+        continue
       cls = classes.get((pt.dRel, pt.yRel))
       if cls is not None and cls[0] in VRU_CLASSES and not cls[1]:
         self.vru_classes[pt.trackId] = cls[0]
