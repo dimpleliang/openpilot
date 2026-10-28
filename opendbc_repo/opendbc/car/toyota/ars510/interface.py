@@ -472,6 +472,7 @@ class Ars510NativeRadarInterface:
             if obj.age >= 2:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
+            shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
                 shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0]
                 display.append(shown)
@@ -519,7 +520,8 @@ class Ars510NativeRadarInterface:
                              move_state=obj.move_state, oncoming_flag=obj.oncoming_flag,
                              vrel_status=NATIVE_VREL_STATUS if v_ego is not None else UNRESOLVED_NAN)
             points.append(point)
-            shown[3] = True
+            if shown is not None:  # a profile publishing younger than DISPLAY_MIN_AGE (ALL_TRACKS_CONFIG) has no display row
+                shown[3] = True
         self.display_points = display
         self._prune(time_s)
         errors = {"canError": False, "radarFault": False, "wrongConfig": False, "radarUnavailableTemporary": False}
