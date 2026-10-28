@@ -93,12 +93,15 @@ SOFT_STOP_MAX_COAST = 2.5       # s
 # still stopped at -0.45 (+0.35 rebound). The Toyota wheel speed over-reads just before it drops out (v_est from it
 # predicts the stop late). Trigger therefore at PRE_RELEASE_TRIGGER of predicted time to stop and ramp over
 # PRE_RELEASE_LEAD, which ends about when the car really stops.
-PRE_RELEASE_TRIGGER = 0.8       # s, predicted v_est / decel at which the release starts
+PRE_RELEASE_TRIGGER = 0.45      # s, predicted v_est / decel at which the release starts (0.8 with the uncorrected wheel
+                                # speed released too early on route 63: the car crept 1.8 s and had to be braked again)
+WHEEL_OVERREAD = 0.12           # m/s, wheel speed over-read taken off v_est as the reading approaches drop-out
+WHEEL_OVERREAD_V = 0.5          # m/s, the correction fades in below this
 PRE_RELEASE_LEAD = 0.4          # s, ramp duration (the driver's own release took ~0.4 s)
 PRE_RELEASE_ACCEL = -0.05       # m/s^2, released to here linearly over PRE_RELEASE_LEAD (the driver's ramp)
 PRE_RELEASE_MAX_V = 0.45        # m/s, only in the very last stretch
 PRE_RELEASE_MIN_DECEL = 0.12    # m/s^2, need a real deceleration to predict the stop
-PRE_RELEASE_FAIL_T = 0.5        # s without deceleration -> give up (add brake again)
+PRE_RELEASE_FAIL_T = 0.3        # s without deceleration -> give up (brake again)
 PRE_RELEASE_MAX_T = 1.5         # s
 PRE_RELEASE_OFF_FILE = "/data/ars510_no_pre_release"
 
@@ -222,7 +225,10 @@ class LongControl:
   def update_v_est(self, CS, pose_accel):
     """True speed: wheel speed while it is valid, below that integrate the pose acceleration."""
     if pose_accel is None or CS.vEgoRaw >= SOFT_STOP_WHEEL_VALID_V:
-      self.v_est = CS.vEgoRaw
+      # the Toyota wheel speed over-reads just before it drops out (10/28 route 62: it read 0.22-0.23 m/s when the car,
+      # by the IMU, had 0.15-0.25 s left at -0.47 m/s^2, i.e. ~0.1 m/s); take that off below WHEEL_OVERREAD_V
+      over = WHEEL_OVERREAD * float(np.clip((WHEEL_OVERREAD_V - CS.vEgoRaw) / (WHEEL_OVERREAD_V - SOFT_STOP_WHEEL_VALID_V), 0.0, 1.0))
+      self.v_est = max(0.0, CS.vEgoRaw - over)
       self.coast_frames = 0
     else:
       self.v_est = max(0.0, self.v_est + pose_accel * DT_CTRL)
