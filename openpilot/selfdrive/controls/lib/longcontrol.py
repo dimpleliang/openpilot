@@ -16,7 +16,7 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 # (almost) stopped, ramp to stopAccel as before to hold it; adding brake at standstill does not pitch the car.
 SOFT_STOP_V = 0.05             # m/s, below this (or at standstill) ramp to stopAccel
 SOFT_STOP_MAX_V = 1.0          # m/s, only soften the last metre: if stopping is requested faster (e.g. model shouldStop), brake as before
-SOFT_STOP_ACCEL = -0.28        # m/s^2, brake request to ease toward while still rolling (= BRAKE_HOLD_ACCEL)
+SOFT_STOP_ACCEL = -0.5         # m/s^2, brake request to ease toward while still rolling (= BRAKE_HOLD_ACCEL)
 SOFT_STOP_RELEASE_RATE = 1.5   # m/s^3, how fast the brake is eased off
 # The soft request is only kept while the car is really slowing down. At crawl speed the Toyota PCM barely brakes for
 # small requests (idle creep: 10/27 route 4f, -0.2..-0.35 commanded gave 0..-0.1 m/s^2 for 1-3 s), so a fixed soft
@@ -47,8 +47,10 @@ SOFT_STOP_ONSET_A = -0.08      # m/s^2, filtered pose deceleration beyond this w
 # floored at BRAKE_HOLD_ACCEL to keep the brake engaged through the stop.
 BRAKE_HOLD_V = 0.6             # m/s (10/28 route 5b: 0.8 with -0.33 stopped ~2 m short of the plan and still -0.37 at the stop)
 BRAKE_HOLD_A_TARGET = -0.1     # m/s^2, planner request below this = slowing to a stop (not following a creeping lead)
-BRAKE_HOLD_ACCEL = -0.28       # m/s^2; engaged, the PCM gives about the request (-0.33 -> -0.37, -0.18 -> -0.2 in
-                               # route 5a); the one stop the driver called very good decelerated -0.08 at the end
+BRAKE_HOLD_ACCEL = -0.5        # m/s^2. 10/28 16:51 the driver's own stop: -0.9 at 0.4 m/s, then a linear release to 0
+                               # over the last 0.4 s, no pitch at the stop (+0.16 rebound). A firm, continuous
+                               # deceleration makes the stop time predictable for the pre-release below; -0.5 is a
+                               # compromise with stopping distance (the planner asks ~-0.13 at 0.6 m/s).
 BRAKE_HOLD_CLEAR_A_TARGET = 0.1  # m/s^2, the hold is latched until the planner wants to move again (same as should_stop)
 # The stopping state ignores the plan. With the gentle rate, follow the plan when it asks for clearly more braking than
 # the current request (lead closer than expected), so the soft logic never brakes less than an urgent plan.
@@ -87,7 +89,7 @@ SOFT_STOP_MAX_COAST = 2.5       # s
 # down for PRE_RELEASE_FAIL_T (released too early, or already stopped), brake is added again as usual, once per stop.
 # Disabled when the file PRE_RELEASE_OFF_FILE exists.
 PRE_RELEASE_LEAD = 0.4          # s, PCM brake lag
-PRE_RELEASE_ACCEL = -0.1        # m/s^2
+PRE_RELEASE_ACCEL = -0.05       # m/s^2, released to here linearly over PRE_RELEASE_LEAD (the driver's ramp)
 PRE_RELEASE_MAX_V = 0.3         # m/s, only in the very last stretch
 PRE_RELEASE_MIN_DECEL = 0.12    # m/s^2, need a real deceleration to predict the stop
 PRE_RELEASE_FAIL_T = 0.5        # s without deceleration -> give up (add brake again)
@@ -154,6 +156,7 @@ class LongControl:
     self.pre_release_failed = False
     self.pre_release_frames = 0
     self.pre_release_slow = 0
+    self.pre_release_start = 0.0
 
   def update_pre_release(self, pose_accel):
     """Ease the request just before the predicted true stop (see PRE_RELEASE_*). Returns True while releasing."""
@@ -166,6 +169,7 @@ class LongControl:
         self.pre_release = True
         self.pre_release_frames = 0
         self.pre_release_slow = 0
+        self.pre_release_start = min(self.last_output_accel, 0.0)
       return self.pre_release
     self.pre_release_frames += 1
     self.pre_release_slow = self.pre_release_slow + 1 if decel < SOFT_STOP_COAST_MIN_DECEL else 0
@@ -288,7 +292,9 @@ class LongControl:
           # after a roll-in (no pose) the car may still be creeping: gentle ramp; entering at standstill: stock rate
           output_accel = self.ramp_to_stop(output_accel, SOFT_STOP_ADD_RATE if self.settle_used else STOPPING_DECEL_RATE)
       if self.update_pre_release(pose_accel):
-        output_accel = max(output_accel, PRE_RELEASE_ACCEL)
+        # linear release from the request at the trigger to PRE_RELEASE_ACCEL over PRE_RELEASE_LEAD
+        frac = min(1.0, (self.pre_release_frames + 1) * DT_CTRL / PRE_RELEASE_LEAD)
+        output_accel = max(output_accel, self.pre_release_start + (PRE_RELEASE_ACCEL - self.pre_release_start) * frac)
       self.reset()
 
     else:  # LongCtrlState.pid
