@@ -74,15 +74,19 @@ VRU_SAME_D_M, VRU_SAME_Y_M = 1.0, 0.5
 # Far stopped cars (10/29): the object list's stopped / crawling tracks it publishes beyond FAR_MIN_D_M (path-gated; beyond
 # 60 m only these, far_slow_keep_mps) go to radarTracks too, with trackId FAR_TRACK_ID_BASE + id, but only when the range
 # itself confirms the speed: over the last FAR_CHECK_S the least-squares range rate must agree with vRel within
-# FAR_RATE_TOL_MPS. The object list's speed excursions are what upstream withdrew `fused` for, and the worst one (closing
+# FAR_RATE_ENTER_MPS to start publishing a track, and within FAR_RATE_KEEP_MPS to keep it. 10/29 recorded data (stationary
+# tracks): |range rate - vRel| median 0.5-1.2 m/s, p90 2.2-3.8 m/s at 20-80 m, from range noise (~1 m at 40-70 m); a single
+# 1 s / 2 m/s gate published 73 % of the driving candidate cycles and dropped tracks 3 times, 1.5 s / 3 / 4 published 91 %
+# with 1 drop (6 tracks, thin data). Typical object-list excursions are -3 to -5 m/s and ramp up over ~1 s. The object list's speed excursions are what upstream withdrew `fused` for, and the worst one (closing
 # 23.7 m/s at a constant range, with ego at about that speed) looks exactly like a stopped car by speed alone; its range
 # rate (~0) disagrees with its vRel by ~24 m/s. radard still only uses a track that matches the camera's lead.
 FAR_MIN_D_M = 40.0
 FAR_STOPPED_MPS = 3.0       # |over-ground speed| below this
-FAR_CHECK_S = 1.0
-FAR_CHECK_MIN_SPAN_S = 0.9
-FAR_CHECK_MIN_N = 10
-FAR_RATE_TOL_MPS = 2.0
+FAR_CHECK_S = 1.5
+FAR_CHECK_MIN_SPAN_S = 1.35
+FAR_CHECK_MIN_N = 15
+FAR_RATE_ENTER_MPS = 3.0
+FAR_RATE_KEEP_MPS = 4.0
 FAR_TRACK_ID_BASE = 1 << 29  # below VRU_TRACK_ID_BASE, so radard does not take these for two-wheelers
 
 # Radar-ACC platforms: every radar firmware they list (RAV4 8821F0R01100 / 8821F0R03100, C-HR 8821FF41xx00, Yaris
@@ -149,6 +153,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
       self.vru_points: list = []
       self.far_points: list = []
       self.range_hist: dict = {}  # fused trackId -> deque of (record time, dRel)
+      self.far_active: set = set()  # fused trackIds currently published as far stopped cars
       self.vru_time_s: float | None = None
       self.last_out: list[tuple[float, float]] = []  # (dRel, yRel) of the last radarTracks points from the standalone profile
     else:
@@ -261,18 +266,28 @@ class Ars510RadarInterface(RadarInterfaceBase):
       hist.append((t, p["dRel"]))
       while hist and t - hist[0][0] > FAR_CHECK_S:
         hist.popleft()
+      active = tid in self.far_active
       if v_ego is None or p["dRel"] <= FAR_MIN_D_M or abs(p["vRel"] + v_ego) >= FAR_STOPPED_MPS:
+        self.far_active.discard(tid)
         continue
       if len(hist) < FAR_CHECK_MIN_N or hist[-1][0] - hist[0][0] < FAR_CHECK_MIN_SPAN_S:
         continue
       tm = sum(h[0] for h in hist) / len(hist)
       dm = sum(h[1] for h in hist) / len(hist)
       rate = sum((h[0] - tm) * (h[1] - dm) for h in hist) / sum((h[0] - tm) ** 2 for h in hist)
-      if abs(rate - p["vRel"]) < FAR_RATE_TOL_MPS:
+      err = abs(rate - p["vRel"])
+      if err < (FAR_RATE_KEEP_MPS if active else FAR_RATE_ENTER_MPS):
+        if not active:
+          self.far_active.add(tid)
+          carlog.info(f"ARS510 far stopped car on: {p['dRel']:.1f} m, vRel {p['vRel']:.1f}, range rate {rate:.1f}, v_ego {v_ego:.1f}")
         far.append(p)
+      elif active:
+        self.far_active.discard(tid)
+        carlog.info(f"ARS510 far stopped car off: {p['dRel']:.1f} m, vRel {p['vRel']:.1f}, range rate {rate:.1f}")
     for tid in list(self.range_hist):
       if tid not in seen:
         del self.range_hist[tid]
+        self.far_active.discard(tid)
     return far
 
   def _add_vru(self, ret, now_s):

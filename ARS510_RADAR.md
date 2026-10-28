@@ -303,6 +303,9 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   是距離不變、卻讀成接近 23.7 m/s（自車約同速），只看速度會像停止車；距離變化率約 0，與 vRel 差約 24 m/s 被擋下。
   代價：首次看到後約 1 秒才放行（100 km/h 約 28 m）。radard 仍須與鏡頭前車相符才採用。合成測試：假接近 0/25 次放行、
   真停止車 0.96 s 後放行；重播 route 59 找到 2 個路徑內停止目標（48.8 m vRel −13.9、66.3 m −8.3），route 5a 無。
+  同日改為遲滯：觀察 1.5 s（≥ 15 筆、跨 ≥ 1.35 s），進入 < 3 m/s、維持 < 4 m/s。19 段紀錄中靜止目標 |距離變化率 − vRel|
+  中位 0.5–1.2、p90 2.2–3.8 m/s（20–80 m，距離雜訊約 1 m）；行駛中候選週期放行 73 % → 91 %、中途斷掉 3 → 1 次，等待 1.17 → 1.38 s
+  （僅 6 台、待路測確認）。進入／離開記在 cloudlog：`ARS510 far stopped car on/off`。
 - 畫面的「已送 radard」旗標改為：是二輪車點，或與 ACC／摘要點相同位置。
 - 關閉物件清單（只跑 acc_summaries）：`ars510_radar_interface.py` 的 `STANDALONE_DISPLAY = False`；改回 fused：`PROFILE = PROFILES["fused"]`。
 重播 route 5a（5 段 300 s 市區）：6000 次回報、無錯誤，點數 ACC 5397、摘要 3097、二輪車 124（10 個不同軌跡，多在右側 −2.9～−3.5 m 機車道）。
