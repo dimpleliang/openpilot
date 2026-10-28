@@ -15,8 +15,7 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 # (almost) stopped, ramp to stopAccel as before to hold it; adding brake at standstill does not pitch the car.
 SOFT_STOP_V = 0.05             # m/s, below this (or at standstill) ramp to stopAccel
 SOFT_STOP_MAX_V = 1.0          # m/s, only soften the last metre: if stopping is requested faster (e.g. model shouldStop), brake as before
-SOFT_STOP_ACCEL = -0.33        # m/s^2, brake request to ease toward while still rolling (10/28: the PCM lets the
-                               # friction brake go when the request rises above about -0.33 at crawl speed)
+SOFT_STOP_ACCEL = -0.28        # m/s^2, brake request to ease toward while still rolling (= BRAKE_HOLD_ACCEL)
 SOFT_STOP_RELEASE_RATE = 1.5   # m/s^3, how fast the brake is eased off
 # The soft request is only kept while the car is really slowing down. At crawl speed the Toyota PCM barely brakes for
 # small requests (idle creep: 10/27 route 4f, -0.2..-0.35 commanded gave 0..-0.1 m/s^2 for 1-3 s), so a fixed soft
@@ -45,9 +44,10 @@ SOFT_STOP_ONSET_A = -0.08      # m/s^2, filtered pose deceleration beyond this w
 # (release at about -0.31), the car crept, and the brake had to re-engage at crawl speed, which it does with a grab
 # (-0.5 m/s^2 for a -0.33 request). So below BRAKE_HOLD_V, while the planner still asks to slow down, the request is
 # floored at BRAKE_HOLD_ACCEL to keep the brake engaged through the stop.
-BRAKE_HOLD_V = 0.8             # m/s
-BRAKE_HOLD_A_TARGET = -0.08    # m/s^2, planner request below this = slowing to a stop (not following a creeping lead)
-BRAKE_HOLD_ACCEL = -0.33       # m/s^2
+BRAKE_HOLD_V = 0.6             # m/s (10/28 route 5b: 0.8 with -0.33 stopped ~2 m short of the plan and still -0.37 at the stop)
+BRAKE_HOLD_A_TARGET = -0.1     # m/s^2, planner request below this = slowing to a stop (not following a creeping lead)
+BRAKE_HOLD_ACCEL = -0.28       # m/s^2; engaged, the PCM gives about the request (-0.33 -> -0.37, -0.18 -> -0.2 in
+                               # route 5a); the one stop the driver called very good decelerated -0.08 at the end
 BRAKE_HOLD_CLEAR_A_TARGET = 0.1  # m/s^2, the hold is latched until the planner wants to move again (same as should_stop)
 # The stopping state ignores the plan. With the gentle rate, follow the plan when it asks for clearly more braking than
 # the current request (lead closer than expected), so the soft logic never brakes less than an urgent plan.
