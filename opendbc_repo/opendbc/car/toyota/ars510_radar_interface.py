@@ -39,6 +39,7 @@ Output cadence: one RadarData per completed record (~16.6 Hz, inside radard's 8-
   that the object list still tracks (docs/05).
 """
 import importlib
+from collections import deque
 from dataclasses import replace
 
 from opendbc.car import structs
@@ -70,6 +71,19 @@ VRU_CLASSES = (5, 6)  # radar object class 163|3: provisional two-wheeler, two-w
 VRU_MAX_D_M = 40.0
 VRU_TRACK_ID_BASE = 1 << 30  # must match radard.VRU_TRACK_ID_BASE; above every standalone (0-127) and fused trackId, below Int32 radarTrackId
 VRU_SAME_D_M, VRU_SAME_Y_M = 1.0, 0.5
+# Far stopped cars (10/29): the object list's stopped / crawling tracks it publishes beyond FAR_MIN_D_M (path-gated; beyond
+# 60 m only these, far_slow_keep_mps) go to radarTracks too, with trackId FAR_TRACK_ID_BASE + id, but only when the range
+# itself confirms the speed: over the last FAR_CHECK_S the least-squares range rate must agree with vRel within
+# FAR_RATE_TOL_MPS. The object list's speed excursions are what upstream withdrew `fused` for, and the worst one (closing
+# 23.7 m/s at a constant range, with ego at about that speed) looks exactly like a stopped car by speed alone; its range
+# rate (~0) disagrees with its vRel by ~24 m/s. radard still only uses a track that matches the camera's lead.
+FAR_MIN_D_M = 40.0
+FAR_STOPPED_MPS = 3.0       # |over-ground speed| below this
+FAR_CHECK_S = 1.0
+FAR_CHECK_MIN_SPAN_S = 0.9
+FAR_CHECK_MIN_N = 10
+FAR_RATE_TOL_MPS = 2.0
+FAR_TRACK_ID_BASE = 1 << 29  # below VRU_TRACK_ID_BASE, so radard does not take these for two-wheelers
 
 # Radar-ACC platforms: every radar firmware they list (RAV4 8821F0R01100 / 8821F0R03100, C-HR 8821FF41xx00, Yaris
 # 8821F0D0xx00) is the Continental ARS510 sending the same bus-1 messages (docs/01), so the car model selects the parser.
@@ -133,6 +147,8 @@ class Ars510RadarInterface(RadarInterfaceBase):
       if STANDALONE_DISPLAY and str(CP.carFingerprint) not in ACC_ONLY_PLATFORMS:
         self.ars = Ars510NativeRadarInterface(replace(FUSED_CONFIG, include_metadata=False))
       self.vru_points: list = []
+      self.far_points: list = []
+      self.range_hist: dict = {}  # fused trackId -> deque of (record time, dRel)
       self.vru_time_s: float | None = None
       self.last_out: list[tuple[float, float]] = []  # (dRel, yRel) of the last radarTracks points from the standalone profile
     else:
@@ -225,6 +241,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
         self.vru_points = [p for p in out["radarData"]["points"]
                            if cls.get((p["dRel"], p["yRel"])) in VRU_CLASSES and p["dRel"] <= VRU_MAX_D_M]
         self.vru_time_s = out["time_s"]
+        self.far_points = self._far_stopped(out)
         vru_xy = {(p["dRel"], p["yRel"]) for p in self.vru_points}
         for row in display:  # "sent to radard": a VRU point, or the object the ACC target / a summary reports
           row[3] = (row[0], row[1]) in vru_xy or any(abs(row[0] - d) < VRU_SAME_D_M and abs(row[1] - y) < VRU_SAME_Y_M
@@ -233,16 +250,42 @@ class Ars510RadarInterface(RadarInterfaceBase):
     return now_s
 
 
+  def _far_stopped(self, out) -> list:
+    t = out["time_s"]
+    v_ego = self.ars._fresh_ego_speed(t)
+    seen, far = set(), []
+    for p in out["radarData"]["points"]:
+      tid = p["trackId"]
+      seen.add(tid)
+      hist = self.range_hist.setdefault(tid, deque())
+      hist.append((t, p["dRel"]))
+      while hist and t - hist[0][0] > FAR_CHECK_S:
+        hist.popleft()
+      if v_ego is None or p["dRel"] <= FAR_MIN_D_M or abs(p["vRel"] + v_ego) >= FAR_STOPPED_MPS:
+        continue
+      if len(hist) < FAR_CHECK_MIN_N or hist[-1][0] - hist[0][0] < FAR_CHECK_MIN_SPAN_S:
+        continue
+      tm = sum(h[0] for h in hist) / len(hist)
+      dm = sum(h[1] for h in hist) / len(hist)
+      rate = sum((h[0] - tm) * (h[1] - dm) for h in hist) / sum((h[0] - tm) ** 2 for h in hist)
+      if abs(rate - p["vRel"]) < FAR_RATE_TOL_MPS:
+        far.append(p)
+    for tid in list(self.range_hist):
+      if tid not in seen:
+        del self.range_hist[tid]
+    return far
+
   def _add_vru(self, ret, now_s):
     base = list(ret.points)
     self.last_out = [(p.dRel, p.yRel) for p in base]
     if ret.errors.radarUnavailableTemporary or self.vru_time_s is None or now_s is None or now_s - self.vru_time_s > STALE_S:
       return ret
     extra = []
-    for p in self.vru_points:
-      if any(abs(p["dRel"] - q.dRel) < VRU_SAME_D_M and abs(p["yRel"] - q.yRel) < VRU_SAME_Y_M for q in base):
-        continue
-      extra.append(_point({**ACC_LEGACY, **p, "trackId": VRU_TRACK_ID_BASE + int(p["trackId"])}))
+    for points, id_base in ((self.vru_points, VRU_TRACK_ID_BASE), (self.far_points, FAR_TRACK_ID_BASE)):
+      for p in points:
+        if any(abs(p["dRel"] - q.dRel) < VRU_SAME_D_M and abs(p["yRel"] - q.yRel) < VRU_SAME_Y_M for q in base):
+          continue
+        extra.append(_point({**ACC_LEGACY, **p, "trackId": id_base + int(p["trackId"])}))
     if extra:
       ret.points = base + extra
     return ret
