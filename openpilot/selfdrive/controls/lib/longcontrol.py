@@ -1,3 +1,4 @@
+import os
 from collections import deque
 
 import numpy as np
@@ -79,6 +80,19 @@ SOFT_STOP_TRUE_STOP_V = 0.02    # m/s
 SOFT_STOP_POSE_TAU = 0.2        # s, filter on the pose acceleration
 SOFT_STOP_COAST_MIN_DECEL = 0.03  # m/s^2, filtered decel below this while held = not slowing: add brake
 SOFT_STOP_MAX_COAST = 2.5       # s
+# Pre-release (10/28): a human stops without a jolt by easing the pedal in the last tenths of a second, so there is no
+# deceleration left when the wheels stop. The PCM gives no light braking at crawl speed (either nothing or >= -0.3) and
+# lags ~0.4 s, so instead the request is eased to PRE_RELEASE_ACCEL when the pose-based time to stop (v_est / decel)
+# drops to PRE_RELEASE_LEAD: the release reaches the brakes about when the car stops. If the car then does not slow
+# down for PRE_RELEASE_FAIL_T (released too early, or already stopped), brake is added again as usual, once per stop.
+# Disabled when the file PRE_RELEASE_OFF_FILE exists.
+PRE_RELEASE_LEAD = 0.4          # s, PCM brake lag
+PRE_RELEASE_ACCEL = -0.1        # m/s^2
+PRE_RELEASE_MAX_V = 0.3         # m/s, only in the very last stretch
+PRE_RELEASE_MIN_DECEL = 0.12    # m/s^2, need a real deceleration to predict the stop
+PRE_RELEASE_FAIL_T = 0.5        # s without deceleration -> give up (add brake again)
+PRE_RELEASE_MAX_T = 1.5         # s
+PRE_RELEASE_OFF_FILE = "/data/ars510_no_pre_release"
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -135,6 +149,33 @@ class LongControl:
     self.no_decel_frames = 0
     self.brake_added = False
     self.brake_hold = False
+    self.pre_release_enabled = not os.path.exists(PRE_RELEASE_OFF_FILE)
+    self.pre_release = False
+    self.pre_release_failed = False
+    self.pre_release_frames = 0
+    self.pre_release_slow = 0
+
+  def update_pre_release(self, pose_accel):
+    """Ease the request just before the predicted true stop (see PRE_RELEASE_*). Returns True while releasing."""
+    if pose_accel is None or not self.pre_release_enabled or self.true_stopped or self.pre_release_failed:
+      self.pre_release = False
+      return False
+    decel = -self.pose_a_f
+    if not self.pre_release:
+      if 0.0 < self.v_est <= PRE_RELEASE_MAX_V and decel >= PRE_RELEASE_MIN_DECEL and self.v_est / decel <= PRE_RELEASE_LEAD:
+        self.pre_release = True
+        self.pre_release_frames = 0
+        self.pre_release_slow = 0
+      return self.pre_release
+    self.pre_release_frames += 1
+    self.pre_release_slow = self.pre_release_slow + 1 if decel < SOFT_STOP_COAST_MIN_DECEL else 0
+    if self.pre_release_slow * DT_CTRL >= PRE_RELEASE_FAIL_T or self.pre_release_frames * DT_CTRL >= PRE_RELEASE_MAX_T:
+      # stopped (fine: brake is now added at standstill) or still creeping (brake is added again): either way, once
+      self.pre_release = False
+      self.pre_release_failed = True
+      self.no_decel_frames = 0
+      return False
+    return True
 
   def reset(self):
     self.pid.reset()
@@ -246,6 +287,8 @@ class LongControl:
         else:
           # after a roll-in (no pose) the car may still be creeping: gentle ramp; entering at standstill: stock rate
           output_accel = self.ramp_to_stop(output_accel, SOFT_STOP_ADD_RATE if self.settle_used else STOPPING_DECEL_RATE)
+      if self.update_pre_release(pose_accel):
+        output_accel = max(output_accel, PRE_RELEASE_ACCEL)
       self.reset()
 
     else:  # LongCtrlState.pid
@@ -269,6 +312,8 @@ class LongControl:
       self.true_stopped = False
       self.no_decel_frames = 0
       self.brake_added = False
+      self.pre_release = False
+      self.pre_release_failed = False
     self.prev_v_ego = CS.vEgo
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
