@@ -15,7 +15,8 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 # (almost) stopped, ramp to stopAccel as before to hold it; adding brake at standstill does not pitch the car.
 SOFT_STOP_V = 0.05             # m/s, below this (or at standstill) ramp to stopAccel
 SOFT_STOP_MAX_V = 1.0          # m/s, only soften the last metre: if stopping is requested faster (e.g. model shouldStop), brake as before
-SOFT_STOP_ACCEL = -0.3         # m/s^2, brake request to ease toward while still rolling
+SOFT_STOP_ACCEL = -0.33        # m/s^2, brake request to ease toward while still rolling (10/28: the PCM lets the
+                               # friction brake go when the request rises above about -0.33 at crawl speed)
 SOFT_STOP_RELEASE_RATE = 1.5   # m/s^3, how fast the brake is eased off
 # The soft request is only kept while the car is really slowing down. At crawl speed the Toyota PCM barely brakes for
 # small requests (idle creep: 10/27 route 4f, -0.2..-0.35 commanded gave 0..-0.1 m/s^2 for 1-3 s), so a fixed soft
@@ -38,6 +39,16 @@ SOFT_STOP_NO_DECEL_T = 1.5     # s
 SOFT_STOP_BAND_A = -0.33       # m/s^2, requests below this engage the friction brake at crawl speed
 SOFT_STOP_BAND_RATE = 0.1      # m/s^3
 SOFT_STOP_ONSET_A = -0.08      # m/s^2, filtered pose deceleration beyond this while rolling = the brake has engaged
+# 10/28 route 5a, six stops: the three soft ones (-0.16..-0.22 at the stop, rebound <= 0.11) decelerated continuously
+# from 0.6 m/s to 0 with the friction brake engaged the whole way. The three with a jolt (-0.29..-0.43, rebound
+# 0.23..0.55) had a plateau at 0.4-0.5 m/s first: the planner eased its request to -0.05..-0.3, the PCM let the brake go
+# (release at about -0.31), the car crept, and the brake had to re-engage at crawl speed, which it does with a grab
+# (-0.5 m/s^2 for a -0.33 request). So below BRAKE_HOLD_V, while the planner still asks to slow down, the request is
+# floored at BRAKE_HOLD_ACCEL to keep the brake engaged through the stop.
+BRAKE_HOLD_V = 0.8             # m/s
+BRAKE_HOLD_A_TARGET = -0.08    # m/s^2, planner request below this = slowing to a stop (not following a creeping lead)
+BRAKE_HOLD_ACCEL = -0.33       # m/s^2
+BRAKE_HOLD_CLEAR_A_TARGET = 0.1  # m/s^2, the hold is latched until the planner wants to move again (same as should_stop)
 # The stopping state ignores the plan. With the gentle rate, follow the plan when it asks for clearly more braking than
 # the current request (lead closer than expected), so the soft logic never brakes less than an urgent plan.
 SOFT_STOP_URGENT_MARGIN = 0.3  # m/s^2
@@ -123,6 +134,7 @@ class LongControl:
     self.true_stopped = False
     self.no_decel_frames = 0
     self.brake_added = False
+    self.brake_hold = False
 
   def reset(self):
     self.pid.reset()
@@ -240,7 +252,15 @@ class LongControl:
       error = a_target - CS.aEgo
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
+      # keep the friction brake engaged through the stop (see BRAKE_HOLD_*); latched, so a planner request that
+      # hovers around the threshold while closing on a stopped lead does not release and re-grab the brake
+      if CS.vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET:
+        self.brake_hold = True
+      if self.brake_hold:
+        output_accel = min(output_accel, BRAKE_HOLD_ACCEL)
 
+    if self.long_control_state != LongCtrlState.pid or CS.gasPressed or a_target > BRAKE_HOLD_CLEAR_A_TARGET or CS.vEgo > BRAKE_HOLD_V + 0.2:
+      self.brake_hold = False
     if self.long_control_state != LongCtrlState.stopping:
       self.was_rolling = False
       self.settle_frames = 0
