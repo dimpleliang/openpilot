@@ -35,9 +35,14 @@ class CarControllerParams:
     # the table is as before. Worst-case kinematic lateral jerk (flat road, SR 13.7, up/down): 0.59/0.71 m/s^3 at 18 km/h,
     # 0.83/1.07 at 36 km/h, 1.51/2.06 at 54 km/h, 2.05/3.06 at 72 km/h; the stock 25 m/s row already gives 2.22/3.85
     # (see ARS510_RADAR.md). 60 deg/s stays below LTA_CUT_RATE (100 deg/s).
+    # 10/29: the 10 m/s row raised 0.35/0.45 -> 0.5/0.6 (17.5/22.5 -> 25/30 deg/s). Two steerSaturated alerts (10/27 21:34,
+    # 10/28 13:13) at 40-46 km/h, 40-48 deg, 2.2 m/s^2 lateral: the command sat at the rate limit and lagged 2.4-6 deg; EPS
+    # torque 1900-2100 and lateral accel were not the binding limits. Interpolation to the unchanged 25 m/s row also lifts
+    # 54 km/h to 19/24 deg/s and 72 km/h to 13/19 deg/s. Worst-case kinematic lateral jerk: 1.18/1.42 at 36 km/h,
+    # 2.04/2.59 at 54, 2.53/3.54 at 72, all below the stock 25 m/s row's 3.85 (control-side clip_curvature stays 5.0).
     # Must match TOYOTA_ANGLE_STEERING_LIMITS in opendbc/safety/modes/toyota.h (panda firmware).
-    ([5, 10, 25], [1.0, 0.35, 0.15]),
-    ([5, 10, 25], [1.2, 0.45, 0.26]),
+    ([5, 10, 25], [1.0, 0.5, 0.15]),
+    ([5, 10, 25], [1.2, 0.6, 0.26]),
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
