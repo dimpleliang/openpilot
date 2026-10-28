@@ -280,3 +280,11 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   之後 `2F 28xx 00 80` 歸還控制。改為三步序列（session、50 ms 後指令、1 s 後歸還），panda 白名單加這五個訊息並重建韌體。
   另加：靜止（< 1 m/s）時有車門打開（駕駛從裡面拉把手）→ 全車解鎖，方便乘客。
   中控主機 0x7D0 在鏡頭匯流排上沒有回應（亮度那條路要走 OBD 口）；儀表 0x7C0 有回應。
+
+## 雷達匯流排 DBC（除錯用，10/29）
+
+`opendbc/dbc/toyota_tss2_ars510.dbc` 取自 ds-sebastian/opendbc `ars510-acc` 分支（ddcc0b07，作者準備送 commaai/opendbc 的版本），
+15 個訊息：0x100 PCS_STATE、0x190 雷達週期、0x191–0x194 目標摘要、0x195 EVENT_OBJECT、0x196 EVENT_STATE（REQUIRED_DECEL
+每格 0.095 m/s²、RADAR_FAULT）、0x235–0x23B ACC 目標、0x202 / 0x24F、0x680。只給 Cabana 與離線分析用，控制程式沒有讀它
+（雷達介面在 Python 自行解碼）；0x80 物件清單是 ISO-TP，不在 DBC 裡。Cabana 開 bus 1 選這個 DBC 即可。
+
