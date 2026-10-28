@@ -407,8 +407,14 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
                             (uds_msg == 0x0000000060100242ULL) ||  // enable right BSM debug
                             (uds_msg == 0x0000000069210242ULL) ||  // poll right BSM status
                             // dimpleliang/ars510: automatic door lock / unlock (sunnypilot/opendbc#354), main body ECU 0x40
-                            (uds_msg == 0x0000400011300540ULL) ||  // unlock doors
-                            (uds_msg == 0x0000800011300540ULL);    // lock doors
+                            (uds_msg == 0x0000400011300540ULL) ||  // unlock doors (KWP 0x30, older body ECUs)
+                            (uds_msg == 0x0000800011300540ULL) ||  // lock doors
+                            // 2023 RAV4 HEV body ECU: extended session + GTS Active Test 0x2F DID 0x2810 lock / 0x2811 unlock
+                            (uds_msg == 0x0000000003100240ULL) ||  // 10 03 extended diagnostic session
+                            (uds_msg == 0x80010310282F0640ULL) ||  // 2F 2810 03 01 80 lock
+                            (uds_msg == 0x80010311282F0640ULL) ||  // 2F 2811 03 01 80 unlock
+                            (uds_msg == 0x00800010282F0540ULL) ||  // 2F 2810 00 80 return control
+                            (uds_msg == 0x00800011282F0540ULL);    // 2F 2811 00 80 return control
 
     if (invalid_uds_msg && !sp_valid_uds_msg) {
       tx = false;

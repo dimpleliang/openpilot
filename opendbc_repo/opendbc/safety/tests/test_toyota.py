@@ -117,6 +117,11 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       b"\x42\x02\x21\x69\x00\x00\x00\x00",  # poll right
       b"\x40\x05\x30\x11\x00\x40\x00\x00",  # unlock doors (sunnypilot/opendbc#354)
       b"\x40\x05\x30\x11\x00\x80\x00\x00",  # lock doors
+      b"\x40\x02\x10\x03\x00\x00\x00\x00",  # extended session (2023 RAV4 HEV body ECU)
+      b"\x40\x06\x2f\x28\x10\x03\x01\x80",  # 2F 2810 lock
+      b"\x40\x06\x2f\x28\x11\x03\x01\x80",  # 2F 2811 unlock
+      b"\x40\x05\x2f\x28\x10\x00\x80\x00",  # return control lock
+      b"\x40\x05\x2f\x28\x11\x00\x80\x00",  # return control unlock
     ]
     for msg in valid_msgs:
       pkt = libsafety_py.make_CANPacket(0x750, 0, msg)

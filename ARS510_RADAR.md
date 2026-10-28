@@ -268,3 +268,10 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - 旗標改號：PR 的 8/16 已被上游占用；`SP_ENHANCED_BSM` 32 → 128（上游 #440 用 32、#502 用 64），AUTO_LOCK 256、AUTO_UNLOCK 512。
 - panda `toyota.h` 0x750 放行加入這兩則固定訊息，safety 測試同步（含其他值／其他 IO 代號應被擋）；panda 韌體重建。
 - 未確認：本車 comma 接在 ADAS 匯流排，0x40 主車身 ECU 在另一條匯流排，要靠閘道轉送診斷位址才會動作；不動作時無副作用。
+
+- 10/28 實車：dragonpilot 的 KWP 指令（0x30 / 0x11）被本車車身 ECU 拒絕（回 7F 30 11 服務不支援）。先確認閘道路徑通
+  （0x750／0x40 tester present 6 ms 回覆、讀到 ECU 序號），再用 GTS 資料庫（kaikozlov/toyota-diagnostics）的 Active Test
+  實測：擴展診斷模式 `10 03` → `2F 2810 03 01 80`（Door Lock ON）門鎖上；`2F 2811 03 01 80`（Door Unlock ON）解鎖；
+  之後 `2F 28xx 00 80` 歸還控制。改為三步序列（session、50 ms 後指令、1 s 後歸還），panda 白名單加這五個訊息並重建韌體。
+  另加：靜止（< 1 m/s）時有車門打開（駕駛從裡面拉把手）→ 全車解鎖，方便乘客。
+  中控主機 0x7D0 在鏡頭匯流排上沒有回應（亮度那條路要走 OBD 口）；儀表 0x7C0 有回應。
