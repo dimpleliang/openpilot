@@ -88,9 +88,15 @@ SOFT_STOP_MAX_COAST = 2.5       # s
 # drops to PRE_RELEASE_LEAD: the release reaches the brakes about when the car stops. If the car then does not slow
 # down for PRE_RELEASE_FAIL_T (released too early, or already stopped), brake is added again as usual, once per stop.
 # Disabled when the file PRE_RELEASE_OFF_FILE exists.
-PRE_RELEASE_LEAD = 0.4          # s, PCM brake lag
+# 10/28 route 62 (first test): the PCM follows a release almost at once (IMU decel -0.5 -> 0 within 0.1 s of the ramp),
+# but the car had already stopped 0.15-0.25 s after the wheel speed read zero, i.e. ~0.25 s before the ramp ended, so it
+# still stopped at -0.45 (+0.35 rebound). The Toyota wheel speed over-reads just before it drops out (v_est from it
+# predicts the stop late). Trigger therefore at PRE_RELEASE_TRIGGER of predicted time to stop and ramp over
+# PRE_RELEASE_LEAD, which ends about when the car really stops.
+PRE_RELEASE_TRIGGER = 0.8       # s, predicted v_est / decel at which the release starts
+PRE_RELEASE_LEAD = 0.4          # s, ramp duration (the driver's own release took ~0.4 s)
 PRE_RELEASE_ACCEL = -0.05       # m/s^2, released to here linearly over PRE_RELEASE_LEAD (the driver's ramp)
-PRE_RELEASE_MAX_V = 0.3         # m/s, only in the very last stretch
+PRE_RELEASE_MAX_V = 0.45        # m/s, only in the very last stretch
 PRE_RELEASE_MIN_DECEL = 0.12    # m/s^2, need a real deceleration to predict the stop
 PRE_RELEASE_FAIL_T = 0.5        # s without deceleration -> give up (add brake again)
 PRE_RELEASE_MAX_T = 1.5         # s
@@ -165,7 +171,7 @@ class LongControl:
       return False
     decel = -self.pose_a_f
     if not self.pre_release:
-      if 0.0 < self.v_est <= PRE_RELEASE_MAX_V and decel >= PRE_RELEASE_MIN_DECEL and self.v_est / decel <= PRE_RELEASE_LEAD:
+      if 0.0 < self.v_est <= PRE_RELEASE_MAX_V and decel >= PRE_RELEASE_MIN_DECEL and self.v_est / decel <= PRE_RELEASE_TRIGGER:
         self.pre_release = True
         self.pre_release_frames = 0
         self.pre_release_slow = 0
@@ -295,6 +301,9 @@ class LongControl:
         # linear release from the request at the trigger to PRE_RELEASE_ACCEL over PRE_RELEASE_LEAD
         frac = min(1.0, (self.pre_release_frames + 1) * DT_CTRL / PRE_RELEASE_LEAD)
         output_accel = max(output_accel, self.pre_release_start + (PRE_RELEASE_ACCEL - self.pre_release_start) * frac)
+      elif self.pre_release_failed and not self.true_stopped:
+        # released too early: back to the request that was braking (at standstill this does nothing)
+        output_accel = min(output_accel, self.pre_release_start)
       self.reset()
 
     else:  # LongCtrlState.pid
