@@ -29,7 +29,6 @@ UNLOCK_RETURN_CMD = b'\x40\x05\x2f\x28\x11\x00\x80\x00'
 SEQ_STEP_FRAMES = 5     # 50 ms between session and command
 SEQ_RETURN_FRAMES = 100  # 1 s later: give control back
 LOCK_AT_SPEED = 10 * CV.KPH_TO_MS
-UNLOCK_DOOR_MAX_SPEED = 1.0  # m/s, a door opened while (nearly) standing still unlocks all doors
 
 
 class AutoLockController:
@@ -38,6 +37,7 @@ class AutoLockController:
     self.auto_unlock_enabled = bool(CP_SP.flags & ToyotaFlagsSP.AUTO_UNLOCK.value)
     self.last_gear = GearShifter.park
     self.last_door_open = False
+    self.last_driver_door_open = False
     self.lock_once = False
     self.pending: list[tuple[int, bytes]] = []  # (frames until send, data)
 
@@ -54,16 +54,12 @@ class AutoLockController:
       return can_sends
 
     current_gear = CS.out.gearShifter
-    if self.last_gear != current_gear and current_gear == GearShifter.park:
-      # auto unlock when shifting to park
-      if self.auto_unlock_enabled:
-        self._queue(UNLOCK_CMD, UNLOCK_RETURN_CMD)
-      self.lock_once = False
-
-    elif self.auto_unlock_enabled and CS.out.doorOpen and not self.last_door_open and CS.out.vEgo < UNLOCK_DOOR_MAX_SPEED:
-      # a door was opened (the driver pulled the inside handle of a locked car): unlock the rest for the passengers
+    driver_door_open = bool(getattr(CS, "driver_door_open", False))
+    if current_gear == GearShifter.park:
+      self.lock_once = False  # re-arm the lock for the next drive
+    if self.auto_unlock_enabled and current_gear == GearShifter.park and driver_door_open and not self.last_driver_door_open:
+      # 10/30, driver's request: no unlock on the shift to park itself; in park, opening the driver's door unlocks all doors
       self._queue(UNLOCK_CMD, UNLOCK_RETURN_CMD)
-      self.lock_once = False
 
     elif self.auto_lock_enabled:
       # auto lock once per drive: in drive, doors closed, above LOCK_AT_SPEED
@@ -73,6 +69,7 @@ class AutoLockController:
 
     self.last_gear = current_gear
     self.last_door_open = CS.out.doorOpen
+    self.last_driver_door_open = driver_door_open
     if self.pending:
       due = [d for f, d in self.pending if f <= 0]
       self.pending = [(f - 1, d) for f, d in self.pending if f > 0]
