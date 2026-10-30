@@ -96,6 +96,14 @@ ARS510_PLATFORMS = {"TOYOTA_RAV4_TSS2_2022", "TOYOTA_RAV4_TSS2_2023", "TOYOTA_CH
 # The object-list profiles need the 0xB4 wheel speed, which the Yaris does not send: it runs `acc` whatever the profile.
 ACC_ONLY_PLATFORMS = {"TOYOTA_YARIS"}
 
+# far in-path objects, logging only (10/30): object-list points at >= FAR_LOG_MIN_D_M within |y| FAR_LOG_MAX_Y_M, closing
+# faster than FAR_LOG_MAX_VREL, ego above FAR_LOG_MIN_V, for FAR_LOG_N records in a row -> carlog "ARS510 far object on/off".
+# Offline, these are matched to the lead openpilot later takes, to see whether a gentle early approach would pay off.
+FAR_LOG_MIN_D_M = 120.0
+FAR_LOG_MAX_Y_M = 1.8
+FAR_LOG_MAX_VREL = -1.5
+FAR_LOG_MIN_V = 70.0 / 3.6
+FAR_LOG_N = 5
 STALE_S = 0.5  # radard leaves track-content staleness to this interface
 NO_RECORD_WARN_S = 15.0
 EMPTY_PERIOD = 5  # during record gaps, report every 5th update (card calls update at 100 Hz -> 20 Hz)
@@ -247,6 +255,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
                            if cls.get((p["dRel"], p["yRel"])) in VRU_CLASSES and p["dRel"] <= VRU_MAX_D_M]
         self.vru_time_s = out["time_s"]
         self.far_points = self._far_stopped(out)
+        self._log_far(out, display)
         vru_xy = {(p["dRel"], p["yRel"]) for p in self.vru_points}
         for row in display:  # "sent to radard": a VRU point, or the object the ACC target / a summary reports
           row[3] = (row[0], row[1]) in vru_xy or any(abs(row[0] - d) < VRU_SAME_D_M and abs(row[1] - y) < VRU_SAME_Y_M
@@ -254,6 +263,34 @@ class Ars510RadarInterface(RadarInterfaceBase):
         self.display.send(display)
     return now_s
 
+
+  def _log_far(self, out, display) -> None:
+    """Logging only. Beyond 60 m the fused decoder publishes only the ACC target, so this reads the display rows
+    (every settled object): the closest one past FAR_LOG_MIN_D_M within |y| FAR_LOG_MAX_Y_M, closing faster than
+    FAR_LOG_MAX_VREL, for FAR_LOG_N records in a row -> on; FAR_LOG_N records without one -> off."""
+    try:
+      t = out["time_s"]
+      v_ego = self.ars._fresh_ego_speed(t)
+      st = self.__dict__.setdefault("far_log", {"n": 0, "miss": 0, "on": False, "t0": 0.0, "d0": 0.0, "last": None})
+      cands = [r for r in display if v_ego is not None and v_ego > FAR_LOG_MIN_V and not r[4] and r[0] >= FAR_LOG_MIN_D_M
+               and abs(r[1]) < FAR_LOG_MAX_Y_M and r[2] == r[2] and r[2] < FAR_LOG_MAX_VREL]
+      if cands:
+        r = min(cands, key=lambda r: r[0])
+        if st["n"] == 0:
+          st["t0"], st["d0"] = t, r[0]
+        st["n"] += 1; st["miss"] = 0; st["last"] = r
+        if not st["on"] and st["n"] >= FAR_LOG_N:
+          st["on"] = True
+          carlog.info(f"ARS510 far object on: d {r[0]:.1f} y {r[1]:.1f} vRel {r[2]:.1f} class {r[5]} v_ego {v_ego:.1f}")
+      else:
+        st["miss"] += 1
+        if st["miss"] >= FAR_LOG_N:
+          if st["on"]:
+            r = st["last"]
+            carlog.info(f"ARS510 far object off: after {t - st['t0']:.1f} s, d {st['d0']:.1f} -> {r[0]:.1f} y {r[1]:.1f}")
+          st["n"] = 0; st["on"] = False
+    except Exception:
+      carlog.exception("ARS510 far object log")
 
   def _far_stopped(self, out) -> list:
     t = out["time_s"]

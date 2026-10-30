@@ -340,3 +340,8 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   - 13:27 那次不在其中：鏡頭比雷達 ACC 目標早 0.7 秒看到。
 - 樣本太少，先只做紀錄、不影響煞車：radard `log_far_radar_only` 會寫 cloudlog「ARS510 radar-only far target on/off」，累積足夠次數後再決定。
 - 工具：`tools/ars510/lead_range.py`、`obj_range.py`、`radar_early_eval.py`。
+- 物件清單遠距紀錄（同日加入）：ACC 目標從不超過 119 m，所以 120 m 外改看物件清單（畫面用的已穩定物件）。
+  - 條件：距離 ≥ 120 m、|y| < 1.8 m、正在接近（vRel < −1.5 m/s）、車速 > 70 km/h，連續 5 筆。
+  - 會寫 cloudlog「ARS510 far object on/off」，只紀錄、不影響煞車。
+  - 120 m 外的物件中，86% 雷達沒有分配車道，存在信心中位數只有 60%。
+  - 10/23 和 10/30 的高速紀錄裡，在沒有前車時出現的同車道接近物件共 6 個，只有 2 個之後成為前車（提早 2.5–3 秒）。
