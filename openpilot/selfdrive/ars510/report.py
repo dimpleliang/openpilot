@@ -107,7 +107,9 @@ class RouteScan:
         except Exception:
           pass
         self.events.append((t, msg))
-        if "far lead early" in msg:
+        if "cut-in candidate" in msg:
+          self.flags["cutin"] = int(" on" in msg)
+        elif "far lead early" in msg:
           on = " off" not in msg
           self.flags["early"] = (2 if "cut-in" in msg else (3 if (" obj" in msg or " acc" in msg) else 1)) if on else 0
           early += on
@@ -118,7 +120,7 @@ class RouteScan:
         self.rows.append(dict(t=t, seg=seg_idx, v=c["v"], a=c["a"], gas=c["gas"], brake=c["brake"], enabled=c["enabled"], vc=c["vc"],
                               aT=p.aTarget, src=str(p.longitudinalPlanSource)[:6], stop=int(p.shouldStop), lp=c["lp"], rad=c["rad"],
                               d=c["d"], vr=c["vr"], al=c["al"], y=c["y"], mp=c["mp"], mx=c["mx"], mv=c["mv"], e2e=c["e2e"],
-                              pitch=c["pitch"], sa=c["sa"], bl=c["bl"], early=self.flags["early"], far_obj=self.flags["far_obj"],
+                              pitch=c["pitch"], sa=c["sa"], bl=c["bl"], early=self.flags["early"], far_obj=self.flags["far_obj"], cutin=self.flags["cutin"],
                               alerts=c["alerts"]))
     self.segstats.append(dict(seg=seg_idx, kind=kind, t0=t_first, t1=t_last, vmax=vmax, amin=amin, brake_s=brk / 100., eng=eng / max(ncs, 1),
                               lead=nl / max(nrs, 1), radar=nr / max(nrs, 1), early=early, start=self.wall(t_first) if t_first else ""))
@@ -176,7 +178,7 @@ def write_outputs(route, scan, out_dir):
       for t, m in ev:
         if " off" in m or "off:" in m: continue
         k = ("收油·切入" if "cut-in" in m else "收油·雷達單獨" if (" obj" in m or " acc" in m) else "收油·雷達前車" if "radar=True" in m else "收油·鏡頭前車") if "far lead early" in m \
-            else "煞車上限" if "far lead soft" in m else "雷達遠距物件" if "far object" in m else "遠距停車" if "far stopped" in m else "e2e 放開" if "e2e free" in m else "其他"
+            else "切入候選（只記錄）" if "cut-in candidate" in m else "煞車上限" if "far lead soft" in m else "雷達遠距物件" if "far object" in m else "遠距停車" if "far stopped" in m else "e2e 放開" if "e2e free" in m else "其他"
         kinds[k] = kinds.get(k, 0) + 1
       f.write("ARS510 事件：" + "、".join(f"{k} {n}" for k, n in sorted(kinds.items())) + "\n\n")
       f.write("系統煞車 ≤ -1.0 m/s²（啟用中）：\n")
@@ -205,7 +207,8 @@ def write_outputs(route, scan, out_dir):
       wr.writerow(sig_row(r, W))
   # clips
   ts = [r["t"] for r in rows]
-  marks = [(b["t"], f"brake_{b['aT']:.1f}") for b in brakes] + [(t, "early") for t, m in ev if "far lead early" in m and " off" not in m and ("cut-in" in m or " obj" in m or " acc" in m)]
+  marks = [(b["t"], f"brake_{b['aT']:.1f}") for b in brakes] + [(t, "early") for t, m in ev if "far lead early" in m and " off" not in m and (" obj" in m or " acc" in m)] + \
+          [(t, "cutin") for t, m in ev if "cut-in candidate on" in m]
   last = -1e9
   for t0, tag in sorted(marks):
     if t0 - last < 5:
@@ -223,7 +226,7 @@ def write_outputs(route, scan, out_dir):
 def sig_row(r, W):
   return [f"{r['t']:.2f}", W(r["t"]), f"{r['v'] * 3.6:.1f}", f"{r['a']:.2f}", r["gas"], r["brake"], r["enabled"], f"{r['vc']:.0f}", f"{r['aT']:.2f}", r["src"],
           r["stop"], r["lp"], r["rad"], f"{r['d']:.1f}", f"{r['vr']:.2f}", f"{r['al']:.2f}", f"{r['y']:.1f}", f"{r['mp']:.2f}", f"{r['mx']:.1f}", f"{r['mv']:.1f}",
-          f"{r['e2e']:.2f}", f"{r['pitch']:.1f}" if r["pitch"] == r["pitch"] else "", f"{r['sa']:.0f}", r["bl"], r["early"], r["far_obj"], int(r["early"] == 2), r["alerts"]]
+          f"{r['e2e']:.2f}", f"{r['pitch']:.1f}" if r["pitch"] == r["pitch"] else "", f"{r['sa']:.0f}", r["bl"], r["early"], r["far_obj"], int(r["early"] == 2 or r.get("cutin", 0)), r["alerts"]]
 
 
 def generate(route, realdata=REALDATA, out_root=OUT_ROOT):

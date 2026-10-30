@@ -113,6 +113,9 @@ CUTIN_PATH_Y_M = (1.0, 2.6)
 CUTIN_HOLD = 20                     # planner cycles (1 s)
 CUTIN_MIN_V = 60. / 3.6
 CUTIN_MAX_DECEL = -0.3
+# 10/30 19:23-20:16 (54 min): 13 cut-in coasts, 1 real cut-in; the rest were adjacent-lane cars hugging the line (up to
+# 6 s / -8 km/h). Logging only until a discriminator (lateral motion, duration) is found in the reports' clips.
+CUTIN_COAST_ENABLED = False
 # 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
 # too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
 # radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
@@ -195,6 +198,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.e2e_free = False  # ars510: model acceleration candidate dropped (see E2E_FREE_MIN_V)
     self.e2e_free_off = os.path.exists(E2E_FREE_OFF_FILE)
     self.cutin_cnt = 0
+    self.cutin_logged = False
     self.far_obj_age = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
@@ -321,7 +325,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
             res = res_obj
             radar_only = True
       ci = self.cutin_object(sm, v_ego, lead_one)
-      if ci is not None:
+      if (ci is not None) != self.cutin_logged:
+        self.cutin_logged = ci is not None
+        if ci is not None:
+          cloudlog.info(f"ARS510 cut-in candidate on d={ci.dRel:.1f} vRel={ci.vRel:.2f} pathOff={ci.path_off:.1f} v={v_ego*3.6:.0f}")
+        else:
+          cloudlog.info("ARS510 cut-in candidate off")
+      if ci is not None and CUTIN_COAST_ENABLED:
         res_ci = cutin_accel_ceil(ci, t_follow)
         if res_ci is not None and (res is None or res_ci[0] * res_ci[1] < res[0] * res[1]):
           res = res_ci

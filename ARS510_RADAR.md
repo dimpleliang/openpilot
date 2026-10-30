@@ -426,3 +426,4 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - `reportd.py`：manager 的 `only_offroad` 程序，熄火 20 秒後開始，每分鐘檢查有沒有還沒做（或段數增加）的路線，nice 19。容器測 5 段 3 秒，車機約 5 秒／段。
 - Mac：`tools/ars510/pull_reports.sh` 用 rsync 把報告拉到 `~/Downloads/ars510_reports/`。
 - 同時：雷達單獨滑行的來源加上接近速度 ≤ 12 m/s 的條件（20:xx 有一筆 124 m、−16.9 m/s 的假物件）。
+- **切入收油關閉（10/30 晚）**：19:23–20:16 那趟 13 次切入收油只有 1 次真的切入，其餘是鄰車道貼線或彎道，最嚴重滑行 6 秒、掉 8 km/h。改為只記錄候選（cloudlog「ARS510 cut-in candidate on/off」，報告的 clips 會切出來），`CUTIN_COAST_ENABLED = False`。之前 16 次中 12 次的統計配對條件太寬，樣本也只有 35 分鐘。
