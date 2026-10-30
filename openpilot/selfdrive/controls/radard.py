@@ -152,6 +152,7 @@ FAR_RO_MIN_D = 80.
 FAR_RO_MAX_VREL = -1.5
 FAR_RO_MAX_Y = 1.5
 FAR_RO_HOLD_S = 1.0
+FAR_OBJ_TRACK_ID = 1 << 28  # must match opendbc car/toyota/ars510_radar_interface.py
 VRU_TRACK_ID_BASE = 1 << 30  # must match opendbc car/toyota/ars510_radar_interface.py (radarTrackId is Int32)
 DISPLAY_FMT = "<fffB"
 DISPLAY_FMT_SIZE = struct.calcsize(DISPLAY_FMT)
@@ -306,7 +307,8 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points}
+    # ars510: the far-object point (FAR_OBJ_TRACK_ID) is for the planner's early ease-off only, never a lead track
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points if pt.trackId != FAR_OBJ_TRACK_ID}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -325,6 +327,8 @@ class RadarD:
         classes = parse_display_classes(bytes(sm[display_service]))
     self.vru_classes = {}
     for pt in rr.points:
+      if pt.trackId == FAR_OBJ_TRACK_ID:
+        continue
       if pt.trackId >= VRU_TRACK_ID_BASE:
         self.vru_classes[pt.trackId] = 6
         continue

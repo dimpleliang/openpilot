@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import types
 import numpy as np
 
 import openpilot.cereal.messaging as messaging
@@ -73,6 +74,45 @@ def far_lead_accel_floor(lead, t_follow):
   return floor, w
 
 
+# ars510: ease off early like an experienced driver (10/30 15:04: the camera saw a car 120 m ahead closing at 7 m/s,
+# the MPC kept 107 km/h for 2 s more and then braked -0.5 m/s^2 for 12 s; about -0.35 from the first sight was enough).
+# While a slower lead is far, acceleration is capped at FAR_EARLY_K x the constant deceleration that removes the closing
+# speed before the comfortable gap (the same a_req as the floor above), so the car stops accelerating and starts a gentle
+# coast-like slow-down as soon as the lead is seen instead of waiting for the MPC. The cap is reached at FAR_EARLY_JERK
+# (no step), never asks more than FAR_EARLY_MAX_DECEL (camera-only lead: FAR_EARLY_MAX_DECEL_VISION), and fades out
+# like the floor (50-70 m, 5-7 s). Same off file as the floor.
+FAR_EARLY_K = 1.0
+FAR_EARLY_JERK = 0.5                # m/s^3
+FAR_EARLY_MAX_DECEL = -0.8          # m/s^2, radar lead
+FAR_EARLY_MAX_DECEL_VISION = -0.4   # m/s^2, camera-only lead (its closing speed is often underestimated far away)
+# Before openpilot has any lead, a radar object-list car the ARS510 interface reports 120+ m ahead in the ego lane and
+# closing (radarTracks point FAR_OBJ_TRACK_ID, see ars510_radar_interface.py) eases off the same way but only down to
+# FAR_RADAR_ONLY_MAX_DECEL: a coast. 15:04 that car was there 1.5 s before the camera's lead. Those objects are often
+# never confirmed (4 of 6 on 10/23 + 10/30), so it stays a coast: a wrong one costs a second or two of lifting off.
+FAR_OBJ_TRACK_ID = 1 << 28
+FAR_RADAR_ONLY_MAX_DECEL = -0.3     # m/s^2
+FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is kept after its last report
+
+
+def far_lead_accel_ceil(lead, t_follow):
+  """Highest acceleration allowed for a far, slower lead, and how much of it applies (0..1). None when not applicable."""
+  if not lead.present:
+    return None
+  closing = -lead.vRel
+  if closing < FAR_LEAD_MIN_CLOSING:
+    return None
+  ttc = lead.dRel / closing
+  w = float(np.interp(lead.dRel, FAR_LEAD_D_BP, [0., 1.]) * np.interp(ttc, FAR_LEAD_TTC_BP, [0., 1.]))
+  if w <= 0.:
+    return None
+  gap = lead.dRel - (t_follow * max(lead.vLead, 0.) + STOP_DISTANCE + FAR_LEAD_MARGIN)
+  if gap <= 1.:
+    return None
+  a_req = closing ** 2 / (2. * gap)
+  ceil = min(lead.aLeadK, 0.) - FAR_EARLY_K * a_req
+  return max(ceil, FAR_EARLY_MAX_DECEL if lead.radar else FAR_EARLY_MAX_DECEL_VISION), w
+
+
 def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, dt):
   a_min = float(np.interp(v_ego - v_cruise, A_CRUISE_MIN_BP, A_CRUISE_MIN_V))
   target_accel = np.clip(v_cruise - v_ego, a_min, ACCEL_MAX)
@@ -99,6 +139,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.far_lead_active = False  # ars510: far-lead braking limit in effect, see FAR_LEAD_K
     self.far_lead_off = os.path.exists(FAR_LEAD_OFF_FILE)
     self.far_lead_cnt = 0
+    self.far_early_cap: float | None = None  # ars510: current early ease-off cap (ramped), see FAR_EARLY_K
+    self.far_early_active: str | None = None
+    self.far_obj = None  # ars510: radar-only far object (see far_object)
+    self.far_obj_age = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -192,6 +236,37 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       lead = sm['radarState'].leadOne
       cloudlog.info(f"ARS510 far lead soft {'on' if far_active else 'off'} d={lead.dRel:.1f} vRel={lead.vRel:.2f} a={output_a_target:.2f}")
 
+    # ars510: ease off early for a far, slower lead (see FAR_EARLY_K); any plan source, not while the driver controls
+    early = None
+    radar_only = False
+    if self.CP.openpilotLongitudinalControl and not self.far_lead_off and not reset_state and not self.fcw:
+      t_follow = get_T_FOLLOW(sm['selfdriveState'].personality)
+      lead_one = sm['radarState'].leadOne
+      res = far_lead_accel_ceil(lead_one, t_follow)
+      fo = self.far_object(sm, v_ego)
+      if res is None and not lead_one.present and fo is not None:
+        res = far_lead_accel_ceil(fo, t_follow)
+        if res is not None:
+          res = (max(res[0], FAR_RADAR_ONLY_MAX_DECEL), res[1])
+          radar_only = True
+      if res is not None:
+        ceil, w = res
+        target = output_a_target + w * (ceil - output_a_target) if output_a_target > ceil else output_a_target
+        if self.far_early_cap is None:
+          self.far_early_cap = max(a_prev, target)
+        self.far_early_cap = max(target, self.far_early_cap - FAR_EARLY_JERK * self.dt)  # ramp down, follow up at once
+        if output_a_target > self.far_early_cap:
+          output_a_target = self.far_early_cap
+          early = ceil
+    if early is None:
+      self.far_early_cap = None
+    state = None if early is None else ("radar-only" if radar_only else "lead")
+    if state != self.far_early_active:
+      self.far_early_active = state
+      lead = sm['radarState'].leadOne
+      cloudlog.info(f"ARS510 far lead early {state or 'off'} d={lead.dRel:.1f} vRel={lead.vRel:.2f} radar={lead.radar} "
+                    f"a={output_a_target:.2f}")
+
     # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
     steer_angle = abs(CS.steeringAngleDeg)
@@ -206,6 +281,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
+
+  def far_object(self, sm, v_ego):
+    """ars510: the radar-only far object from radarTracks (FAR_OBJ_TRACK_ID), held FAR_OBJ_HOLD cycles, or None."""
+    if 'radarTracks' in sm.data and sm.updated['radarTracks']:
+      pts = [p for p in sm['radarTracks'].points if p.trackId == FAR_OBJ_TRACK_ID]
+      if pts:
+        p = pts[0]
+        self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
+                                             vLead=float(v_ego + p.vRel), aLeadK=0.)
+        self.far_obj_age = 0
+    if self.far_obj is not None:
+      self.far_obj_age += 1
+      if self.far_obj_age > FAR_OBJ_HOLD:
+        self.far_obj = None
+    return self.far_obj
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

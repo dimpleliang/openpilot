@@ -100,10 +100,14 @@ ACC_ONLY_PLATFORMS = {"TOYOTA_YARIS"}
 # faster than FAR_LOG_MAX_VREL, ego above FAR_LOG_MIN_V, for FAR_LOG_N records in a row -> carlog "ARS510 far object on/off".
 # Offline, these are matched to the lead openpilot later takes, to see whether a gentle early approach would pay off.
 FAR_LOG_MIN_D_M = 120.0
+FAR_LOG_KEEP_D_M = 80.0  # once on, kept down to this range (bridges to the camera's lead)
 FAR_LOG_MAX_Y_M = 1.8
 FAR_LOG_MAX_VREL = -1.5
 FAR_LOG_MIN_V = 70.0 / 3.6
 FAR_LOG_N = 5
+# the logged far object (while "on") also goes to radarTracks as one point with this trackId. radard leaves it out of
+# its tracks (no lead from it); the planner only uses it to ease off early (FAR_RADAR_ONLY_MAX_DECEL there).
+FAR_OBJ_TRACK_ID = 1 << 28
 STALE_S = 0.5  # radard leaves track-content staleness to this interface
 NO_RECORD_WARN_S = 15.0
 EMPTY_PERIOD = 5  # during record gaps, report every 5th update (card calls update at 100 Hz -> 20 Hz)
@@ -272,8 +276,11 @@ class Ars510RadarInterface(RadarInterfaceBase):
       t = out["time_s"]
       v_ego = self.ars._fresh_ego_speed(t)
       st = self.__dict__.setdefault("far_log", {"n": 0, "miss": 0, "on": False, "t0": 0.0, "d0": 0.0, "last": None})
-      cands = [r for r in display if v_ego is not None and v_ego > FAR_LOG_MIN_V and not r[4] and r[0] >= FAR_LOG_MIN_D_M
+      min_d = FAR_LOG_KEEP_D_M if st["on"] else FAR_LOG_MIN_D_M
+      cands = [r for r in display if v_ego is not None and v_ego > FAR_LOG_MIN_V and not r[4] and r[0] >= min_d
                and abs(r[1]) < FAR_LOG_MAX_Y_M and r[2] == r[2] and r[2] < FAR_LOG_MAX_VREL]
+      if st["on"] and st["last"] is not None:  # stay on the same car: within 10 m of its last range
+        cands = [r for r in cands if abs(r[0] - st["last"][0]) < 10.0]
       if cands:
         r = min(cands, key=lambda r: r[0])
         if st["n"] == 0:
@@ -282,14 +289,17 @@ class Ars510RadarInterface(RadarInterfaceBase):
         if not st["on"] and st["n"] >= FAR_LOG_N:
           st["on"] = True
           carlog.info(f"ARS510 far object on: d {r[0]:.1f} y {r[1]:.1f} vRel {r[2]:.1f} class {r[5]} v_ego {v_ego:.1f}")
+        self.far_obj_points = [{"trackId": 0, "dRel": float(r[0]), "yRel": float(r[1]), "vRel": float(r[2])}] if st["on"] else []
       else:
         st["miss"] += 1
+        self.far_obj_points = []
         if st["miss"] >= FAR_LOG_N:
           if st["on"]:
             r = st["last"]
             carlog.info(f"ARS510 far object off: after {t - st['t0']:.1f} s, d {st['d0']:.1f} -> {r[0]:.1f} y {r[1]:.1f}")
           st["n"] = 0; st["on"] = False
     except Exception:
+      self.far_obj_points = []
       carlog.exception("ARS510 far object log")
 
   def _far_stopped(self, out) -> list:
@@ -333,7 +343,8 @@ class Ars510RadarInterface(RadarInterfaceBase):
     if ret.errors.radarUnavailableTemporary or self.vru_time_s is None or now_s is None or now_s - self.vru_time_s > STALE_S:
       return ret
     extra = []
-    for points, id_base in ((self.vru_points, VRU_TRACK_ID_BASE), (self.far_points, FAR_TRACK_ID_BASE)):
+    for points, id_base in ((self.vru_points, VRU_TRACK_ID_BASE), (self.far_points, FAR_TRACK_ID_BASE),
+                            (getattr(self, "far_obj_points", []), FAR_OBJ_TRACK_ID)):
       for p in points:
         if any(abs(p["dRel"] - q.dRel) < VRU_SAME_D_M and abs(p["yRel"] - q.yRel) < VRU_SAME_Y_M for q in base):
           continue
