@@ -414,3 +414,15 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - 19:27 那兩段重播：78% 的週期符合條件，平均可多加速 +0.5 m/s²。
 - cloudlog「ARS510 e2e free on/off」。關閉：`touch /data/ars510_no_e2e_free`。
 - 坡度：`liveLocationKalman.calibratedOrientationNED` 的 pitch 可用（+ 為上坡），19:27 路段 −1.2° → +0.2° → +0.4° → +2.2°。
+
+## 自動行車報告（10/30）
+
+- `openpilot/selfdrive/ars510/report.py`：一趟掃一次 rlog（沒有就用 qlog），產生 `/data/ars510_reports/<route>/`：
+  - `summary.txt`：版本、時長、ARS510 事件統計、系統煞車分類（未啟用／駕駛踩煞車／前車減速／切入／遠處慢車／近距跟車／停車）、每段一行。
+  - `events.txt`：每次系統煞車（≤ −1.0）前 6/2/0 秒的前車狀態與分類；全部 ARS510 紀錄，附當地時間。
+  - `signals.csv`（5 Hz）：車速、加減速、油門煞車、設定速度、aTarget／來源、前車、鏡頭前車、模型加速度、坡度、方向盤、收油狀態（0 無／1 前車／2 切入／3 雷達單獨）、警示。
+  - `clips/*.csv`（20 Hz）：每個煞車事件與雷達單獨／切入收油前後 ±15 秒。
+  - `status.json`。只保留最近 30 趟。
+- `reportd.py`：manager 的 `only_offroad` 程序，熄火 20 秒後開始，每分鐘檢查有沒有還沒做（或段數增加）的路線，nice 19。容器測 5 段 3 秒，車機約 5 秒／段。
+- Mac：`tools/ars510/pull_reports.sh` 用 rsync 把報告拉到 `~/Downloads/ars510_reports/`。
+- 同時：雷達單獨滑行的來源加上接近速度 ≤ 12 m/s 的條件（20:xx 有一筆 124 m、−16.9 m/s 的假物件）。

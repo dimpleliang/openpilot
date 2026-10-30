@@ -97,6 +97,7 @@ FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is k
 FAR_ACC_TRACK_ID_MAX = 64
 FAR_ACC_MIN_D = 80.                 # m
 FAR_RADAR_ONLY_MIN_V = 70. / 3.6    # m/s, both radar-only sources
+FAR_RADAR_ONLY_MAX_CLOSING = 12.    # m/s
 # cut-in coast (10/30): a radar object-list car (radarTracks CUTIN_TRACK_ID, see ars510_radar_interface.py) 25-90 m ahead,
 # CUTIN_PATH_Y_M off the model's path (partly in the lane, not centred: that is the lead), slower by 2 m/s+, held CUTIN_HOLD
 # cycles, above CUTIN_MIN_V: lift off to at most CUTIN_MAX_DECEL. 35 highway minutes: 12 of 16 such cars did cut in, 0-8 s
@@ -366,8 +367,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     Both must lie near the model's path at their range."""
     if 'radarTracks' in sm.data and sm.updated['radarTracks'] and v_ego > FAR_RADAR_ONLY_MIN_V:
       pts = sm['radarTracks'].points
-      cands = [p for p in pts if p.trackId == FAR_OBJ_TRACK_ID] or \
-              [p for p in pts if p.trackId < FAR_ACC_TRACK_ID_MAX and p.dRel >= FAR_ACC_MIN_D and p.vRel < -FAR_LEAD_MIN_CLOSING]
+      # closing faster than FAR_RADAR_ONLY_MAX_CLOSING is not a slower car (oncoming / roadside / stopped: the far-stopped-car
+      # path and the camera handle those) and is left alone (10/30 20:xx: 124 m, -16.9 m/s, gone 2 s later)
+      cands = [p for p in pts if p.trackId == FAR_OBJ_TRACK_ID and -p.vRel <= FAR_RADAR_ONLY_MAX_CLOSING] or \
+              [p for p in pts if p.trackId < FAR_ACC_TRACK_ID_MAX and p.dRel >= FAR_ACC_MIN_D and -FAR_LEAD_MIN_CLOSING >= p.vRel >= -FAR_RADAR_ONLY_MAX_CLOSING]
       if cands:
         p = cands[0]
         pos = sm['modelV2'].position
