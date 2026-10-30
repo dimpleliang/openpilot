@@ -101,7 +101,7 @@ ACC_ONLY_PLATFORMS = {"TOYOTA_YARIS"}
 # Offline, these are matched to the lead openpilot later takes, to see whether a gentle early approach would pay off.
 FAR_LOG_MIN_D_M = 120.0
 FAR_LOG_KEEP_D_M = 80.0  # once on, kept down to this range (bridges to the camera's lead)
-FAR_LOG_MAX_Y_M = 1.8
+FAR_LOG_MAX_Y_M = 4.0  # loose here (curves); the planner gates against the model path (FAR_OBJ_PATH_Y_M)
 FAR_LOG_MAX_VREL = -1.5
 FAR_LOG_MIN_V = 70.0 / 3.6
 FAR_LOG_N = 5

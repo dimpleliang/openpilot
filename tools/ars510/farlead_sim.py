@@ -43,7 +43,7 @@ def run(d0, v0, vl0, mode, radar=True, t_end=30., lead_brake_at=None, lead_brake
       if r:
         tgt = a_cmd + r[1] * (r[0] - a_cmd) if a_cmd > r[0] else a_cmd
         cap = max(out_a, tgt) if cap is None else cap
-        cap = max(tgt, cap - LP.FAR_EARLY_JERK * DT_MDL)
+        cap = float(np.clip(tgt, cap - LP.FAR_EARLY_JERK * DT_MDL, cap + LP.FAR_EARLY_JERK_UP * DT_MDL))
         a_cmd = min(a_cmd, cap)
       else:
         cap = None

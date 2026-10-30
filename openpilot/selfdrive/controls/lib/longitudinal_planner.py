@@ -92,6 +92,15 @@ FAR_EARLY_MAX_DECEL_VISION = -0.4   # m/s^2, camera-only lead (its closing speed
 FAR_OBJ_TRACK_ID = 1 << 28
 FAR_RADAR_ONLY_MAX_DECEL = -0.3     # m/s^2
 FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is kept after its last report
+# 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
+# too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
+# radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
+# range (curves); a barely-slower lead far away in time still allows some acceleration (FAR_EARLY_ALLOW over TTC).
+FAR_EARLY_JERK_UP = 0.3             # m/s^3
+FAR_FUSE_D_M = 15.                  # m
+FAR_OBJ_PATH_Y_M = 2.2              # m, |yRel - model path y at dRel|
+FAR_EARLY_ALLOW_TTC_BP = [15., 40.]  # s, time to reach the lead
+FAR_EARLY_ALLOW_V = [0., 0.4]       # m/s^2 of acceleration still allowed
 
 
 def far_lead_accel_ceil(lead, t_follow):
@@ -109,8 +118,15 @@ def far_lead_accel_ceil(lead, t_follow):
   if gap <= 1.:
     return None
   a_req = closing ** 2 / (2. * gap)
-  ceil = min(lead.aLeadK, 0.) - FAR_EARLY_K * a_req
+  ceil = min(lead.aLeadK, 0.) - FAR_EARLY_K * a_req + float(np.interp(ttc, FAR_EARLY_ALLOW_TTC_BP, FAR_EARLY_ALLOW_V))
   return max(ceil, FAR_EARLY_MAX_DECEL if lead.radar else FAR_EARLY_MAX_DECEL_VISION), w
+
+
+def fuse_far_object(lead, fo):
+  """A camera-only lead with a radar far object at about its range: the lead, with the radar's closing speed if faster."""
+  if fo is None or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > FAR_FUSE_D_M or fo.vRel >= lead.vRel:
+    return lead
+  return types.SimpleNamespace(present=True, radar=False, dRel=lead.dRel, vRel=fo.vRel, vLead=fo.vLead, aLeadK=min(lead.aLeadK, 0.))
 
 
 def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, dt):
@@ -238,12 +254,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # ars510: ease off early for a far, slower lead (see FAR_EARLY_K); any plan source, not while the driver controls
     early = None
-    radar_only = False
+    radar_only = False; fo = None
     if self.CP.openpilotLongitudinalControl and not self.far_lead_off and not reset_state and not self.fcw:
       t_follow = get_T_FOLLOW(sm['selfdriveState'].personality)
       lead_one = sm['radarState'].leadOne
-      res = far_lead_accel_ceil(lead_one, t_follow)
       fo = self.far_object(sm, v_ego)
+      res = far_lead_accel_ceil(fuse_far_object(lead_one, fo), t_follow)
       if res is None and not lead_one.present and fo is not None:
         res = far_lead_accel_ceil(fo, t_follow)
         if res is not None:
@@ -254,7 +270,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         target = output_a_target + w * (ceil - output_a_target) if output_a_target > ceil else output_a_target
         if self.far_early_cap is None:
           self.far_early_cap = max(a_prev, target)
-        self.far_early_cap = max(target, self.far_early_cap - FAR_EARLY_JERK * self.dt)  # ramp down, follow up at once
+        self.far_early_cap = float(np.clip(target, self.far_early_cap - FAR_EARLY_JERK * self.dt, self.far_early_cap + FAR_EARLY_JERK_UP * self.dt))
         if output_a_target > self.far_early_cap:
           output_a_target = self.far_early_cap
           early = ceil
@@ -264,8 +280,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if state != self.far_early_active:
       self.far_early_active = state
       lead = sm['radarState'].leadOne
+      fo_s = f" obj d={fo.dRel:.1f} vRel={fo.vRel:.2f} pathOff={fo.path_off:.1f}" if (radar_only and fo is not None) else ""
       cloudlog.info(f"ARS510 far lead early {state or 'off'} d={lead.dRel:.1f} vRel={lead.vRel:.2f} radar={lead.radar} "
-                    f"a={output_a_target:.2f}")
+                    f"a={output_a_target:.2f}{fo_s}")
 
     # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
@@ -288,9 +305,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       pts = [p for p in sm['radarTracks'].points if p.trackId == FAR_OBJ_TRACK_ID]
       if pts:
         p = pts[0]
-        self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
-                                             vLead=float(v_ego + p.vRel), aLeadK=0.)
-        self.far_obj_age = 0
+        pos = sm['modelV2'].position
+        path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 and p.dRel <= pos.x[-1] else 0.
+        if abs(p.yRel - path_y) < FAR_OBJ_PATH_Y_M:
+          self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
+                                               vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y))
+          self.far_obj_age = 0
     if self.far_obj is not None:
       self.far_obj_age += 1
       if self.far_obj_age > FAR_OBJ_HOLD:
