@@ -405,3 +405,12 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   - 比前車遠的候選不算（它切不到我們前面）。
 - 重播 46:00：−11.5 秒起滑行 −0.3 共 7.5 秒（約少 8 km/h），之後 MPC 接手時速度差較小。其他片段的誤判多為右車道貼線的車，各滑行 2–3 秒。
 - 工具：`tools/ars510/cutin_eval.py`（統計）、`cutin_replay.py`（重播）、`cutin_trace.py`（物件清單視圖）、`brake_events.py`／`route_summary.py`（裝置上跑的整趟報告）。
+
+## 高速無前車時加速太慢（10/30 19:27）
+
+- 現象：設定 113 km/h，車速 101–111 km/h，沒有前車，aTarget 卡在 0 附近 100 多秒，車速慢慢掉；19:28:5x 上到 +2.2° 的坡（約 4%）時掉到 97 km/h。
+- 原因：這版 openpilot／sunnypilot 的規劃器把模型的 desiredAcceleration **永遠**當成候選之一並取最小值（上游的設計，不分實驗模式）。當時模型要求 +0.00（−0.09～+0.08），所以巡航想加速也被壓住。sunnypilot 的 accel boost 最多只加 0.2，而且要駕駛踩油門才會學，當時是 0。不是坡度補償的問題：PCM 對 −0.06 的要求確實做出約 −0.1，坡只是讓掉速更明顯。
+- 修改（`longitudinal_planner.py`）：車速 > 60 km/h、沒有前車、模型沒有要煞車（> −0.4）也沒有要停車時，不採用模型的加速度候選，改由巡航／MPC 決定；但巡航加速上限改成 15/25/35 m/s → 1.0/0.7/0.5 m/s²（否則光巡航候選會要到 2.0）。模型要煞車或停車時照舊。
+- 19:27 那兩段重播：78% 的週期符合條件，平均可多加速 +0.5 m/s²。
+- cloudlog「ARS510 e2e free on/off」。關閉：`touch /data/ars510_no_e2e_free`。
+- 坡度：`liveLocationKalman.calibratedOrientationNED` 的 pitch 可用（+ 為上坡），19:27 路段 −1.2° → +0.2° → +0.4° → +2.2°。

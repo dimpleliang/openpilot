@@ -101,6 +101,12 @@ FAR_RADAR_ONLY_MIN_V = 70. / 3.6    # m/s, both radar-only sources
 # CUTIN_PATH_Y_M off the model's path (partly in the lane, not centred: that is the lead), slower by 2 m/s+, held CUTIN_HOLD
 # cycles, above CUTIN_MIN_V: lift off to at most CUTIN_MAX_DECEL. 35 highway minutes: 12 of 16 such cars did cut in, 0-8 s
 # later (median ~3 s); the 4 others cost a few seconds of coasting. The radar's own lane-crossing flag never fired.
+E2E_FREE_MIN_V = 60. / 3.6          # m/s
+E2E_FREE_BRAKE = -0.4               # m/s^2: a model request below this is braking and is kept
+# without the model, the cruise candidate alone would ask up to ACCEL_MAX (2.0): cap it like an unhurried driver instead
+E2E_FREE_A_MAX_BP = [15., 25., 35.]  # m/s
+E2E_FREE_A_MAX_V = [1.0, 0.7, 0.5]   # m/s^2
+E2E_FREE_OFF_FILE = "/data/ars510_no_e2e_free"
 CUTIN_TRACK_ID = 1 << 27
 CUTIN_PATH_Y_M = (1.0, 2.6)
 CUTIN_HOLD = 20                     # planner cycles (1 s)
@@ -185,6 +191,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.far_early_active: str | None = None
     self.far_obj = None  # ars510: radar-only far object (see far_object)
     self.cutin = None    # ars510: cut-in candidate (see cutin_object)
+    self.e2e_free = False  # ars510: model acceleration candidate dropped (see E2E_FREE_MIN_V)
+    self.e2e_free_off = os.path.exists(E2E_FREE_OFF_FILE)
     self.cutin_cnt = 0
     self.far_obj_age = 0
 
@@ -255,8 +263,22 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
-                  (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop),
-                  (output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e)]
+                  (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
+    # ars510: on the open highway the model's desired acceleration (always a candidate upstream) often sits near 0 while
+    # the car is well below the set speed (10/30 19:27: 101 km/h, set 113, model +0.00 for 100 s; the car even lost speed
+    # on a 2 deg climb). Above E2E_FREE_MIN_V with no lead, the model only takes part when it wants to brake (below
+    # E2E_FREE_BRAKE) or to stop; otherwise cruise / MPC decide, as ACC would. Off: /data/ars510_no_e2e_free.
+    if self.far_lead_cnt == 0:
+      self.e2e_free_off = os.path.exists(E2E_FREE_OFF_FILE)
+    e2e_free = self.CP.openpilotLongitudinalControl and not self.e2e_free_off and v_ego > E2E_FREE_MIN_V and \
+               not sm['radarState'].leadOne.present and output_a_target_e2e > E2E_FREE_BRAKE and not output_should_stop_e2e
+    if not e2e_free:
+      candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
+    else:
+      candidates.append((float(np.interp(v_ego, E2E_FREE_A_MAX_BP, E2E_FREE_A_MAX_V)), LongitudinalPlanSource.cruise, False))
+    if e2e_free != self.e2e_free:
+      self.e2e_free = e2e_free
+      cloudlog.info(f"ARS510 e2e free {'on' if e2e_free else 'off'} v={v_ego*3.6:.0f} e2e={output_a_target_e2e:.2f} cruise={self.a_cruise:.2f}")
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
