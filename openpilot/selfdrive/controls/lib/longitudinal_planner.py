@@ -92,6 +92,11 @@ FAR_EARLY_MAX_DECEL_VISION = -0.4   # m/s^2, camera-only lead (its closing speed
 FAR_OBJ_TRACK_ID = 1 << 28
 FAR_RADAR_ONLY_MAX_DECEL = -0.3     # m/s^2
 FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is kept after its last report
+# 80-120 m: the radar's own ACC target (the car it holds as in-lane; acc_summaries publishes it with trackId < 64) is the
+# radar-only source when openpilot has no lead (camera late at night / in rain). Beyond that the object-list far object.
+FAR_ACC_TRACK_ID_MAX = 64
+FAR_ACC_MIN_D = 80.                 # m
+FAR_RADAR_ONLY_MIN_V = 70. / 3.6    # m/s, both radar-only sources
 # 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
 # too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
 # radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
@@ -281,7 +286,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if state != self.far_early_active:
       self.far_early_active = state
       lead = sm['radarState'].leadOne
-      fo_s = f" obj d={fo.dRel:.1f} vRel={fo.vRel:.2f} pathOff={fo.path_off:.1f}" if (radar_only and fo is not None) else ""
+      fo_s = f" {fo.src} d={fo.dRel:.1f} vRel={fo.vRel:.2f} pathOff={fo.path_off:.1f}" if (radar_only and fo is not None) else ""
       cloudlog.info(f"ARS510 far lead early {state or 'off'} d={lead.dRel:.1f} vRel={lead.vRel:.2f} radar={lead.radar} "
                     f"a={output_a_target:.2f}{fo_s}")
 
@@ -301,16 +306,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
 
   def far_object(self, sm, v_ego):
-    """ars510: the radar-only far object from radarTracks (FAR_OBJ_TRACK_ID), held FAR_OBJ_HOLD cycles, or None."""
-    if 'radarTracks' in sm.data and sm.updated['radarTracks']:
-      pts = [p for p in sm['radarTracks'].points if p.trackId == FAR_OBJ_TRACK_ID]
-      if pts:
-        p = pts[0]
+    """ars510: the radar-only far car from radarTracks, held FAR_OBJ_HOLD cycles, or None: the object-list far object
+    (FAR_OBJ_TRACK_ID, 120 m+) or, failing that, the radar's ACC target (trackId < FAR_ACC_TRACK_ID_MAX) at FAR_ACC_MIN_D+.
+    Both must lie near the model's path at their range."""
+    if 'radarTracks' in sm.data and sm.updated['radarTracks'] and v_ego > FAR_RADAR_ONLY_MIN_V:
+      pts = sm['radarTracks'].points
+      cands = [p for p in pts if p.trackId == FAR_OBJ_TRACK_ID] or \
+              [p for p in pts if p.trackId < FAR_ACC_TRACK_ID_MAX and p.dRel >= FAR_ACC_MIN_D and p.vRel < -FAR_LEAD_MIN_CLOSING]
+      if cands:
+        p = cands[0]
         pos = sm['modelV2'].position
         path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 and p.dRel <= pos.x[-1] else 0.
         if abs(p.yRel - path_y) < float(np.interp(p.dRel, FAR_OBJ_PATH_Y_BP, FAR_OBJ_PATH_Y_V)):
           self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
-                                               vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y))
+                                               vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y),
+                                               src="obj" if p.trackId == FAR_OBJ_TRACK_ID else "acc")
           self.far_obj_age = 0
     if self.far_obj is not None:
       self.far_obj_age += 1
