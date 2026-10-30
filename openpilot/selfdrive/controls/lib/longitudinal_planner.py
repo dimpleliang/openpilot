@@ -129,10 +129,11 @@ def far_lead_accel_ceil(lead, t_follow):
 
 
 def fuse_far_object(lead, fo):
-  """A camera-only lead with a radar far object at about its range: the lead, with the radar's closing speed if faster."""
-  if fo is None or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > FAR_FUSE_D_M or fo.vRel >= lead.vRel:
+  """A camera-only lead with a radar far object at about its range (FAR_FUSE_D_M or 15 % of range, the camera's
+  distance error grows with range): the lead with the radar's closing speed if faster, and treated as radar-confirmed."""
+  if fo is None or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > max(FAR_FUSE_D_M, 0.15 * lead.dRel) or fo.vRel >= lead.vRel:
     return lead
-  return types.SimpleNamespace(present=True, radar=False, dRel=lead.dRel, vRel=fo.vRel, vLead=fo.vLead, aLeadK=min(lead.aLeadK, 0.))
+  return types.SimpleNamespace(present=True, radar=True, dRel=lead.dRel, vRel=fo.vRel, vLead=fo.vLead, aLeadK=min(lead.aLeadK, 0.), fused=True)
 
 
 def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, dt):
@@ -265,12 +266,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       t_follow = get_T_FOLLOW(sm['selfdriveState'].personality)
       lead_one = sm['radarState'].leadOne
       fo = self.far_object(sm, v_ego)
-      res = far_lead_accel_ceil(fuse_far_object(lead_one, fo), t_follow)
-      if res is None and not lead_one.present and fo is not None:
-        res = far_lead_accel_ceil(fo, t_follow)
-        if res is not None:
-          res = (max(res[0], FAR_RADAR_ONLY_MAX_DECEL), res[1])
-          radar_only = True
+      fused = fuse_far_object(lead_one, fo)
+      res = far_lead_accel_ceil(fused, t_follow)
+      if fo is not None and not getattr(fused, "fused", False):
+        # radar-only coast: no lead, or a lead the radar object does not match (another car)
+        res_obj = far_lead_accel_ceil(fo, t_follow)
+        if res_obj is not None:
+          res_obj = (max(res_obj[0], FAR_RADAR_ONLY_MAX_DECEL), res_obj[1])
+          if res is None or res_obj[0] * res_obj[1] < res[0] * res[1]:
+            res = res_obj
+            radar_only = True
       if res is not None:
         ceil, w = res
         target = output_a_target + w * (ceil - output_a_target) if output_a_target > ceil else output_a_target

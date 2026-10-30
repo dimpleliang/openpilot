@@ -345,7 +345,10 @@ class Ars510RadarInterface(RadarInterfaceBase):
     return far
 
   def _add_vru(self, ret, now_s):
-    base = list(ret.points)
+    # Snapshot the published points as plain values: with capnp-backed structs (sunnypilot) re-assigning the list
+    # re-initializes it and the old element builders read back as zeros (10/30: the ACC point became 0 m / 0 m/s
+    # whenever a far object or VRU point was appended, so radard lost the radar lead exactly then).
+    base = [_point({**ACC_LEGACY, **{k: getattr(q, k) for k in ("trackId", "dRel", "yRel", "vRel", *LEGACY_FIELDS)}}) for q in ret.points]
     self.last_out = [(p.dRel, p.yRel) for p in base]
     if ret.errors.radarUnavailableTemporary or self.vru_time_s is None or now_s is None or now_s - self.vru_time_s > STALE_S:
       return ret
