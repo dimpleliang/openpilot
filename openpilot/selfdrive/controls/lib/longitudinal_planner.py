@@ -109,6 +109,21 @@ E2E_FILL_A_MAX_BP = [15., 25., 35.]  # m/s
 E2E_FILL_A_MAX_V = [0.3, 0.22, 0.18]  # m/s^2, unhurried (10/30 evening: 0.4/0.3/0.25 still felt too strong)
 E2E_FILL_JERK = 0.2                 # m/s^3
 E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
+# positive acceleration ceiling (see the block before the final clip)
+A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
+A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
+A_POS_JERK_BP = [10., 25.]                  # m/s
+A_POS_JERK_V = [0.6, 0.25]                  # m/s^3, how fast the ceiling lets acceleration build
+ACCEL_SCALE_FILE = "/data/ars510_accel_scale"  # 0.3-1.0 multiplier, 0 disables the ceiling; default 1.0
+
+
+def read_accel_scale() -> float:
+  try:
+    with open(ACCEL_SCALE_FILE) as f:
+      v = float(f.read().strip())
+    return 0. if v <= 0. else float(np.clip(v, 0.3, 1.0))
+  except Exception:
+    return 1.0
 CUTIN_TRACK_ID = 1 << 27
 CUTIN_PATH_Y_M = (1.0, 2.6)
 CUTIN_HOLD = 20                     # planner cycles (1 s)
@@ -199,6 +214,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.e2e_fill_active = False  # ars510: gentle speed tracking when the model is indifferent (see E2E_FILL_K)
     self.e2e_fill_off = os.path.exists(E2E_FILL_OFF_FILE)
     self.e2e_filled = 0.
+    self.accel_scale = read_accel_scale()  # ars510: positive acceleration ceiling scale
+    self.accel_capped = False
     self.cutin_cnt = 0
     self.cutin_logged = False
     self.far_obj_age = 0
@@ -376,6 +393,22 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if ((CS.leftBlinker or CS.rightBlinker) and v_ego < BLINKER_NO_ACCEL_V) or \
        (self.turning and v_ego > TURN_NO_ACCEL_MIN_V):
       output_a_target = min(output_a_target, 0.0)
+
+    # ars510: an unhurried driver's ceiling on positive acceleration, whatever the source (MPC lead pull-away, model, cruise,
+    # fill): A_POS_MAX(v) x the scale in /data/ars510_accel_scale (0.3-1.0, read once a second, no restart), rising at
+    # A_POS_JERK. Braking is never touched. 10/30 evening: with a lead pulling away the MPC / model asked +0.8..+1.0 at
+    # 90-100 km/h, which felt harsh; the hybrid also keeps mostly electric below about 0.25 m/s^2 at highway speed.
+    if self.far_lead_cnt == 0:
+      self.accel_scale = read_accel_scale()
+    if self.CP.openpilotLongitudinalControl and not reset_state and self.accel_scale > 0.:
+      cap = float(np.interp(v_ego, A_POS_MAX_BP, A_POS_MAX_V)) * self.accel_scale
+      cap = min(cap, max(a_prev, 0.) + float(np.interp(v_ego, A_POS_JERK_BP, A_POS_JERK_V)) * self.dt)
+      if output_a_target > cap:
+        output_a_target = cap
+        if not self.accel_capped:
+          self.accel_capped = True
+      elif self.accel_capped and output_a_target < cap - 0.05:
+        self.accel_capped = False
 
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
