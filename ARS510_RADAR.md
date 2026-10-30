@@ -311,3 +311,10 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - 關閉物件清單（只跑 acc_summaries）：`ars510_radar_interface.py` 的 `STANDALONE_DISPLAY = False`；改回 fused：`PROFILE = PROFILES["fused"]`。
 重播 route 5a（5 段 300 s 市區）：6000 次回報、無錯誤，點數 ACC 5397、摘要 3097、二輪車 124（10 個不同軌跡，多在右側 −2.9～−3.5 m 機車道）。
 
+## 鏡頭畫面閃黑（10/30，同步 openpilot #39166）
+
+重裝後 UI 鏡頭畫面約每秒整格黑一次。UI 持續記錄 `create_egl_image` 的 `os.dup(fd)` EBADF（每分鐘約 67 次），
+鏡頭本身 20 fps 無掉幀。改為 UI 一次建立各鏡頭的 VisionIpcClient 並重複使用（不在切換廣角／一般鏡頭或上路時刪除重建，
+避免畫面持有已刪除連線的影格 fd）。重開後 53 分鐘、27 個 log 檔 EBADF 0 次，UI fd 數穩定約 116。
+廣角／一般鏡頭的切換是原設計：< 18 km/h 廣角、> 36 km/h 一般，中間維持。mici（comma four）介面未改，本車不用。
+
