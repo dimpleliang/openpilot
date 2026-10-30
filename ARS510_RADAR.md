@@ -328,3 +328,15 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - 開環重播 13:27：峰值 −1.91 → 約 −1.5（實車閉環會更早介入，預期約 −1.3）。
 - 紀錄：cloudlog「ARS510 far lead soft on/off」。關閉：`touch /data/ars510_no_far_lead_soft`（約 1 秒內生效）。
 - 閉環驗證（真 MPC，裝置熄火時跑）：`PYTHONPATH=/data/openpilot /usr/local/venv/bin/python3 /data/farlead_sim.py`。
+
+## 偵測距離檢查與「雷達單獨遠距目標」紀錄（10/30）
+
+- 偵測距離沒有變短（70 km/h 以上）：鏡頭第一次看到前車的中位數 10/23 為 105 m、10/30 為 114 m；openpilot 使用的雷達前車最遠 117 m → 119 m。
+  雷達本身的同車道接近物體中位數 103 → 130 m，最遠可到 200 m 以上。
+- 會覺得兩個一起只到約 120 m，是因為 radard 要鏡頭先有前車（機率 > 0.5）才去配對雷達目標，所以雷達的距離被鏡頭卡住。
+- 「雷達 ACC 目標 ≥ 80 m、同車道、接近中，但 openpilot 沒有前車」持續 ≥ 1 秒：28 段高速紀錄只出現 2 次。
+  - 一次 2.7 秒後被鏡頭證實；
+  - 一次從未證實；
+  - 13:27 那次不在其中：鏡頭比雷達 ACC 目標早 0.7 秒看到。
+- 樣本太少，先只做紀錄、不影響煞車：radard `log_far_radar_only` 會寫 cloudlog「ARS510 radar-only far target on/off」，累積足夠次數後再決定。
+- 工具：`tools/ars510/lead_range.py`、`obj_range.py`、`radar_early_eval.py`。

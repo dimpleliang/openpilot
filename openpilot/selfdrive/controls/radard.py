@@ -146,6 +146,12 @@ VRU_MIN_V_LEAD = 1.0       # m/s over ground: a parked scooter at the kerb is no
 # 10/29: with the `acc_summaries` profile the radar interface adds the object list's two-wheelers (within 40 m, settled,
 # path-gated) to radarTracks with trackId VRU_TRACK_ID_BASE + id; those are two-wheelers by construction, so the class no
 # longer has to be looked up in the display message (whose record may be one radar cycle newer than the points).
+# ars510: radar-only far target logging thresholds (see RadarD.log_far_radar_only)
+FAR_RO_MIN_V = 50. / 3.6
+FAR_RO_MIN_D = 80.
+FAR_RO_MAX_VREL = -1.5
+FAR_RO_MAX_Y = 1.5
+FAR_RO_HOLD_S = 1.0
 VRU_TRACK_ID_BASE = 1 << 30  # must match opendbc car/toyota/ars510_radar_interface.py (radarTrackId is Int32)
 DISPLAY_FMT = "<fffB"
 DISPLAY_FMT_SIZE = struct.calcsize(DISPLAY_FMT)
@@ -289,6 +295,8 @@ class RadarD:
     self.vru_cnt: dict[int, int] = {}         # consecutive cycles a two-wheeler qualified as an in-path override
     self.vru_active: int | None = None        # track id currently overriding leadOne
     self.vru_overrides = 0
+    self.far_ro_t: float | None = None        # ars510: radar-only far target logging, see log_far_radar_only
+    self.far_ro_on = False
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -363,10 +371,33 @@ class RadarD:
       self.keep_ids = [lead.radarTrackId if (lead.present and lead.radar) else None
                        for lead in (self.radar_state.leadOne, self.radar_state.leadTwo)]
       self.vru_override(sm['modelV2'].position)
+      self.log_far_radar_only()
     else:
       self.keep_ids = [None, None]
       self.vru_cnt.clear()
       self.vru_active = None
+
+  def log_far_radar_only(self) -> None:
+    """ars510, logging only: the radar's ACC target (trackId < 64) far, in path and closing while openpilot has no lead.
+    10/30: on 28 highway segments this held >= 1 s twice (once the camera confirmed the car 2.7 s later, once never);
+    collect more before letting it brake. cloudlog "ARS510 radar-only far target on/off"."""
+    lead = self.radar_state.leadOne
+    cand = None
+    if not lead.present and self.v_ego > FAR_RO_MIN_V:
+      cands = [t for i, t in self.tracks.items() if isinstance(i, int) and 0 <= i < 64 and t.dRel >= FAR_RO_MIN_D and
+               t.vRel < FAR_RO_MAX_VREL and abs(t.yRel) < FAR_RO_MAX_Y]
+      cand = min(cands, key=lambda t: t.dRel) if cands else None
+    if cand is not None:
+      if self.far_ro_t is None:
+        self.far_ro_t = time.monotonic()
+      elif not self.far_ro_on and time.monotonic() - self.far_ro_t >= FAR_RO_HOLD_S:
+        self.far_ro_on = True
+        cloudlog.info(f"ARS510 radar-only far target on: d={cand.dRel:.1f} y={cand.yRel:.1f} vRel={cand.vRel:.2f} v_ego={self.v_ego:.1f}")
+    else:
+      if self.far_ro_on:
+        cloudlog.info(f"ARS510 radar-only far target off: lead={'yes' if lead.present else 'no'} d={lead.dRel:.1f}")
+      self.far_ro_t = None
+      self.far_ro_on = False
 
   def vru_override(self, position) -> None:
     """leadOne := a settled, moving two-wheeler in the ego path that is clearly closer than the lead chosen so far."""
