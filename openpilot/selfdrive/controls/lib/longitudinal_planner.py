@@ -115,8 +115,7 @@ A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
 A_POS_JERK_BP = [10., 25.]                  # m/s
 A_POS_JERK_V = [0.6, 0.25]                  # m/s^3, how fast the ceiling lets acceleration build
 ACCEL_SCALE_FILE = "/data/ars510_accel_scale"  # 0.3-1.0 multiplier, 0 disables the ceiling; default 1.0
-A_POS_TAPER_BP = [2., 5., 10.]             # km/h below the set speed
-A_POS_TAPER_V = [0.35, 0.7, 1.0]           # fraction of the ceiling
+A_POS_TAU = 10.                            # s, time constant of the approach to the set speed (deficit shrinks to 37 % per tau)
 
 
 def read_accel_scale() -> float:
@@ -404,8 +403,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.accel_scale = read_accel_scale()
     if self.CP.openpilotLongitudinalControl and not reset_state and self.accel_scale > 0.:
       cap = float(np.interp(v_ego, A_POS_MAX_BP, A_POS_MAX_V)) * self.accel_scale
-      # taper toward the set speed like a driver easing off before reaching it (no overshoot, no last-moment cut)
-      cap *= float(np.interp((v_cruise - v_ego) * CV.MS_TO_KPH, A_POS_TAPER_BP, A_POS_TAPER_V))
+      # first-order approach to the set speed: a <= (v_set - v) / tau, so the speed settles exponentially with no overshoot
+      cap = min(cap, max(v_cruise - v_ego, 0.) / A_POS_TAU)
       cap = min(cap, max(a_prev, 0.) + float(np.interp(v_ego, A_POS_JERK_BP, A_POS_JERK_V)) * self.dt)
       if output_a_target > cap:
         output_a_target = cap
