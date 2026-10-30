@@ -43,7 +43,8 @@ SOFT_STOP_ONSET_A = -0.08      # m/s^2, filtered pose deceleration beyond this w
 # from 0.6 m/s to 0 with the friction brake engaged the whole way. The three with a jolt (-0.29..-0.43, rebound
 # 0.23..0.55) had a plateau at 0.4-0.5 m/s first: the planner eased its request to -0.05..-0.3, the PCM let the brake go
 # (release at about -0.31), the car crept, and the brake had to re-engage at crawl speed, which it does with a grab
-# (-0.5 m/s^2 for a -0.33 request). So below BRAKE_HOLD_V, while the planner still asks to slow down, the request is
+# (-0.5 m/s^2 for a -0.33 request). So below POS_PID_MARGIN = 0.2  # m/s^2, see the PID branch in update()
+BRAKE_HOLD_V, while the planner still asks to slow down, the request is
 # floored at BRAKE_HOLD_ACCEL to keep the brake engaged through the stop.
 BRAKE_HOLD_V = 0.6             # m/s (10/28 route 5b: 0.8 with -0.33 stopped ~2 m short of the plan and still -0.37 at the stop)
 BRAKE_HOLD_A_TARGET = -0.1     # m/s^2, planner request below this = slowing to a stop (not following a creeping lead)
@@ -316,6 +317,10 @@ class LongControl:
       error = a_target - CS.aEgo
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
+      # ars510: the planner's positive-acceleration ceiling (longitudinal_planner A_POS_MAX) is meant to be felt; the PID
+      # may add at most POS_PID_MARGIN on top of a positive target (uphill correction), never a second step of throttle.
+      if a_target > 0.:
+        output_accel = min(output_accel, a_target + POS_PID_MARGIN)
       # keep the friction brake engaged through the stop (see BRAKE_HOLD_*); latched, so a planner request that
       # hovers around the threshold while closing on a stopped lead does not release and re-grab the brake
       if CS.vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET:
