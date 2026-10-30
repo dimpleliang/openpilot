@@ -97,6 +97,15 @@ FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is k
 FAR_ACC_TRACK_ID_MAX = 64
 FAR_ACC_MIN_D = 80.                 # m
 FAR_RADAR_ONLY_MIN_V = 70. / 3.6    # m/s, both radar-only sources
+# cut-in coast (10/30): a radar object-list car (radarTracks CUTIN_TRACK_ID, see ars510_radar_interface.py) 25-90 m ahead,
+# CUTIN_PATH_Y_M off the model's path (partly in the lane, not centred: that is the lead), slower by 2 m/s+, held CUTIN_HOLD
+# cycles, above CUTIN_MIN_V: lift off to at most CUTIN_MAX_DECEL. 35 highway minutes: 12 of 16 such cars did cut in, 0-8 s
+# later (median ~3 s); the 4 others cost a few seconds of coasting. The radar's own lane-crossing flag never fired.
+CUTIN_TRACK_ID = 1 << 27
+CUTIN_PATH_Y_M = (1.0, 2.6)
+CUTIN_HOLD = 20                     # planner cycles (1 s)
+CUTIN_MIN_V = 60. / 3.6
+CUTIN_MAX_DECEL = -0.3
 # 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
 # too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
 # radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
@@ -126,6 +135,16 @@ def far_lead_accel_ceil(lead, t_follow):
   a_req = closing ** 2 / (2. * gap)
   ceil = min(lead.aLeadK, 0.) - FAR_EARLY_K * a_req + float(np.interp(ttc, FAR_EARLY_ALLOW_TTC_BP, FAR_EARLY_ALLOW_V))
   return max(ceil, FAR_EARLY_MAX_DECEL if lead.radar else FAR_EARLY_MAX_DECEL_VISION), w
+
+
+def cutin_accel_ceil(obj, t_follow):
+  """Coast cap for a cut-in candidate: the constant deceleration that would settle behind it, never below CUTIN_MAX_DECEL."""
+  closing = -obj.vRel
+  if closing < 2.0:
+    return None
+  gap = obj.dRel - (t_follow * max(obj.vLead, 0.) + STOP_DISTANCE + FAR_LEAD_MARGIN)
+  a_req = closing ** 2 / (2. * gap) if gap > 1. else -CUTIN_MAX_DECEL
+  return max(-a_req, CUTIN_MAX_DECEL), 1.0
 
 
 def fuse_far_object(lead, fo):
@@ -165,6 +184,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.far_early_cap: float | None = None  # ars510: current early ease-off cap (ramped), see FAR_EARLY_K
     self.far_early_active: str | None = None
     self.far_obj = None  # ars510: radar-only far object (see far_object)
+    self.cutin = None    # ars510: cut-in candidate (see cutin_object)
+    self.cutin_cnt = 0
     self.far_obj_age = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
@@ -276,6 +297,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           if res is None or res_obj[0] * res_obj[1] < res[0] * res[1]:
             res = res_obj
             radar_only = True
+      ci = self.cutin_object(sm, v_ego, lead_one)
+      if ci is not None:
+        res_ci = cutin_accel_ceil(ci, t_follow)
+        if res_ci is not None and (res is None or res_ci[0] * res_ci[1] < res[0] * res[1]):
+          res = res_ci
+          radar_only = True
+          fo = ci
       if res is not None:
         ceil, w = res
         target = output_a_target + w * (ceil - output_a_target) if output_a_target > ceil else output_a_target
@@ -287,7 +315,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           early = ceil
     if early is None:
       self.far_early_cap = None
-    state = None if early is None else ("radar-only" if radar_only else "lead")
+    state = None if early is None else (getattr(fo, "src", "radar-only") if radar_only else "lead")
     if state != self.far_early_active:
       self.far_early_active = state
       lead = sm['radarState'].leadOne
@@ -332,6 +360,28 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if self.far_obj_age > FAR_OBJ_HOLD:
         self.far_obj = None
     return self.far_obj
+
+  def cutin_object(self, sm, v_ego, lead):
+    """ars510: the cut-in candidate (CUTIN_TRACK_ID) once it has sat CUTIN_PATH_Y_M off the model path for CUTIN_HOLD cycles."""
+    ok = False
+    if 'radarTracks' in sm.data and sm.updated['radarTracks'] and v_ego > CUTIN_MIN_V:
+      pts = [p for p in sm['radarTracks'].points if p.trackId == CUTIN_TRACK_ID]
+      if pts:
+        p = pts[0]
+        pos = sm['modelV2'].position
+        path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 and p.dRel <= pos.x[-1] else 0.
+        off = abs(p.yRel - path_y)
+        closer_than_lead = not lead.present or p.dRel < lead.dRel - 6.  # a car beyond the lead cannot cut in front of us
+        if CUTIN_PATH_Y_M[0] < off < CUTIN_PATH_Y_M[1] and closer_than_lead:
+          ok = True
+          self.cutin_cnt += 1
+          self.cutin = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
+                                             vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y), src="cut-in")
+    if not ok:
+      self.cutin_cnt = max(self.cutin_cnt - 2, 0)  # a missed cycle or two does not reset the hold
+      if self.cutin_cnt == 0:
+        self.cutin = None
+    return self.cutin if self.cutin_cnt >= CUTIN_HOLD else None
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

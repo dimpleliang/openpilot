@@ -114,6 +114,14 @@ FAR_LOG_CLASSES = (2, 3)
 # the logged far object (while "on") also goes to radarTracks as one point with this trackId. radard leaves it out of
 # its tracks (no lead from it); the planner only uses it to ease off early (FAR_RADAR_ONLY_MAX_DECEL there).
 FAR_OBJ_TRACK_ID = 1 << 28
+# cut-in candidate (coast only, 10/30): the closest object-list car at CUTIN_D_M that is partly in the ego lane
+# (|y| < CUTIN_MAX_Y_M here; the planner gates 1.0-2.6 m from the model path), closing faster than CUTIN_MAX_VREL, and not
+# one of the published (ACC / summary) cars. radarTracks point with trackId CUTIN_TRACK_ID; radard ignores it.
+# 46:00 on 10/30: a car merged from the right over 9 s (y -2.1 -> -0.7) before the radar's ACC took it at 65 m.
+CUTIN_TRACK_ID = 1 << 27
+CUTIN_D_M = (25.0, 90.0)
+CUTIN_MAX_Y_M = 3.5
+CUTIN_MAX_VREL = -2.0
 STALE_S = 0.5  # radard leaves track-content staleness to this interface
 NO_RECORD_WARN_S = 15.0
 EMPTY_PERIOD = 5  # during record gaps, report every 5th update (card calls update at 100 Hz -> 20 Hz)
@@ -284,6 +292,10 @@ class Ars510RadarInterface(RadarInterfaceBase):
       st = self.__dict__.setdefault("far_log", {"n": 0, "miss": 0, "on": False, "t0": 0.0, "d0": 0.0, "last": None})
       min_d = FAR_LOG_KEEP_D_M if st["on"] else FAR_LOG_MIN_D_M
       rows = getattr(self.ars, "far_rows", None) or []
+      cut = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
+             and r[5] in FAR_LOG_CLASSES and CUTIN_D_M[0] <= r[0] < CUTIN_D_M[1] and abs(r[1]) < CUTIN_MAX_Y_M and r[2] == r[2]
+             and r[2] < CUTIN_MAX_VREL and not any(abs(r[0] - d) < 6.0 and abs(r[1] - y) < 1.5 for d, y in self.last_out)]
+      self.cutin_points = [{"trackId": 0, "dRel": float(c[0]), "yRel": float(c[1]), "vRel": float(c[2])} for c in sorted(cut)[:1]]
       cands = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
                and r[5] in FAR_LOG_CLASSES and r[0] >= min_d and abs(r[1]) < FAR_LOG_MAX_Y_M and r[2] == r[2] and r[2] < FAR_LOG_MAX_VREL]
       if st["on"] and st["last"] is not None:  # stay on the same car: within 10 m of its last range
@@ -307,6 +319,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
           st["n"] = 0; st["on"] = False
     except Exception:
       self.far_obj_points = []
+      self.cutin_points = []
       carlog.exception("ARS510 far object log")
 
   def _far_stopped(self, out) -> list:
@@ -354,7 +367,8 @@ class Ars510RadarInterface(RadarInterfaceBase):
       return ret
     extra = []
     for points, id_base in ((self.vru_points, VRU_TRACK_ID_BASE), (self.far_points, FAR_TRACK_ID_BASE),
-                            (getattr(self, "far_obj_points", []), FAR_OBJ_TRACK_ID)):
+                            (getattr(self, "far_obj_points", []), FAR_OBJ_TRACK_ID),
+                            (getattr(self, "cutin_points", []), CUTIN_TRACK_ID)):
       for p in points:
         if any(abs(p["dRel"] - q.dRel) < VRU_SAME_D_M and abs(p["yRel"] - q.yRel) < VRU_SAME_Y_M for q in base):
           continue
