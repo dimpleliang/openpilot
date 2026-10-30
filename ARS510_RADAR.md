@@ -444,4 +444,4 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 ## rlog 自動上傳（10/31）
 
 - 10/30 的 qlog／低解析影片都有傳到 comma connect（走 4G），但 rlog 一個都沒傳：原本的規則只在非計費網路上傳，而車機從未連上 Wi-Fi。
-- 改成熄火時任何網路都自動上傳 rlog（使用者 4G 吃到飽）。全解析影片仍需在 connect 按 Upload。
+- 查明：車機主動上傳 rlog 會被 comma 伺服器回 412 拒絕（10/30 共 448 筆 upload_ignored），所以裝置端的自動 rlog 規則無效，已移除。rlog 一律在 connect 對該趟按「All logs」請求（10/31 已對 10/30 的 8 趟、256 段請求）。qlog／低解析影片本來就自動上傳。
