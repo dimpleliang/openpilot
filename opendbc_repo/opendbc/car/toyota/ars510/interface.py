@@ -476,7 +476,7 @@ class Ars510NativeRadarInterface:
             far_rows.append((float(d_rel), float(obj.y_rel), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0)))
             shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
-                shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0]
+                shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0, int(tid) & 0xFFFF]
                 display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1

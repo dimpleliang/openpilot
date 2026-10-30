@@ -155,20 +155,22 @@ FAR_RO_HOLD_S = 1.0
 FAR_OBJ_TRACK_ID = 1 << 28  # must match opendbc car/toyota/ars510_radar_interface.py
 CUTIN_TRACK_ID = 1 << 27    # idem: cut-in candidate for the planner's coast, never a lead track
 VRU_TRACK_ID_BASE = 1 << 30  # must match opendbc car/toyota/ars510_radar_interface.py (radarTrackId is Int32)
-DISPLAY_FMT = "<fffB"
+DISPLAY_FMT = "<fffBH"  # v2 display rows (ars510_radar_interface.py); v1 "<fffB" still accepted
 DISPLAY_FMT_SIZE = struct.calcsize(DISPLAY_FMT)
 
 
 def parse_display_classes(payload: bytes) -> dict[tuple[float, float], tuple[int, bool]]:
   """(dRel, yRel) -> (class, settling) from the ARS510 display message. Same float32 values as the radarTracks points."""
   out: dict[tuple[float, float], tuple[int, bool]] = {}
-  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] != 1:
+  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2):
     return out
+  fmt = "<fffB" if payload[2] == 1 else DISPLAY_FMT
+  size = struct.calcsize(fmt)
   for i in range(payload[3]):
-    off = 4 + i * DISPLAY_FMT_SIZE
-    if off + DISPLAY_FMT_SIZE > len(payload):
+    off = 4 + i * size
+    if off + size > len(payload):
       break
-    d, y, _v, flags = struct.unpack_from(DISPLAY_FMT, payload, off)
+    d, y, _v, flags = struct.unpack_from(fmt, payload, off)[:4]
     out[(d, y)] = ((flags >> 2) & 7, bool(flags & 2))
   return out
 

@@ -18,8 +18,8 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 SERVICE = "customReservedRawData0"
-FMT = "<fffB"
-FMT_SIZE = struct.calcsize(FMT)
+FMT_V1 = "<fffB"
+FMT = "<fffBH"  # v2: + native track id
 STALE_FRAMES = 10  # ui frames (20 Hz) without a radar record before the markers go away
 MAX_DRAW_M = 120.0
 LEAD_MATCH_D_M = 2.0
@@ -28,6 +28,18 @@ LANE_HALF_M = 1.8  # half a lane: an object's lateral distance from the predicte
 
 COLOR_PATH = (60, 220, 120)
 COLOR_SIDE = (255, 60, 60)  # next lanes: red (cyan was hard to see)
+COLOR_CUTIN = (255, 190, 0)  # amber: a next-lane car drifting toward my lane (see _cutin)
+
+# Cut-in prediction (display only, 10/31): a next-lane car whose lateral distance to my path has been shrinking faster than
+# CUTIN_RATE over the last CUTIN_WIN seconds, still CUTIN_OFF_MIN..CUTIN_OFF_MAX m from the path, slower than me, 25-90 m
+# ahead. On 220 km of 10/30 logs this marks about a third of real cut-ins ~2 s early and one in five line-hugging cars for
+# about a second. Needs the v2 display rows (track id) to follow a car between frames.
+CUTIN_WIN = 2.0
+CUTIN_RATE = -0.15  # m/s of |offset|
+CUTIN_OFF_MIN, CUTIN_OFF_MAX = 0.8, 2.6
+CUTIN_D = (25.0, 90.0)
+CUTIN_VREL = -1.5
+CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
 
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
@@ -46,24 +58,37 @@ def _label(cls: int, settling: bool) -> str:
   return CLASS_LABELS[cls][0 if zh else 1] + " "
 
 
-def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool, int]]:
-  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] != 1:
+def _cutin_label() -> str:
+  try:
+    from openpilot.system.ui.lib.multilang import multilang
+    return "併入 " if multilang.language == "zh-CHT" else "CUT-IN "
+  except Exception:
+    return "CUT-IN "
+
+
+def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool, int, int]]:
+  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2):
     return []
+  fmt = FMT_V1 if payload[2] == 1 else FMT
+  size = struct.calcsize(fmt)
   n = payload[3]
   out = []
   for i in range(n):
-    off = 4 + i * FMT_SIZE
-    if off + FMT_SIZE > len(payload):
+    off = 4 + i * size
+    if off + size > len(payload):
       break
-    d, y, v, flags = struct.unpack_from(FMT, payload, off)
-    out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7))
+    f = struct.unpack_from(fmt, payload, off)
+    d, y, v, flags = f[:4]
+    out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7, f[4] if len(f) > 4 else -1))
   return out
 
 
 class Ars510Tracks:
   def __init__(self):
     self._font = gui_app.font(FontWeight.SEMI_BOLD)
-    self._points: list[tuple[float, float, float, bool, bool, int]] = []
+    self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
+    self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
+    self._hold: dict[int, int] = {}                      # track id -> consecutive frames the cut-in condition held
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -81,7 +106,9 @@ class Ars510Tracks:
             leads.append((lead.dRel, lead.yRel))
 
       v_ego = sm['carState'].vEgo
-      for d, y, v, _sent, settling, cls in self._points:
+      fresh = sm.updated[SERVICE]
+      seen = set()
+      for d, y, v, _sent, settling, cls, tid in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
         if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
@@ -90,12 +117,35 @@ class Ars510Tracks:
         pt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
         if pt is None:
           continue
-        in_lane = abs(y_right - path_y(d)) < LANE_HALF_M
-        self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect, settling, cls)
+        off = abs(y_right - path_y(d))
+        in_lane = off < LANE_HALF_M
+        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling) if tid >= 0 else False
+        if tid >= 0:
+          seen.add(tid)
+        self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin)
+      if fresh:
+        for tid in [k for k in self._hist if k not in seen]:
+          self._hist.pop(tid, None); self._hold.pop(tid, None)
     except Exception:
       self._points = []
 
-  def _draw_marker(self, pt, d: float, v_ground: float, rgb, rect: rl.Rectangle, settling: bool = False, cls: int = 0):
+  def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool) -> bool:
+    """Lateral-offset trend over CUTIN_WIN: True while the car has been drifting toward my path for CUTIN_HOLD_FRAMES."""
+    h = self._hist.setdefault(tid, [])
+    if fresh:
+      h.append((frame, off))
+      while h and frame - h[0][0] > CUTIN_WIN * 20:
+        h.pop(0)
+    ok = False
+    if len(h) >= 6 and not settling and CUTIN_OFF_MIN < off < CUTIN_OFF_MAX and vrel < CUTIN_VREL and CUTIN_D[0] <= d <= CUTIN_D[1]:
+      t = np.array([x[0] for x in h], float) / 20.0; o = np.array([x[1] for x in h], float)
+      slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
+      ok = slope < CUTIN_RATE
+    if fresh:
+      self._hold[tid] = self._hold.get(tid, 0) + 1 if ok else 0
+    return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES
+
+  def _draw_marker(self, pt, d: float, v_ground: float, rgb, rect: rl.Rectangle, settling: bool = False, cls: int = 0, cutin: bool = False):
     x, y = pt
     sz = float(np.clip((25 * 30) / (d / 3 + 30), 12.0, 30.0)) * 0.9
     color = rl.Color(*rgb, 110 if settling else 230)  # settling: range / speed not converged yet
@@ -104,10 +154,11 @@ class Ars510Tracks:
     for a, b in ((top, right), (right, bottom), (bottom, left), (left, top)):
       rl.draw_line_ex(a, b, 4.0, color)
 
+    tag = _cutin_label() if cutin else _label(cls, settling)
     if ui_state.is_metric:
-      dist, speed = f"{_label(cls, settling)}R {max(0.0, d):.0f} m", f"{max(0.0, v_ground * CV.MS_TO_KPH):.0f} km/h"
+      dist, speed = f"{tag}R {max(0.0, d):.0f} m", f"{max(0.0, v_ground * CV.MS_TO_KPH):.0f} km/h"
     else:
-      dist, speed = f"{_label(cls, settling)}R {max(0.0, d) * 3.28084:.0f} ft", f"{max(0.0, v_ground * CV.MS_TO_MPH):.0f} mph"
+      dist, speed = f"{tag}R {max(0.0, d) * 3.28084:.0f} ft", f"{max(0.0, v_ground * CV.MS_TO_MPH):.0f} mph"
 
     font_size, line_h, margin = 32, 38, 20
     text_y = y + 8
