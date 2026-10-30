@@ -105,6 +105,12 @@ FAR_LOG_MAX_Y_M = 4.0  # loose here (curves); the planner gates against the mode
 FAR_LOG_MAX_VREL = -1.5
 FAR_LOG_MIN_V = 70.0 / 3.6
 FAR_LOG_N = 5
+# the far object (coast only) does not wait for the publish age (20 records, 1.2 s): a radar track of FAR_LOG_MIN_AGE
+# records (0.5 s) that the radar already calls a car / large vehicle with existence >= FAR_LOG_MIN_EXIST qualifies.
+# 15:04: the track started at 09.68, was a settled car from 10.03, the age-20 gate fired at 11.08.
+FAR_LOG_MIN_AGE = 8
+FAR_LOG_MIN_EXIST = 60
+FAR_LOG_CLASSES = (2, 3)
 # the logged far object (while "on") also goes to radarTracks as one point with this trackId. radard leaves it out of
 # its tracks (no lead from it); the planner only uses it to ease off early (FAR_RADAR_ONLY_MAX_DECEL there).
 FAR_OBJ_TRACK_ID = 1 << 28
@@ -269,16 +275,17 @@ class Ars510RadarInterface(RadarInterfaceBase):
 
 
   def _log_far(self, out, display) -> None:
-    """Logging only. Beyond 60 m the fused decoder publishes only the ACC target, so this reads the display rows
-    (every settled object): the closest one past FAR_LOG_MIN_D_M within |y| FAR_LOG_MAX_Y_M, closing faster than
+    """Far object for the planner's coast (and its log). Beyond 60 m the fused decoder publishes only the ACC target, so
+    this reads every decoded object: the closest car past FAR_LOG_MIN_D_M within |y| FAR_LOG_MAX_Y_M, closing faster than
     FAR_LOG_MAX_VREL, for FAR_LOG_N records in a row -> on; FAR_LOG_N records without one -> off."""
     try:
       t = out["time_s"]
       v_ego = self.ars._fresh_ego_speed(t)
       st = self.__dict__.setdefault("far_log", {"n": 0, "miss": 0, "on": False, "t0": 0.0, "d0": 0.0, "last": None})
       min_d = FAR_LOG_KEEP_D_M if st["on"] else FAR_LOG_MIN_D_M
-      cands = [r for r in display if v_ego is not None and v_ego > FAR_LOG_MIN_V and not r[4] and r[0] >= min_d
-               and abs(r[1]) < FAR_LOG_MAX_Y_M and r[2] == r[2] and r[2] < FAR_LOG_MAX_VREL]
+      rows = getattr(self.ars, "far_rows", None) or []
+      cands = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
+               and r[5] in FAR_LOG_CLASSES and r[0] >= min_d and abs(r[1]) < FAR_LOG_MAX_Y_M and r[2] == r[2] and r[2] < FAR_LOG_MAX_VREL]
       if st["on"] and st["last"] is not None:  # stay on the same car: within 10 m of its last range
         cands = [r for r in cands if abs(r[0] - st["last"][0]) < 10.0]
       if cands:

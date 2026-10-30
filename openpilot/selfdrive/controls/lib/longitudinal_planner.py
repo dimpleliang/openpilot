@@ -95,10 +95,11 @@ FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is k
 # 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
 # too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
 # radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
-# range (curves); a barely-slower lead far away in time still allows some acceleration (FAR_EARLY_ALLOW over TTC).
+# range (curves, FAR_OBJ_PATH_Y_*); a barely-slower lead far away in time still allows some acceleration (FAR_EARLY_ALLOW over TTC).
 FAR_EARLY_JERK_UP = 0.3             # m/s^3
 FAR_FUSE_D_M = 15.                  # m
-FAR_OBJ_PATH_Y_M = 2.2              # m, |yRel - model path y at dRel|
+FAR_OBJ_PATH_Y_BP = [80., 150.]     # m, dRel
+FAR_OBJ_PATH_Y_V = [2.2, 3.0]       # m, |yRel - model path y at dRel|; the path's lateral error grows with range
 FAR_EARLY_ALLOW_TTC_BP = [15., 40.]  # s, time to reach the lead
 FAR_EARLY_ALLOW_V = [0., 0.4]       # m/s^2 of acceleration still allowed
 
@@ -307,7 +308,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         p = pts[0]
         pos = sm['modelV2'].position
         path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 and p.dRel <= pos.x[-1] else 0.
-        if abs(p.yRel - path_y) < FAR_OBJ_PATH_Y_M:
+        if abs(p.yRel - path_y) < float(np.interp(p.dRel, FAR_OBJ_PATH_Y_BP, FAR_OBJ_PATH_Y_V)):
           self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
                                                vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y))
           self.far_obj_age = 0

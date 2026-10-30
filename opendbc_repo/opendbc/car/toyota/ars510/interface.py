@@ -452,6 +452,7 @@ class Ars510NativeRadarInterface:
         acc_tid, acc_vrel = self._acc_target_match(time_s, decoded)
         points = []
         display: list[list] = []
+        far_rows: list[tuple] = []  # every geometry-valid object: (dRel, yRel, vRel, age, existence %, class), for the far-object coast
         for slot, obj, tid in decoded:
             if not obj.geometry_valid or not obj.lateral_valid:
                 continue
@@ -472,6 +473,7 @@ class Ars510NativeRadarInterface:
             if obj.age >= 2:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
+            far_rows.append((float(d_rel), float(obj.y_rel), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0)))
             shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
                 shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0]
@@ -523,6 +525,7 @@ class Ars510NativeRadarInterface:
             if shown is not None:  # a profile publishing younger than DISPLAY_MIN_AGE (ALL_TRACKS_CONFIG) has no display row
                 shown[3] = True
         self.display_points = display
+        self.far_rows = far_rows
         self._prune(time_s)
         errors = {"canError": False, "radarFault": False, "wrongConfig": False, "radarUnavailableTemporary": False}
         return {"time_s": float(time_s), "radarData": {"points": points, "errors": errors}}
