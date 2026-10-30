@@ -113,7 +113,7 @@ E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
 A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
 A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
 A_POS_JERK_BP = [10., 25.]                  # m/s
-A_POS_JERK_V = [0.6, 0.25]                  # m/s^3, how fast the ceiling lets acceleration build
+A_POS_JERK_V = [0.5, 0.15]                  # m/s^3, how fast the ceiling lets acceleration build (10/30: 0.25 -> 0.15, PCM still overshot 0.26 -> 0.80 for a second)
 ACCEL_SCALE_FILE = "/data/ars510_accel_scale"  # 0.3-1.0 multiplier, 0 disables the ceiling; default 1.0
 A_POS_TAU = 10.                            # s, time constant of the approach to the set speed (deficit shrinks to 37 % per tau)
 
