@@ -318,3 +318,13 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 避免畫面持有已刪除連線的影格 fd）。重開後 53 分鐘、27 個 log 檔 EBADF 0 次，UI fd 數穩定約 116。
 廣角／一般鏡頭的切換是原設計：< 18 km/h 廣角、> 36 km/h 一般，中間維持。mici（comma four）介面未改，本車不用。
 
+
+## 遠距前車煞車變柔和（10/30）
+
+- 起因：10/30 13:27，118 km/h 時雷達在 118 m 才看到前方約 75 km/h 的車（接近速度 12 m/s；ACC 目標與物件清單同時出現，是雷達距離極限，不是濾波延遲）。MPC 在 2 秒內煞到 −1.9 m/s²，實際只需約 −0.9。
+- 修改（`longitudinal_planner.py` 的 `far_lead_accel_floor`）：雷達前車、MPC 來源為 lead0、無 FCW 時，減速度不超過
+  `1.25 ×（接近速度² ÷ 2 ÷（距離 −（跟車秒數 × 前車速度 + 6 m + 5 m）））`，再加上前車本身的減速。
+- 距離 50→70 m、到達時間 5→7 秒之間漸進生效；更近或更急時完全照原本 MPC 煞車。前車煞車超過 −1.0 m/s² 時不限制。限制最少保留 −0.3。
+- 開環重播 13:27：峰值 −1.91 → 約 −1.5（實車閉環會更早介入，預期約 −1.3）。
+- 紀錄：cloudlog「ARS510 far lead soft on/off」。關閉：`touch /data/ars510_no_far_lead_soft`（約 1 秒內生效）。
+- 閉環驗證（真 MPC，裝置熄火時跑）：`PYTHONPATH=/data/openpilot /usr/local/venv/bin/python3 /data/farlead_sim.py`。

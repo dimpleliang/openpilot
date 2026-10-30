@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import numpy as np
 
 import openpilot.cereal.messaging as messaging
@@ -9,7 +10,8 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, \
+  get_T_FOLLOW, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -36,6 +38,39 @@ TURN_NO_ACCEL_ANGLE = 45.        # deg, steering wheel
 TURN_NO_ACCEL_EXIT_ANGLE = 30.   # deg
 TURN_NO_ACCEL_MIN_V = 3.         # m/s
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
+# ars510: gentler braking for a far, newly-seen slower lead. 10/30 13:27: radar first saw a car 118 m ahead closing at
+# 12 m/s (118 km/h vs 75 km/h); the MPC went to -1.9 m/s^2 within 2 s although about -0.9 m/s^2 would close the gap.
+# While the radar lead is far and time to reach it is long, braking is limited to FAR_LEAD_K times the constant
+# deceleration that removes the closing speed before a comfortable gap (follow distance + FAR_LEAD_MARGIN).
+# The limit fades out as distance or time to contact shrink, so the MPC brakes as before when the lead is close.
+# Off: touch /data/ars510_no_far_lead_soft.
+FAR_LEAD_K = 1.25
+FAR_LEAD_MARGIN = 5.           # m, added to t_follow * v_lead + STOP_DISTANCE
+FAR_LEAD_D_BP = [50., 70.]     # m, dRel: no limit below 50 m, full limit above 70 m
+FAR_LEAD_TTC_BP = [5., 7.]     # s, dRel / closing speed: no limit below 5 s, full limit above 7 s
+FAR_LEAD_MIN_CLOSING = 1.0     # m/s
+FAR_LEAD_MAX_LEAD_DECEL = -1.0  # m/s^2, lead braking harder than this: no limit
+FAR_LEAD_MIN_DECEL = -0.3      # the limit never asks for less braking than this
+FAR_LEAD_OFF_FILE = "/data/ars510_no_far_lead_soft"
+
+
+def far_lead_accel_floor(lead, t_follow):
+  """Lowest acceleration allowed for a far radar lead, and how much of it applies (0..1). None when not applicable."""
+  if not (lead.present and lead.radar):
+    return None
+  closing = -lead.vRel
+  if closing < FAR_LEAD_MIN_CLOSING or lead.aLeadK < FAR_LEAD_MAX_LEAD_DECEL:
+    return None
+  ttc = lead.dRel / closing
+  w = float(np.interp(lead.dRel, FAR_LEAD_D_BP, [0., 1.]) * np.interp(ttc, FAR_LEAD_TTC_BP, [0., 1.]))
+  if w <= 0.:
+    return None
+  gap = lead.dRel - (t_follow * max(lead.vLead, 0.) + STOP_DISTANCE + FAR_LEAD_MARGIN)
+  if gap <= 1.:
+    return None
+  a_req = closing ** 2 / (2. * gap)
+  floor = min(min(lead.aLeadK, 0.) - FAR_LEAD_K * a_req, FAR_LEAD_MIN_DECEL)
+  return floor, w
 
 
 def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, dt):
@@ -61,6 +96,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_a_target = init_a
     self.output_should_stop = False
     self.turning = False  # ars510: wheel turned far (junction turn), see TURN_NO_ACCEL_ANGLE
+    self.far_lead_active = False  # ars510: far-lead braking limit in effect, see FAR_LEAD_K
+    self.far_lead_off = os.path.exists(FAR_LEAD_OFF_FILE)
+    self.far_lead_cnt = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -134,6 +172,25 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+
+    # ars510: limit braking for a far radar lead (see FAR_LEAD_K); only when the MPC's lead0 decides and no FCW
+    self.far_lead_cnt += 1
+    if self.far_lead_cnt >= 20:
+      self.far_lead_cnt = 0
+      self.far_lead_off = os.path.exists(FAR_LEAD_OFF_FILE)
+    far_active = False
+    if self.CP.openpilotLongitudinalControl and not self.far_lead_off and not self.fcw and \
+       self.mpc.source == LongitudinalPlanSource.lead0 and self.mpc.crash_cnt == 0:
+      res = far_lead_accel_floor(sm['radarState'].leadOne, get_T_FOLLOW(sm['selfdriveState'].personality))
+      if res is not None:
+        floor, w = res
+        if output_a_target < floor:
+          output_a_target = output_a_target + w * (floor - output_a_target)
+          far_active = True
+    if far_active != self.far_lead_active:
+      self.far_lead_active = far_active
+      lead = sm['radarState'].leadOne
+      cloudlog.info(f"ARS510 far lead soft {'on' if far_active else 'off'} d={lead.dRel:.1f} vRel={lead.vRel:.2f} a={output_a_target:.2f}")
 
     # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
