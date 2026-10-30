@@ -104,10 +104,10 @@ FAR_RADAR_ONLY_MAX_CLOSING = 12.    # m/s
 # later (median ~3 s); the 4 others cost a few seconds of coasting. The radar's own lane-crossing flag never fired.
 E2E_FILL_MIN_V = 40. / 3.6          # m/s
 E2E_FILL_INDIFFERENT = -0.15        # m/s^2: the model asking for less than this wants to slow -> untouched
-E2E_FILL_K = 0.1                    # m/s^2 per m/s of speed deficit (12 km/h short -> 0.33)
+E2E_FILL_K = 0.07                   # m/s^2 per m/s of speed deficit (12 km/h short -> 0.23)
 E2E_FILL_A_MAX_BP = [15., 25., 35.]  # m/s
-E2E_FILL_A_MAX_V = [0.4, 0.3, 0.25]  # m/s^2, unhurried
-E2E_FILL_JERK = 0.3                 # m/s^3
+E2E_FILL_A_MAX_V = [0.3, 0.22, 0.18]  # m/s^2, unhurried (10/30 evening: 0.4/0.3/0.25 still felt too strong)
+E2E_FILL_JERK = 0.2                 # m/s^3
 E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
 CUTIN_TRACK_ID = 1 << 27
 CUTIN_PATH_Y_M = (1.0, 2.6)
