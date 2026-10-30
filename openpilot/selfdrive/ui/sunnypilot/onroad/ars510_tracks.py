@@ -122,7 +122,10 @@ class Ars510Tracks:
         cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling) if tid >= 0 else False
         if tid >= 0:
           seen.add(tid)
-        self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin)
+        arrow = 0
+        if cutin:
+          arrow = -1 if (y_right - path_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
+        self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin, arrow)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
           self._hist.pop(tid, None); self._hold.pop(tid, None)
@@ -145,10 +148,28 @@ class Ars510Tracks:
       self._hold[tid] = self._hold.get(tid, 0) + 1 if ok else 0
     return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES
 
-  def _draw_marker(self, pt, d: float, v_ground: float, rgb, rect: rl.Rectangle, settling: bool = False, cls: int = 0, cutin: bool = False):
+  def _draw_arrow(self, x: float, y: float, direction: int, sz: float, color):
+    """A bold horizontal arrow beside the marker pointing the way the car is drifting (into my lane)."""
+    L = sz * 3.0; head = sz * 1.1; th = max(5.0, sz * 0.35)
+    x0 = x - direction * (sz * 1.3)          # tail starts just outside the diamond on the car's side
+    x1 = x0 - direction * L                  # head toward my lane
+    yc = y - sz * 0.7
+    shadow = rl.Color(0, 0, 0, 160)
+    for col, w in ((shadow, th + 4), (color, th)):
+      rl.draw_line_ex(rl.Vector2(x0, yc), rl.Vector2(x1 + direction * head * 0.6, yc), w, col)
+    tip = rl.Vector2(x1, yc); b1 = rl.Vector2(x1 + direction * head, yc - head * 0.8); b2 = rl.Vector2(x1 + direction * head, yc + head * 0.8)
+    # raylib draws a 2D triangle only with counter-clockwise vertices; the winding depends on the direction, so draw both
+    rl.draw_triangle(rl.Vector2(tip.x, tip.y + 3), rl.Vector2(b1.x, b1.y + 3), rl.Vector2(b2.x, b2.y + 3), shadow)
+    rl.draw_triangle(rl.Vector2(tip.x, tip.y + 3), rl.Vector2(b2.x, b2.y + 3), rl.Vector2(b1.x, b1.y + 3), shadow)
+    rl.draw_triangle(tip, b1, b2, color)
+    rl.draw_triangle(tip, b2, b1, color)
+
+  def _draw_marker(self, pt, d: float, v_ground: float, rgb, rect: rl.Rectangle, settling: bool = False, cls: int = 0, cutin: bool = False, arrow: int = 0):
     x, y = pt
     sz = float(np.clip((25 * 30) / (d / 3 + 30), 12.0, 30.0)) * 0.9
     color = rl.Color(*rgb, 110 if settling else 230)  # settling: range / speed not converged yet
+    if arrow:
+      self._draw_arrow(x, y, arrow, max(sz, 16.0), rl.Color(*rgb, 240))
     # A diamond outline sitting on the road at the object
     top, right, bottom, left = rl.Vector2(x, y - sz * 1.4), rl.Vector2(x + sz, y - sz * 0.7), rl.Vector2(x, y), rl.Vector2(x - sz, y - sz * 0.7)
     for a, b in ((top, right), (right, bottom), (bottom, left), (left, top)):
