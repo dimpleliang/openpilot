@@ -64,31 +64,18 @@ def events_at(t):
 
 
 def main():
-  S = H.Sections()
-  last_t, streak, last_key, last_txt = 0., 0, None, None
-  n = on = 0
-  held, held_t = [], 0.
+  tr = H.Tracker(H.Sections())
+  last_t, last_txt, n, on = 0., None, 0, 0
   for t, lon, lat, brg, v in gps_points(sys.argv[1]):
     if t - last_t < 1.0:
       continue
     last_t = t
     n += 1
-    if v > H.MATCH_MIN_V:
-      m = S.match(lon, lat, brg)
-      if m:
-        held, held_t = m, t
-    else:
-      m = held if held and t - held_t < H.HOLD_SLOW_S else []
-    key = (m[0][1], m[0][2]) if m else None
-    streak = streak + 1 if key is not None and key == last_key else (1 if key else 0)
-    last_key = key
-    txt = []
-    if m and streak >= H.MATCH_FRAMES:
-      on += 1
-      txt = [H.alert_text(d, e) for d, e in H.ahead(m, events_at(t), lon, lat, brg)[:3]]
-    road = f"{key[0]}{key[1]} {m[0][3]:6.2f}k" if m else "-"
-    line = " | ".join(txt)
-    if line != last_txt or (key and n % 120 == 0):
+    state, say = tr.step(t, (lon, lat, brg), v, events_at(t))
+    on += bool(state["road"])
+    line = " | ".join(a["text"] for a in state["alerts"]) + (f"   [語音 {'+'.join(say)}]" if say else "")
+    if line != last_txt or (state["road"] and n % 120 == 0):
+      road = f"{state['road']} {state['km']:6.2f}k" if state["road"] else "-"
       print(time.strftime("%H:%M:%S", time.gmtime(t + 8 * 3600)), f"{v * 3.6:5.1f} km/h", road, line, flush=True)
       last_txt = line
   print(f"gps {n} s, matched to a freeway {on} s")

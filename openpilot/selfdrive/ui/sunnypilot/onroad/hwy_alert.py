@@ -7,7 +7,7 @@ import pyray as rl
 
 from openpilot.common.swaglog import cloudlog
 
-from openpilot.selfdrive.hwyalert.hwyalertd import STATE_FILE, TARGET, SHORT
+from openpilot.selfdrive.hwyalert.hwyalertd import STATE_FILE, DISPLAY_CHARS, MAX_ALERTS
 from openpilot.system.ui.lib.application import FONT_DIR
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
@@ -17,7 +17,7 @@ STALE_S = 5.0
 BG = rl.Color(0xC6, 0x28, 0x28, 0xE6)     # red: accident / fire / wrong-way / people or animals on the road
 BG_WORK = rl.Color(0xEF, 0x8F, 0x00, 0xE6)  # amber: construction, debris, breakdowns, road surface
 RED = ("事故", "逆行車輛", "人員停留", "機車誤闖", "動物誤闖", "自行車誤闖", "行人誤闖", "道路封閉")
-GLYPHS = "前方 km（）[]、.0123456789第車道內外路肩全部線封閉匝平面高架火" + "".join(TARGET) + "".join(SHORT.values())
+GLYPHS = DISPLAY_CHARS
 
 
 class HwyAlertRenderer:
@@ -59,7 +59,7 @@ class HwyAlertRenderer:
     if self._font is None:
       self._load_font()
     y = rect.y + 310  # below the 300 px header (set / current speed)
-    for a in self._alerts[:2]:
+    for a in self._alerts[:MAX_ALERTS]:
       text = a["text"]
       sz = measure_text_cached(self._font, text, FONT_SIZE, 0)
       w, h = sz.x + 48, FONT_SIZE + 24

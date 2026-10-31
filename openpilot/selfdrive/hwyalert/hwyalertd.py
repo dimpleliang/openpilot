@@ -33,7 +33,11 @@ MATCH_M = 40.              # GPS to section polyline
 MATCH_HDG = 45.            # heading vs polyline direction (deg)
 MATCH_MIN_V = 5.           # heading is only trusted above this speed (m/s)
 STACK_M = 8.               # a second road this close to the best match is ambiguous: show its events too, tagged
-HOLD_SLOW_S = 120.         # below MATCH_MIN_V (jams) keep the last match this long
+DR_MAX_KM = 15.            # no GPS (tunnels, 雪山隧道 12.9 km): carry the last match forward by speed this far
+MAX_ALERTS = 2             # banners shown (and the only events the voice announces)
+SAY_GAP_S = 4.             # one announcement at a time ("前方三公里" + "故障車" is ~2 s)
+RANGE_KM = 1.0             # inside an event range at least this long (移動性施工, closures) -> "本路段"
+FETCH_RETRY_S = 15.
 MATCH_FRAMES = 3           # consecutive matches before the car counts as on the freeway
 LONG_TERM_H = 24.          # 施工維護 older than this is long-term construction: not shown
 
@@ -49,6 +53,11 @@ VOICE = {"散落物": "debris", "事故": "accident", "故障車": "breakdown", 
          "濃霧": "fog", "車輛火災": "carfire", "邊坡起火": "slopefire"}
 SAY_FILE = "/dev/shm/hwyalert_say.json"
 SAY_OFF_FILE = "/data/hwyalert_voice_off"
+
+
+# every character an alert text can contain (the UI loads only these glyphs)
+DISPLAY_CHARS = ("前方本路段 km（）[]、.–K0123456789第車道內外路肩全線匝封閉平面高架其他火災" + "".join(TARGET) + "".join(SHORT.values()) +
+                 "".join(VOICE))
 
 
 def voice_clips(d_km: float, name: str) -> list[str]:
@@ -132,14 +141,16 @@ class Sections:
           for gy in range(int(min(a[1], b[1]) // 1000) - 1, int(max(a[1], b[1]) // 1000) + 2):
             self.grid[(gx, gy)].append(i)
 
-  def match(self, lon, lat, bearing):
-    """[(dist m, road, dir, km, km increases along travel)] best per road/dir, nearest first."""
+  def match(self, lon, lat, bearing=None, only=None):
+    """[(dist m, road, dir, km, km increases along travel)] best per road/dir, nearest first.
+    bearing None = no heading check (slow traffic); only = set of (road, dir) to consider."""
     x, y = xy(lon, lat)
     best = {}
     for i in self.grid.get((int(x // 1000), int(y // 1000)), ()):
       road, d, ks, ke, x0, y0, x1, y1, hdg, f0, f1 = self.segs[i]
-      dh = abs((bearing - hdg + 180) % 360 - 180)
-      if dh > MATCH_HDG:
+      if only is not None and (road, d) not in only:
+        continue
+      if bearing is not None and abs((bearing - hdg + 180) % 360 - 180) > MATCH_HDG:
         continue
       vx, vy = x1 - x0, y1 - y0
       t = max(0., min(1., ((x - x0) * vx + (y - y0) * vy) / (vx * vx + vy * vy)))
@@ -193,16 +204,17 @@ def _iso_to_epoch(s: str) -> float:
   return calendar.timegm((y, mo, d, h, mi, se, 0, 0, 0)) - off
 
 
-def ahead(matches, events, lon, lat, bearing):
-  """Events on the matched road/dir, ALERT_KM ahead, nearest first: [(dist km, event)]"""
+def ahead(matches, events, pos=None, bearing=0.):
+  """Events on the matched road/dir, ALERT_KM ahead, nearest first: [(dist km, event)].
+  pos = (lon, lat) for the straight-line check to the event point; None (no GPS) = km posts only."""
   if not matches:
     return []
   # roads within STACK_M of the best match (國1 and 汐五高架 run stacked / side by side and share km posts)
   keys = {(r, d): (km, inc) for dist, r, d, km, inc in matches if dist <= matches[0][0] + STACK_M}
-  # stacked roads (國1 and 汐五高架 share km posts): label the road when both match
   both = len({r for r, _ in keys}) > 1
-  x, y = xy(lon, lat)
-  hx, hy = math.sin(math.radians(bearing)), math.cos(math.radians(bearing))
+  if pos is not None:
+    x, y = xy(*pos)
+    hx, hy = math.sin(math.radians(bearing)), math.cos(math.radians(bearing))
   out = []
   for ev in events:
     k = (ev["road"], ev["dir"])
@@ -213,11 +225,12 @@ def ahead(matches, events, lon, lat, bearing):
     a, b = ev["km"], ev["km2"] if ev["km2"] is not None else ev["km"]
     lo, hi = (a, b) if (b - a) * sgn >= 0 else (b, a)   # lo = first reached along travel
     d_km = (lo - km) * sgn
-    if (hi - km) * sgn >= -BEHIND_KM and d_km <= 0:      # inside an event range (moving construction, closures)
+    inside = (hi - km) * sgn >= -BEHIND_KM and d_km <= 0  # inside an event range (moving construction, closures)
+    if inside:
       d_km = 0.
     if not (-BEHIND_KM <= d_km <= ALERT_KM + 1.0):
       continue
-    if ev["lon"] is not None and d_km > 0:
+    if pos is not None and ev["lon"] is not None and d_km > 0:
       ex, ey = xy(ev["lon"], ev["lat"])
       dx, dy = ex - x, ey - y
       dist = math.hypot(dx, dy) / 1000.
@@ -229,11 +242,20 @@ def ahead(matches, events, lon, lat, bearing):
     e = dict(ev)
     if both:
       e["tag"] = "高架" if ev["road"].endswith("高架") else "平面"
+    if inside and abs(hi - lo) >= RANGE_KM:
+      e["range"] = (lo, hi)
     out.append((max(d_km, 0.), e))
   return sorted(out, key=lambda x: x[0])
 
 
+def _k(v: float) -> str:
+  return f"{v:.0f}K" if abs(v - round(v)) < 0.05 else f"{v:.1f}K"
+
+
 def alert_text(d_km: float, ev: dict) -> str:
+  if ev.get("range"):
+    lo, hi = ev["range"]
+    return f"本路段 {SHORT.get(ev['name'], ev['name'])}（{_k(lo)}–{_k(hi)}）" + (f" [{ev['tag']}]" if ev.get("tag") else "")
   where = "前方" if d_km < 0.1 else f"前方 {d_km:.1f} km"
   s = f"{where} {SHORT.get(ev['name'], ev['name'])}"
   if ev.get("lanes"):
@@ -257,9 +279,10 @@ class Feed:
         evs = parse_feed(data, time.time())
         with self.lock:
           self.events, self.t = evs, time.monotonic()
+        stop.wait(FETCH_S)
       except Exception as e:
         cloudlog.warning(f"hwyalert fetch failed: {e}")
-      stop.wait(FETCH_S)
+        stop.wait(FETCH_RETRY_S)
 
   def get(self):
     with self.lock:
@@ -277,56 +300,88 @@ def write_state(state: dict):
   write_json(STATE_FILE, state)
 
 
+class Tracker:
+  """GPS fix -> freeway road / direction / km -> alerts and voice. Shared by the daemon and the offline replay."""
+  def __init__(self, sections: Sections):
+    self.S = sections
+    self.streak, self.last_key = 0, None
+    self.held, self.held_dist, self.last_t = [], 0., None   # last good match, metres driven since (no GPS)
+    self.spoken, self.last_say_t = set(), -1e9
+
+  def locate(self, t, fix, v):
+    """fix = (lon, lat, bearing) or None -> matches"""
+    dt = 0. if self.last_t is None else min(max(t - self.last_t, 0.), 5.)
+    self.last_t = t
+    if fix is not None:
+      lon, lat, brg = fix
+      if v > MATCH_MIN_V:
+        m = self.S.match(lon, lat, brg)
+      elif self.held:   # slow traffic: heading is noise, stay on the last road while within MATCH_M of it
+        m = self.S.match(lon, lat, None, only={(r, d) for _, r, d, _, _ in self.held})
+      else:
+        m = []
+      self.held, self.held_dist = m, 0.
+      return m
+    if self.held and self.held_dist < DR_MAX_KM * 1000:   # no GPS: carry the last match forward by speed
+      self.held_dist += v * dt
+      return [(dist, r, d, km + (1 if inc else -1) * self.held_dist / 1000., inc) for dist, r, d, km, inc in self.held]
+    return []
+
+  def step(self, t, fix, v, events):
+    """-> (state dict, voice clips or None)"""
+    m = self.locate(t, fix, v)
+    key = (m[0][1], m[0][2]) if m else None
+    self.streak = self.streak + 1 if key is not None and key == self.last_key else (1 if key else 0)
+    self.last_key = key
+    state = dict(road="", alerts=[])
+    if not m or self.streak < MATCH_FRAMES:
+      return state, None
+    found = ahead(m, events, fix[:2] if fix else None, fix[2] if fix else 0.)[:MAX_ALERTS]
+    state.update(road=f"{key[0]}{key[1]}", km=round(m[0][3], 2), dr=fix is None,
+                 alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found])
+    say = None
+    new = [(d, e) for d, e in found if e["id"] not in self.spoken]
+    if new and t - self.last_say_t >= SAY_GAP_S:
+      d, e = new[0]
+      self.spoken.add(e["id"])
+      self.last_say_t = t
+      say = voice_clips(d, e["name"])
+    return state, say
+
+
 def main():
   from openpilot.cereal import messaging
   from openpilot.common.swaglog import cloudlog
   from openpilot.common.realtime import Ratekeeper
 
-  sections = Sections()
+  tracker = Tracker(Sections())
   feed = Feed()
   stop = threading.Event()
   threading.Thread(target=feed.fetch_loop, args=(stop,), daemon=True).start()
   sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState"])
   rk = Ratekeeper(1.0, print_delay_threshold=None)
-  streak, last_key, last_ids = 0, None, ()
-  held, held_t = [], 0.
-  spoken, say_seq = set(), 0
+  last_ids, say_seq = (), 0
   try:
     while True:
       sm.update(0)
-      state = dict(t=time.time(), road="", alerts=[])
+      state = dict(road="", alerts=[])
       if not os.path.exists(OFF_FILE):
-        gps = None
+        fix = None
         for s in ("gpsLocationExternal", "gpsLocation"):
-          if sm.recv_frame[s] > 0 and sm.alive[s] and sm[s].hasFix:
-            gps = sm[s]
+          g = sm[s]
+          if sm.recv_frame[s] > 0 and sm.alive[s] and g.hasFix and abs(g.latitude) > 1:
+            fix = (g.longitude, g.latitude, g.bearingDeg)
             break
-        v = sm["carState"].vEgo
-        matches = []
-        if gps is not None and abs(gps.latitude) > 1:
-          if v > MATCH_MIN_V:
-            matches = sections.match(gps.longitude, gps.latitude, gps.bearingDeg)
-            if matches:
-              held, held_t = matches, time.monotonic()
-          elif held and time.monotonic() - held_t < HOLD_SLOW_S:
-            matches = held   # slow traffic: heading is noise, stay on the last road
-        key = (matches[0][1], matches[0][2]) if matches else None
-        streak = streak + 1 if key is not None and key == last_key else (1 if key else 0)
-        last_key = key
-        if matches and streak >= MATCH_FRAMES:
-          found = ahead(matches, feed.get(), gps.longitude, gps.latitude, gps.bearingDeg)
-          state.update(road=f"{key[0]}{key[1]}", km=round(matches[0][3], 2),
-                       alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found[:3]])
-          new = [(d, e) for d, e in found[:3] if e["id"] not in spoken]
-          if new and not os.path.exists(SAY_OFF_FILE):
-            d, e = new[0]   # the nearest new event; others are announced on the next seconds
-            spoken.add(e["id"])
-            say_seq += 1
-            write_json(SAY_FILE, dict(seq=say_seq, t=time.time(), clips=voice_clips(d, e["name"])))
-          ids = tuple(a["id"] for a in state["alerts"])
-          if ids != last_ids:
-            cloudlog.info(f"hwyalert {state['road']} {state['km']:.2f} km: " + " | ".join(a["text"] for a in state["alerts"]))
-            last_ids = ids
+        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get())
+        if say and not os.path.exists(SAY_OFF_FILE):
+          say_seq += 1
+          write_json(SAY_FILE, dict(seq=say_seq, t=time.time(), clips=say))
+        ids = tuple(a["id"] for a in state["alerts"])
+        if ids != last_ids:
+          cloudlog.info(f"hwyalert {state['road']} {state.get('km', 0):.2f} km{' (no GPS)' if state.get('dr') else ''}: " +
+                        " | ".join(a["text"] for a in state["alerts"]))
+          last_ids = ids
+      state["t"] = time.time()
       write_state(state)
       rk.keep_time()
   finally:

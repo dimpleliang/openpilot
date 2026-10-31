@@ -121,6 +121,7 @@ class Soundd(QuietMode):
     ret = np.zeros(frames, dtype=np.float32)
 
     if self.should_play_sound(self.current_alert):
+      self.hwy_pos = len(self.hwy_voice)  # an openpilot alert cuts the freeway voice off (no resuming mid-sentence)
       num_loops = sound_list[self.current_alert][1]
       sound_data = self.loaded_sounds[self.current_alert]
       written_frames = 0
