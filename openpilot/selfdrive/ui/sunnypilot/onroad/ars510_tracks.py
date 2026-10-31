@@ -65,7 +65,8 @@ CUTIN_MAX_VREL = 1.5         # m/s, fast trigger only: slower or about my speed 
 # radar-lateral-speed trigger (1.0 m/s, 0.5 s, about-my-speed allowed) adds recall above 90 km/h (26 -> 32 %, warning
 # 1.3 -> 1.8 s median) at +8-15 % false marks; skipping curves removes a few. A 0.5 m/s / 0.18 s trigger was not better.
 CURVE_STEER_DEG = 15.0       # no cut-in marking while steering more than this ...
-CURVE_PATH_Y_50 = 2.5        # ... or while my path bends more than this at 50 m
+CURVE_PATH_Y_50 = 2.5        # ... or while my path bends more than this at 50 m ...
+CURVE_MIN_V = 60 / 3.6       # ... below this speed (predicted cut-ins only; 10/31 driver: handle curves)
 LC_CUTIN = (2, 5)
 # 10/31 23:07: a car overtaking from the right rear was first seen 11 m ahead, 22 km/h faster, moving into my lane at
 # 1.6-1.8 m/s, and was in my lane 1.3 s later; the fast trigger required <= +1.5 m/s relative speed and >= 15 m. Close
@@ -171,8 +172,10 @@ class Ars510Tracks:
       fresh = sm.updated[SERVICE]
       seen = set()
       merging = []  # (d, side) of the cars marked as cutting in; side +1 = coming from my right
-      # 10/31 driver: no cut-in marking in curves (my steering or my path bending)
-      curve = abs(sm['carState'].steeringAngleDeg) > CURVE_STEER_DEG or abs(path_y(50.)) > CURVE_PATH_Y_50
+      # curves (my steering or my path bending): 10/31 replay with the ego-frame lateral speed, curves are fine above
+      # CURVE_MIN_V (predicted cut-ins) and always for the confirmed one (98 vs 66 confirmations, still 91 % real); only
+      # predicted marks below CURVE_MIN_V are skipped in curves (town junctions)
+      curve = (abs(sm['carState'].steeringAngleDeg) > CURVE_STEER_DEG or abs(path_y(50.)) > CURVE_PATH_Y_50) and v_ego < CURVE_MIN_V
       # the display's lateral speed is in the ego frame (the radar's over-ground vy minus yaw rate x range, ars510 interface):
       # replay of 241 km, that alone beats subtracting the other objects' median (fast trigger recall above 90 km/h 32 -> 36 %)
       vlat_bias = 0.
@@ -186,7 +189,7 @@ class Ars510Tracks:
         if tid >= 0:
           if abs(off_c) >= CONFIRM_FROM:
             self._out_t[tid] = now
-          if not curve and abs(off_c) < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
+          if abs(off_c) < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
              v_ego > CUTIN_MIN_V_GROUND and now - self._out_t.get(tid, -99.) < CONFIRM_WIN and tid not in self._confirm_t:
             # arrow: the way it moved (came from my right -> it moved left)
             came_right = self._side.get(tid, 0) > 0

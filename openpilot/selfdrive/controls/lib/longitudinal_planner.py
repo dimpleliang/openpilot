@@ -143,7 +143,7 @@ def near_stop_accel_floor(lead, v_ego):
 
 # ars510: confirmed cut-in lift-off (10/31 driver: when a car has really cut in and is slower, ease off like a driver would).
 # A radar track that was CONFIRM_FROM m or more off the model path within CONFIRM_WIN s and is now within CONFIRM_OFF of it,
-# CONFIRM_D ahead and slower by CONFIRM_VREL (not in a curve): acceleration is capped for CONFIRM_HOLD_S at a gentle lift-off,
+# CONFIRM_D ahead and slower by CONFIRM_VREL (curves included since 10/31): acceleration is capped for CONFIRM_HOLD_S at a gentle lift-off,
 # CONFIRM_K x closing speed down to CONFIRM_MAX_DECEL, reached at CONFIRM_JERK. Never brakes harder; the MPC does that.
 # Same rule as the UI's flashing circle (ars510_tracks.py). Replay 241 km: 66 confirmations, 91 % really in my lane within
 # 4 s, 2.5 false per 100 km. Off: /data/ars510_no_cutin_coast.
@@ -472,8 +472,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     now = sm.logMonoTime['modelV2'] / 1e9 if 'modelV2' in sm.logMonoTime else 0.
     if self.CP.openpilotLongitudinalControl and not self.ci_off and 'radarTracks' in sm.data and v_ego > CONFIRM_MIN_V:
       px = np.array(sm['modelV2'].position.x); py = np.array(sm['modelV2'].position.y)
-      steer = abs(sm['carState'].steeringAngleDeg)
-      curve = len(px) < 2 or steer > 15. or abs(float(np.interp(50., px, py))) > 2.5
+      curve = len(px) < 2  # 10/31: curves handled too (replay: 98 vs 66 confirmations, still 91 % real)
       if len(px) >= 2 and sm.updated['radarTracks']:
         for pnt in sm['radarTracks'].points:
           tid = int(pnt.trackId)
