@@ -28,7 +28,7 @@ class HwyAlertRenderer:
     chars = sorted(set(map(chr, range(32, 127))) | set(GLYPHS))
     cps = rl.ffi.new("int[]", [ord(c) for c in chars])
     with as_file(FONT_DIR) as fspath:
-      self._font = rl.load_font_ex((fspath / "NotoSansCJKtc-Regular.otf").as_posix(), FONT_SIZE, rl.ffi.cast("int *", cps), len(chars))
+      self._font = rl.load_font_ex((fspath / "unifont.otf").as_posix(), FONT_SIZE, rl.ffi.cast("int *", cps), len(chars))
     rl.set_texture_filter(self._font.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
 
   def update(self):

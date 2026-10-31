@@ -260,7 +260,7 @@ def write_state(state: dict):
 
 
 def main():
-  import cereal.messaging as messaging
+  from openpilot.cereal import messaging
   from openpilot.common.swaglog import cloudlog
   from openpilot.common.realtime import Ratekeeper
 
