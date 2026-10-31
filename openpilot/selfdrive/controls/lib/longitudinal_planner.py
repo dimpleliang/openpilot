@@ -147,6 +147,16 @@ A_POS_JERK_BP = [10., 25.]                  # m/s
 A_POS_JERK_V = [0.5, 0.15]                  # m/s^3, how fast the ceiling lets acceleration build (10/30: 0.25 -> 0.15, PCM still overshot 0.26 -> 0.80 for a second)
 ACCEL_SCALE_FILE = "/data/ars510_accel_scale"  # 0.3-1.0 multiplier, 0 disables the ceiling; default 1.0
 A_POS_TAU = 10.                            # s, time constant of the approach to the set speed (deficit shrinks to 37 % per tau)
+# ars510 (10/31 driver: "like a magnet" -- with a lead pulling away the MPC accelerated to win the gap back, caught up
+# in no time and then had to brake). With a lead ahead, positive acceleration is also capped by a speed-matching law,
+# like the set-speed approach above: a <= (vLead - v) / LEAD_TAU(v) + LEAD_A_GAIN x max(aLead, 0) + a slow gap term, so
+# the car only matches the lead's speed and lets a widening gap close slowly instead of chasing it. Braking is untouched.
+LEAD_TAU_BP = [0., 8., 20.]                # m/s
+LEAD_TAU_V = [3., 6., 10.]                 # s: quicker at a light (lead pulling away from a stop), unhurried at speed
+LEAD_A_GAIN = 0.5                          # share of the lead's own acceleration that is followed
+LEAD_GAP_K = 0.003                         # m/s^2 per m of gap beyond the desired one ...
+LEAD_GAP_MAX = 0.1                         # m/s^2 ... at most (a 100 m gap at equal speed closes in about a minute)
+LEAD_MAX_D = 150.                          # m
 
 
 def read_accel_scale() -> float:
@@ -452,6 +462,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       cap = float(np.interp(v_ego, A_POS_MAX_BP, A_POS_MAX_V)) * self.accel_scale
       # first-order approach to the set speed: a <= (v_set - v) / tau, so the speed settles exponentially with no overshoot
       cap = min(cap, max(v_cruise - v_ego, 0.) / A_POS_TAU)
+      lead = sm['radarState'].leadOne
+      if lead.present and lead.dRel < LEAD_MAX_D:
+        desired = get_T_FOLLOW(sm['selfdriveState'].personality) * max(lead.vLead, 0.) + STOP_DISTANCE
+        lead_cap = (max(lead.vLead - v_ego, 0.) / float(np.interp(v_ego, LEAD_TAU_BP, LEAD_TAU_V)) +
+                    LEAD_A_GAIN * max(lead.aLeadK, 0.) + min(LEAD_GAP_K * max(lead.dRel - desired, 0.), LEAD_GAP_MAX))
+        cap = min(cap, lead_cap)
       cap = min(cap, max(a_prev, 0.) + float(np.interp(v_ego, A_POS_JERK_BP, A_POS_JERK_V)) * self.dt)
       if output_a_target > cap:
         output_a_target = cap
