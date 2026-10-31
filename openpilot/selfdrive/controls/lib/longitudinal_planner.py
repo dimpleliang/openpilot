@@ -110,6 +110,36 @@ E2E_FILL_A_MAX_V = [0.3, 0.22, 0.18]  # m/s^2, unhurried (10/30 evening: 0.4/0.3
 E2E_FILL_JERK = 0.2                 # m/s^3
 E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
 # positive acceleration ceiling (see the block before the final clip)
+# ars510: near-stop floor (10/31 11:51, red light behind a stopping car from 51 km/h: the MPC / model eased the request
+# from -1.3 to -1.0 at 7 m and the PCM delivered less, the car stopped 2.3 m behind the lead and then crept to 1.8 m at a
+# -0.5 hold; the low-speed stop distance is 4.5 m). While a radar lead within NEAR_STOP_D_MAX is stopped or nearly so,
+# braking is floored at NEAR_STOP_K x the constant deceleration that stops the car NEAR_STOP_GAP behind it (never more
+# than NEAR_STOP_MAX_DECEL). Closer than NEAR_STOP_TOO_CLOSE a firm NEAR_STOP_HOLD_ACCEL is requested even when the wheel
+# speed reads 0 (Toyota wheel speed reads 0 while still creeping), which longcontrol follows as an urgent plan.
+# Off: /data/ars510_no_near_stop.
+NEAR_STOP_D_MAX = 20.          # m
+NEAR_STOP_GAP = 4.5            # m, = STOP_DISTANCE_LOW
+NEAR_STOP_VLEAD_MAX = 1.0      # m/s, lead (nearly) stopped
+NEAR_STOP_MIN_V = 0.3          # m/s
+NEAR_STOP_K = 1.15             # margin for actuator lag / PCM under-delivery
+NEAR_STOP_MAX_DECEL = -2.0     # m/s^2
+NEAR_STOP_TOO_CLOSE = 3.5      # m
+NEAR_STOP_HOLD_ACCEL = -1.5    # m/s^2
+NEAR_STOP_OFF_FILE = "/data/ars510_no_near_stop"
+
+
+def near_stop_accel_floor(lead, v_ego):
+  """Braking floor for a (nearly) stopped radar lead close ahead, or None."""
+  if not (lead.present and lead.radar) or lead.dRel > NEAR_STOP_D_MAX or lead.vLead > NEAR_STOP_VLEAD_MAX:
+    return None
+  if lead.dRel < NEAR_STOP_TOO_CLOSE:
+    return NEAR_STOP_HOLD_ACCEL
+  if v_ego < NEAR_STOP_MIN_V:
+    return None
+  room = max(lead.dRel - NEAR_STOP_GAP, 0.5)
+  return max(-NEAR_STOP_K * v_ego ** 2 / (2. * room), NEAR_STOP_MAX_DECEL)
+
+
 A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
 A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
 A_POS_JERK_BP = [10., 25.]                  # m/s
@@ -206,6 +236,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_should_stop = False
     self.turning = False  # ars510: wheel turned far (junction turn), see TURN_NO_ACCEL_ANGLE
     self.far_lead_active = False  # ars510: far-lead braking limit in effect, see FAR_LEAD_K
+    self.near_stop_active = False  # ars510: near-stop braking floor in effect, see NEAR_STOP_K
+    self.near_stop_off = False
     self.far_lead_off = os.path.exists(FAR_LEAD_OFF_FILE)
     self.far_lead_cnt = 0
     self.far_early_cap: float | None = None  # ars510: current early ease-off cap (ramped), see FAR_EARLY_K
@@ -383,6 +415,20 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       fo_s = f" {fo.src} d={fo.dRel:.1f} vRel={fo.vRel:.2f} pathOff={fo.path_off:.1f}" if (radar_only and fo is not None) else ""
       cloudlog.info(f"ARS510 far lead early {state or 'off'} d={lead.dRel:.1f} vRel={lead.vRel:.2f} radar={lead.radar} "
                     f"a={output_a_target:.2f}{fo_s}")
+
+    # ars510: near-stop floor (see NEAR_STOP_K); applies whatever the source, braking only gets firmer
+    if self.far_lead_cnt == 0:
+      self.near_stop_off = os.path.exists(NEAR_STOP_OFF_FILE)
+    ns_active = False
+    if self.CP.openpilotLongitudinalControl and not self.near_stop_off and not reset_state:
+      ns = near_stop_accel_floor(sm['radarState'].leadOne, v_ego)
+      if ns is not None and output_a_target > ns:
+        output_a_target = ns
+        ns_active = True
+    if ns_active != self.near_stop_active:
+      self.near_stop_active = ns_active
+      lead = sm['radarState'].leadOne
+      cloudlog.info(f"ARS510 near stop {'on' if ns_active else 'off'} d={lead.dRel:.1f} vLead={lead.vLead:.1f} v={v_ego*3.6:.1f} a={output_a_target:.2f}")
 
     # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
