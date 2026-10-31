@@ -426,7 +426,7 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - cloudlog「ARS510 e2e free on/off」。關閉：`touch /data/ars510_no_e2e_free`。
 - 坡度：`liveLocationKalman.calibratedOrientationNED` 的 pitch 可用（+ 為上坡），19:27 路段 −1.2° → +0.2° → +0.4° → +2.2°。
 
-## 自動行車報告（10/30）
+## 自動行車報告（10/30；10/31 移除車上的自動執行）
 
 - `openpilot/selfdrive/ars510/report.py`：一趟掃一次 rlog（沒有就用 qlog），產生 `/data/ars510_reports/<route>/`：
   - `summary.txt`：版本、時長、ARS510 事件統計、系統煞車分類（未啟用／駕駛踩煞車／前車減速／切入／遠處慢車／近距跟車／停車）、每段一行。
@@ -517,3 +517,9 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 - 10/31 13:40 P 檔、上電、駕駛門剛打開（開門後 10 ms 送出）兩次：ECU 都正面回應，但其他三門**沒有**解鎖。
   推測駕駛門開著時 ECU 接受指令但不帶動門鎖（未直接驗證）；若恢復，應在車門仍關時觸發（例如 P 檔解開駕駛安全帶）。
 - 門狀態：0x620 BODY_CONTROL_STATE byte 5 bit 0x20 = 駕駛門（DOOR_OPEN_FL）；駕駛安全帶 SEATBELT_DRIVER_UNLATCHED 在同一訊息。
+
+## 移除車上的自動報告（10/31）
+
+此分支要給其他人一起使用，車上不再自動產生報告：刪除 `ars510_reportd`（manager 項目與 `selfdrive/ars510/`）及
+`tools/ars510/pull_reports.sh`。報告程式移到 `tools/ars510/drive_report.py`，在電腦上對從 connect 下載或用 ssh 拉回的
+rlog 執行（`REALDATA=<資料夾> python3 tools/ars510/drive_report.py <route>`，輸出預設 `~/ars510_reports`）。

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""ars510 drive report: one pass over a route's rlogs (qlog fallback) -> summary.txt, events.txt, signals.csv (5 Hz),
+"""ars510 drive report, run on a computer (10/31: the on-device reportd was removed, the fork is shared).
+Usage: REALDATA=<folder with <route>--<seg>/rlog.zst> python3 drive_report.py <route> [--out DIR]
+
+ars510 drive report: one pass over a route's rlogs (qlog fallback) -> summary.txt, events.txt, signals.csv (5 Hz),
 clips/*.csv (20 Hz, +-15 s around braking and ARS510 events). Written for the device; also runs on a PC with the route
 directory given. Usage: report.py ROUTE [--realdata DIR] [--out DIR]"""
 import bisect
@@ -16,8 +19,8 @@ import zstandard
 
 from openpilot.cereal import log
 
-REALDATA = "/data/media/0/realdata"
-OUT_ROOT = "/data/ars510_reports"
+REALDATA = os.environ.get("REALDATA", "/data/media/0/realdata")
+OUT_ROOT = os.environ.get("REPORT_OUT", os.path.expanduser("~/ars510_reports"))
 KEEP_ROUTES = 30
 TZ = datetime.timezone(datetime.timedelta(hours=8))
 CSV_EVERY = 4            # longitudinalPlan is 20 Hz -> signals.csv at 5 Hz
