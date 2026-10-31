@@ -52,9 +52,8 @@ CUTIN_WIDE_D = (25.0, 110.0)
 CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
 CUTIN_RELEASE_FRAMES = 20
 # 10/31 driver: mark as soon as the radar reports the car moving toward my lane, not only when slower (similar speed counts),
-# and not in curves. Fast trigger: the radar's own lateral speed toward my path, minus the median lateral speed of the
-# other objects in the same record (all of them show a common bias with my yaw / the road's bend; 13:22: merging car
-# 0.97 m/s at 112 m on its first record, a car keeping its lane 0.7-1.1 m/s), held FAST_HOLD_FRAMES. The radar's
+# and not in curves. Fast trigger: the radar's lateral speed toward my path in the ego frame (yaw rate x range removed in
+# the interface; the raw over-ground value carried my own turning, 22:36 a merging car read 1.5 m/s AWAY), held FAST_HOLD_FRAMES. The radar's
 # lane-crossing code (2 / 5 = cut-in from left / right) marks at once.
 FAST_VLAT_TOWARD = 1.0       # m/s, relative lateral speed toward my path
 FAST_HOLD_FRAMES = 8         # radar records (~0.5 s)
@@ -149,8 +148,9 @@ class Ars510Tracks:
       merging = []  # (d, side) of the cars marked as cutting in; side +1 = coming from my right
       # 10/31 driver: no cut-in marking in curves (my steering or my path bending)
       curve = abs(sm['carState'].steeringAngleDeg) > CURVE_STEER_DEG or abs(path_y(50.)) > CURVE_PATH_Y_50
-      vlats = [p[7] for p in self._points if p[7] == p[7] and FAST_D[0] <= p[0] <= FAST_D[1]]
-      vlat_bias = float(np.median(vlats)) if len(vlats) >= 3 else 0.
+      # the display's lateral speed is in the ego frame (the radar's over-ground vy minus yaw rate x range, ars510 interface):
+      # replay of 241 km, that alone beats subtracting the other objects' median (fast trigger recall above 90 km/h 32 -> 36 %)
+      vlat_bias = 0.
       for d, y, v, _sent, settling, cls, tid, vlat, lc in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
