@@ -1,3 +1,4 @@
+import json
 import math
 import numpy as np
 import time
@@ -60,6 +61,12 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   **sound_list_sp,
 }
 
+# freeway incident voice (selfdrive/hwyalert/hwyalertd.py): {"seq": n, "clips": ["d3", "breakdown"]} -> hwy_<clip>.wav
+HWY_SAY_FILE = "/dev/shm/hwyalert_say.json"
+HWY_GAP_S = 0.15
+HWY_MIN_VOLUME = 0.5
+
+
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
 
@@ -87,6 +94,12 @@ class Soundd(QuietMode):
     self.pending_stop = False
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
+
+    self.hwy_clips: dict[str, np.ndarray] = {}
+    self.hwy_voice = np.zeros(0, dtype=np.float32)
+    self.hwy_pos = 0
+    self.hwy_seq = None
+    self.hwy_t = 0.
 
   def load_sounds(self):
     self.loaded_sounds: dict[int, np.ndarray] = {}
@@ -128,7 +141,47 @@ class Soundd(QuietMode):
           self.pending_stop = False
           break
 
+    elif self.current_alert == AudibleAlert.none and self.hwy_pos < len(self.hwy_voice) and not self.enabled:
+      # freeway incident voice, only while no openpilot alert sound is playing (and not in quiet mode)
+      n = min(frames, len(self.hwy_voice) - self.hwy_pos)
+      ret[:n] = self.hwy_voice[self.hwy_pos:self.hwy_pos + n]
+      self.hwy_pos += n
+      return ret * max(self.current_volume, HWY_MIN_VOLUME)
+
     return ret * self.current_volume
+
+  def load_hwy_clip(self, name: str) -> np.ndarray:
+    if name not in self.hwy_clips:
+      with wave.open(BASEDIR + f"/openpilot/selfdrive/assets/sounds/hwy_{name}.wav", 'r') as w:
+        assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == SAMPLE_RATE
+        self.hwy_clips[name] = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / (2**16/2)
+    return self.hwy_clips[name]
+
+  def poll_hwy_voice(self):
+    now = time.monotonic()
+    if now - self.hwy_t < 0.5:
+      return
+    self.hwy_t = now
+    try:
+      with open(HWY_SAY_FILE) as f:
+        say = json.load(f)
+      if say.get("seq") == self.hwy_seq:
+        return
+      first = self.hwy_seq is None
+      self.hwy_seq = say.get("seq")
+      if first and time.time() - say.get("t", 0) > 10:
+        return  # stale request from before a restart
+      gap = np.zeros(int(HWY_GAP_S * SAMPLE_RATE), dtype=np.float32)
+      parts = []
+      for c in say.get("clips", []):
+        parts += [self.load_hwy_clip(c), gap]
+      if parts:
+        self.hwy_voice = np.concatenate(parts)
+        self.hwy_pos = 0
+    except FileNotFoundError:
+      pass
+    except Exception:
+      cloudlog.exception("soundd: hwy voice failed")
 
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
@@ -198,6 +251,7 @@ class Soundd(QuietMode):
             self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
+        self.poll_hwy_voice()
 
         # Ramp up immediate warning sound over 4s
         if self.current_alert == AudibleAlert.warningImmediate:

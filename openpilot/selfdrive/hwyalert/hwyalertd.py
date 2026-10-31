@@ -42,6 +42,20 @@ TARGET = ("散落物", "事故", "故障車", "施工維護", "移動性施工",
           "路樹", "坍方", "路面積水", "道路封閉", "逆行車輛", "濃霧連動", "濃霧")
 SHORT = {"機車誤闖": "機車誤闖", "動物誤闖": "動物", "自行車誤闖": "自行車誤闖", "行人誤闖": "行人", "施工維護": "施工",
          "移動性施工": "移動施工", "路面積水": "積水", "道路封閉": "封閉", "逆行車輛": "逆向車", "濃霧連動": "濃霧"}
+# voice clips (assets/sounds/hwy_<clip>.wav, macOS "say -v Meijia"): distance + event, played once per event
+VOICE = {"散落物": "debris", "事故": "accident", "故障車": "breakdown", "施工維護": "work", "移動性施工": "mobilework",
+         "機車誤闖": "moto", "動物誤闖": "animal", "自行車誤闖": "bike", "行人誤闖": "ped", "人員停留": "person", "坑洞": "pothole",
+         "路樹": "tree", "坍方": "landslide", "路面積水": "water", "道路封閉": "closed", "逆行車輛": "wrongway", "濃霧連動": "fog",
+         "濃霧": "fog", "車輛火災": "carfire", "邊坡起火": "slopefire"}
+SAY_FILE = "/dev/shm/hwyalert_say.json"
+SAY_OFF_FILE = "/data/hwyalert_voice_off"
+
+
+def voice_clips(d_km: float, name: str) -> list[str]:
+  dist = "d3" if d_km >= 2.5 else "d2" if d_km >= 1.5 else "d1" if d_km >= 0.5 else "d0"
+  return [dist, VOICE.get(name, "fire" if "火" in name else "accident")]
+
+
 DIRS = {"北向": "N", "南向": "S", "東向": "E", "西向": "W"}
 CN = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
@@ -252,11 +266,15 @@ class Feed:
       return self.events if time.monotonic() - self.t < FEED_MAX_AGE_S else []
 
 
-def write_state(state: dict):
-  tmp = STATE_FILE + ".tmp"
+def write_json(path: str, obj: dict):
+  tmp = path + ".tmp"
   with open(tmp, "w") as f:
-    json.dump(state, f, ensure_ascii=False)
-  os.replace(tmp, STATE_FILE)
+    json.dump(obj, f, ensure_ascii=False)
+  os.replace(tmp, path)
+
+
+def write_state(state: dict):
+  write_json(STATE_FILE, state)
 
 
 def main():
@@ -272,6 +290,7 @@ def main():
   rk = Ratekeeper(1.0, print_delay_threshold=None)
   streak, last_key, last_ids = 0, None, ()
   held, held_t = [], 0.
+  spoken, say_seq = set(), 0
   try:
     while True:
       sm.update(0)
@@ -298,6 +317,12 @@ def main():
           found = ahead(matches, feed.get(), gps.longitude, gps.latitude, gps.bearingDeg)
           state.update(road=f"{key[0]}{key[1]}", km=round(matches[0][3], 2),
                        alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found[:3]])
+          new = [(d, e) for d, e in found[:3] if e["id"] not in spoken]
+          if new and not os.path.exists(SAY_OFF_FILE):
+            d, e = new[0]   # the nearest new event; others are announced on the next seconds
+            spoken.add(e["id"])
+            say_seq += 1
+            write_json(SAY_FILE, dict(seq=say_seq, t=time.time(), clips=voice_clips(d, e["name"])))
           ids = tuple(a["id"] for a in state["alerts"])
           if ids != last_ids:
             cloudlog.info(f"hwyalert {state['road']} {state['km']:.2f} km: " + " | ".join(a["text"] for a in state["alerts"]))
