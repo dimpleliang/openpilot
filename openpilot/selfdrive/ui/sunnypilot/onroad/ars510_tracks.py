@@ -75,6 +75,18 @@ CLOSE_D = (5.0, 40.0)        # m
 CLOSE_OFF = (0.9, 4.0)       # m from my path
 CLOSE_VLAT_TOWARD = 1.0      # m/s
 CLOSE_HOLD_FRAMES = 3        # radar records (~0.18 s)
+# 10/31 driver: the predicted cut-in keeps a steady marker on the car; once the car has REALLY cut in and is slower than
+# me, the marker becomes a flashing solid circle with an arrow inside (the way it moved), and the planner lifts off
+# (longitudinal_planner.py CONFIRM_*, same rule). Confirmed: within CONFIRM_OFF of my path, CONFIRM_D, slower by
+# CONFIRM_VREL, and CONFIRM_FROM m or more out within the last CONFIRM_WIN s. Replay 241 km: 66 confirmations, 60 (91 %)
+# were in my lane within 4 s, 2.5 false per 100 km.
+CONFIRM_OFF = 1.3            # m
+CONFIRM_D = (10.0, 60.0)     # m
+CONFIRM_VREL = -0.5          # m/s
+CONFIRM_FROM = 1.8           # m
+CONFIRM_WIN = 3.0            # s
+CONFIRM_SHOW_S = 3.0         # s the circle stays after the car stops qualifying (it usually becomes the lead)
+CONFIRM_PULSE_HZ = 3.0
 # 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
 # at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
 CUTIN_PULSE_HZ = 2.5
@@ -132,6 +144,9 @@ class Ars510Tracks:
     self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
     self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
     self._hold: dict[int, int] = {}                      # track id -> consecutive frames the cut-in condition held
+    self._out_t: dict[int, float] = {}                   # track id -> last time it was CONFIRM_FROM m or more off my path
+    self._confirm_t: dict[int, tuple[float, int]] = {}   # track id -> (time confirmed, arrow direction)
+    self._side: dict[int, int] = {}                      # track id -> side it was last seen on (+1 my right)
     self._close: dict[int, int] = {}                     # track id -> consecutive close-range records moving toward my path
     self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
@@ -160,12 +175,32 @@ class Ars510Tracks:
       # the display's lateral speed is in the ego frame (the radar's over-ground vy minus yaw rate x range, ars510 interface):
       # replay of 241 km, that alone beats subtracting the other objects' median (fast trigger recall above 90 km/h 32 -> 36 %)
       vlat_bias = 0.
+      now = rl.get_time()
       for d, y, v, _sent, settling, cls, tid, vlat, lc in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
+        y_right = -y + camera_offset  # radar yRel is left-positive; the model path and map_to_screen use right-positive (calibrated frame)
+        off_c = y_right - path_y(d)
+        # confirmed cut-in (really in my lane now, slower): flashing circle, drawn even when the car has become the lead
+        if tid >= 0:
+          if abs(off_c) >= CONFIRM_FROM:
+            self._out_t[tid] = now
+          if not curve and abs(off_c) < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
+             v_ego > CUTIN_MIN_V_GROUND and now - self._out_t.get(tid, -99.) < CONFIRM_WIN and tid not in self._confirm_t:
+            # arrow: the way it moved (came from my right -> it moved left)
+            came_right = self._side.get(tid, 0) > 0
+            self._confirm_t[tid] = (now, -1 if came_right else 1)
+          if abs(off_c) >= CONFIRM_FROM:
+            self._side[tid] = 1 if off_c > 0 else -1
+          ct = self._confirm_t.get(tid)
+          if ct is not None and now - ct[0] < CONFIRM_SHOW_S:
+            cpt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
+            if cpt is not None:
+              self._draw_confirmed(cpt, d, ct[1])
+            seen.add(tid)
+            continue
         if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
           continue
-        y_right = -y + camera_offset  # radar yRel is left-positive; the model path and map_to_screen use right-positive (calibrated frame)
         pt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
         if pt is None:
           continue
@@ -191,6 +226,7 @@ class Ars510Tracks:
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
           self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None); self._close.pop(tid, None)
+          self._out_t.pop(tid, None); self._confirm_t.pop(tid, None); self._side.pop(tid, None)
     except Exception:
       self._points = []
 
@@ -234,6 +270,22 @@ class Ars510Tracks:
         if self._release.get(tid, 0) > 0:
           self._release[tid] -= 1
     return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES or self._release.get(tid, 0) > 0
+
+  def _draw_confirmed(self, pt, d: float, direction: int):
+    """Confirmed cut-in: a flashing solid amber circle on the car with a dark arrow inside (the way it moved)."""
+    x, y = pt
+    r = float(np.clip((30 * 30) / (d / 3 + 30), 18.0, 34.0))
+    on = (rl.get_time() * CONFIRM_PULSE_HZ) % 1.0 < 0.6
+    cy = y - r * 1.1
+    rl.draw_circle(int(x), int(cy + 3), r + 3, rl.Color(0, 0, 0, 150))
+    rl.draw_circle(int(x), int(cy), r, rl.Color(*COLOR_CUTIN, 255 if on else 120))
+    dark = rl.Color(20, 20, 20, 255 if on else 150)
+    L, hw, th = r * 1.3, r * 0.45, max(4.0, r * 0.22)
+    tip = x + direction * L / 2; tail = x - direction * L / 2; base = tip - direction * hw * 1.1
+    rl.draw_line_ex(rl.Vector2(tail, cy), rl.Vector2(base, cy), th, dark)
+    p1, p2, p3 = rl.Vector2(tip, cy), rl.Vector2(base, cy - hw), rl.Vector2(base, cy + hw)
+    rl.draw_triangle(p1, p2, p3, dark)
+    rl.draw_triangle(p1, p3, p2, dark)
 
   def _draw_banner(self, nearest, rect: rl.Rectangle):
     """Big amber banner at the screen edge on the side the merging car comes from, arrow pointing into my lane."""
@@ -289,7 +341,7 @@ class Ars510Tracks:
     x, y = pt
     sz = float(np.clip((25 * 30) / (d / 3 + 30), 12.0, 30.0)) * 0.9
     color = rl.Color(*rgb, 110 if settling else 230)  # settling: range / speed not converged yet
-    pulse = 0.5 + 0.5 * float(np.sin(rl.get_time() * 2 * np.pi * CUTIN_PULSE_HZ)) if cutin else 0.
+    pulse = 0.6 if cutin else 0.  # 10/31: the predicted cut-in marker is steady; only a confirmed cut-in flashes
     if cutin:
       sz = max(sz * CUTIN_SCALE, CUTIN_MIN_SIZE) * (1.0 + 0.12 * pulse)
     if arrow:

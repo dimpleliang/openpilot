@@ -141,6 +141,26 @@ def near_stop_accel_floor(lead, v_ego):
   return max(-NEAR_STOP_K * v_ego ** 2 / (2. * room), NEAR_STOP_MAX_DECEL)
 
 
+# ars510: confirmed cut-in lift-off (10/31 driver: when a car has really cut in and is slower, ease off like a driver would).
+# A radar track that was CONFIRM_FROM m or more off the model path within CONFIRM_WIN s and is now within CONFIRM_OFF of it,
+# CONFIRM_D ahead and slower by CONFIRM_VREL (not in a curve): acceleration is capped for CONFIRM_HOLD_S at a gentle lift-off,
+# CONFIRM_K x closing speed down to CONFIRM_MAX_DECEL, reached at CONFIRM_JERK. Never brakes harder; the MPC does that.
+# Same rule as the UI's flashing circle (ars510_tracks.py). Replay 241 km: 66 confirmations, 91 % really in my lane within
+# 4 s, 2.5 false per 100 km. Off: /data/ars510_no_cutin_coast.
+CONFIRM_OFF = 1.3
+CONFIRM_D = (10., 60.)
+CONFIRM_VREL = -0.5
+CONFIRM_FROM = 1.8
+CONFIRM_WIN = 3.0
+CONFIRM_HOLD_S = 3.0
+CONFIRM_K = 0.06                 # (m/s^2) per (m/s) of closing speed
+CONFIRM_MAX_DECEL = -0.3         # m/s^2
+CONFIRM_JERK = 0.5               # m/s^3
+CONFIRM_MIN_V = 20. / 3.6
+CONFIRM_SPECIAL_ID = 1 << 27     # CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
+CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
+
+
 A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
 A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
 A_POS_JERK_BP = [10., 25.]                  # m/s
@@ -249,6 +269,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.far_lead_active = False  # ars510: far-lead braking limit in effect, see FAR_LEAD_K
     self.near_stop_active = False  # ars510: near-stop braking floor in effect, see NEAR_STOP_K
     self.near_stop_off = False
+    self.ci_out_t: dict[int, float] = {}   # ars510 confirmed cut-in: track id -> last time far off the path
+    self.ci_until = 0.                      # coast while time < this
+    self.ci_closing = 0.
+    self.ci_cap = None
+    self.ci_off = False
     self.far_lead_off = os.path.exists(FAR_LEAD_OFF_FILE)
     self.far_lead_cnt = 0
     self.far_early_cap: float | None = None  # ars510: current early ease-off cap (ramped), see FAR_EARLY_K
@@ -440,6 +465,39 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.near_stop_active = ns_active
       lead = sm['radarState'].leadOne
       cloudlog.info(f"ARS510 near stop {'on' if ns_active else 'off'} d={lead.dRel:.1f} vLead={lead.vLead:.1f} v={v_ego*3.6:.1f} a={output_a_target:.2f}")
+
+    # ars510: confirmed cut-in lift-off (see CONFIRM_*)
+    if self.far_lead_cnt == 0:
+      self.ci_off = os.path.exists(CONFIRM_OFF_FILE)
+    now = sm.logMonoTime['modelV2'] / 1e9 if 'modelV2' in sm.logMonoTime else 0.
+    if self.CP.openpilotLongitudinalControl and not self.ci_off and 'radarTracks' in sm.data and v_ego > CONFIRM_MIN_V:
+      px = np.array(sm['modelV2'].position.x); py = np.array(sm['modelV2'].position.y)
+      steer = abs(sm['carState'].steeringAngleDeg)
+      curve = len(px) < 2 or steer > 15. or abs(float(np.interp(50., px, py))) > 2.5
+      if len(px) >= 2 and sm.updated['radarTracks']:
+        for pnt in sm['radarTracks'].points:
+          tid = int(pnt.trackId)
+          if tid >= CONFIRM_SPECIAL_ID or tid < 0:
+            continue
+          off = abs(-float(pnt.yRel) - float(np.interp(pnt.dRel, px, py)))
+          if off >= CONFIRM_FROM:
+            self.ci_out_t[tid] = now
+          elif (not curve and off < CONFIRM_OFF and CONFIRM_D[0] < pnt.dRel < CONFIRM_D[1] and pnt.vRel < CONFIRM_VREL and
+                now - self.ci_out_t.get(tid, -99.) < CONFIRM_WIN):
+            if now >= self.ci_until:
+              cloudlog.info(f"ARS510 cut-in confirmed: d={pnt.dRel:.1f} vRel={pnt.vRel:.1f} v={v_ego*3.6:.0f}")
+            self.ci_until = now + CONFIRM_HOLD_S
+            self.ci_closing = max(-float(pnt.vRel), 0.)
+            self.ci_out_t.pop(tid, None)
+        if len(self.ci_out_t) > 200:
+          self.ci_out_t = {k: t for k, t in self.ci_out_t.items() if now - t < 10.}
+    if now < self.ci_until and not reset_state:
+      target = max(-CONFIRM_K * self.ci_closing, CONFIRM_MAX_DECEL)
+      cap = max(a_prev, target) if self.ci_cap is None else max(target, self.ci_cap - CONFIRM_JERK * self.dt)
+      self.ci_cap = cap
+      output_a_target = min(output_a_target, cap)
+    else:
+      self.ci_cap = None
 
     # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
