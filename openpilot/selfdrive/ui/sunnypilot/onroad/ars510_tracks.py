@@ -49,7 +49,13 @@ CUTIN_WIDE_RATE = -0.3   # m/s: twice the near rate
 CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
 CUTIN_WIDE_D = (25.0, 110.0)
 CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
-CUTIN_RELEASE_FRAMES = 20  # keep a marked car marked for 1 s after the condition drops (the slope is noisy at 4-5 m)
+CUTIN_RELEASE_FRAMES = 20
+# 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
+# at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
+CUTIN_PULSE_HZ = 2.5
+CUTIN_SCALE = 1.5
+CUTIN_MIN_SIZE = 24.0
+BANNER_FONT = 56  # keep a marked car marked for 1 s after the condition drops (the slope is noisy at 4-5 m)
 
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
@@ -119,6 +125,7 @@ class Ars510Tracks:
       v_ego = sm['carState'].vEgo
       fresh = sm.updated[SERVICE]
       seen = set()
+      merging = []  # (d, side) of the cars marked as cutting in; side +1 = coming from my right
       for d, y, v, _sent, settling, cls, tid in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
@@ -137,10 +144,13 @@ class Ars510Tracks:
         arrow = 0
         if cutin:
           arrow = -1 if (y_right - path_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
+          merging.append((d, -arrow))
         # 10/31, driver's request: only cars predicted to merge into my lane are drawn; the other radar markers are hidden
         # (set SHOW_ALL_TRACKS = True to bring them back)
         if cutin or SHOW_ALL_TRACKS:
           self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin, arrow)
+      if merging:
+        self._draw_banner(min(merging), rect)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
           self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None)
@@ -174,6 +184,40 @@ class Ars510Tracks:
           self._release[tid] -= 1
     return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES or self._release.get(tid, 0) > 0
 
+  def _draw_banner(self, nearest, rect: rl.Rectangle):
+    """Big amber banner at the screen edge on the side the merging car comes from, arrow pointing into my lane."""
+    d, side = nearest
+    try:
+      from openpilot.system.ui.lib.multilang import multilang
+      zh = multilang.language == "zh-CHT"
+    except Exception:
+      zh = False
+    who = ("右側匯入" if side > 0 else "左側匯入") if zh else ("MERGE R" if side > 0 else "MERGE L")
+    dist = f"{max(0.0, d):.0f} m" if ui_state.is_metric else f"{max(0.0, d) * 3.28084:.0f} ft"
+    text = f"{who}  {dist}"
+    pulse = 0.5 + 0.5 * float(np.sin(rl.get_time() * 2 * np.pi * CUTIN_PULSE_HZ))
+    tw = measure_text_cached(self._font, text, BANNER_FONT, 0).x
+    head = BANNER_FONT * 0.9
+    w, h = tw + head + 70, BANNER_FONT + 34
+    y = rect.y + rect.height * 0.42
+    x = rect.x + rect.width - w - 30 if side > 0 else rect.x + 30
+    box = rl.Rectangle(x, y, w, h)
+    rl.draw_rectangle_rounded(rl.Rectangle(x + 4, y + 5, w, h), 0.3, 10, rl.Color(0, 0, 0, 150))
+    rl.draw_rectangle_rounded(box, 0.3, 10, rl.Color(*COLOR_CUTIN, int(200 + 55 * pulse)))
+    dark = rl.Color(20, 20, 20, 255)
+    # arrow pointing toward my lane (left when the car comes from the right)
+    ay = y + h / 2
+    if side > 0:
+      tip, base = x + 18, x + 18 + head
+      tx = base + 22
+    else:
+      tip, base = x + w - 18, x + w - 18 - head
+      tx = x + 26
+    p1, p2, p3 = rl.Vector2(tip, ay), rl.Vector2(base, ay - head * 0.6), rl.Vector2(base, ay + head * 0.6)
+    rl.draw_triangle(p1, p2, p3, dark)
+    rl.draw_triangle(p1, p3, p2, dark)
+    rl.draw_text_ex(self._font, text, rl.Vector2(tx, y + 17), BANNER_FONT, 0, dark)
+
   def _draw_arrow(self, x: float, y: float, direction: int, sz: float, color):
     """A bold horizontal arrow beside the marker pointing the way the car is drifting (into my lane)."""
     L = sz * 3.0; head = sz * 1.1; th = max(5.0, sz * 0.35)
@@ -194,12 +238,22 @@ class Ars510Tracks:
     x, y = pt
     sz = float(np.clip((25 * 30) / (d / 3 + 30), 12.0, 30.0)) * 0.9
     color = rl.Color(*rgb, 110 if settling else 230)  # settling: range / speed not converged yet
+    pulse = 0.5 + 0.5 * float(np.sin(rl.get_time() * 2 * np.pi * CUTIN_PULSE_HZ)) if cutin else 0.
+    if cutin:
+      sz = max(sz * CUTIN_SCALE, CUTIN_MIN_SIZE) * (1.0 + 0.12 * pulse)
     if arrow:
-      self._draw_arrow(x, y, arrow, max(sz, 16.0), rl.Color(*rgb, 240))
-    # A diamond outline sitting on the road at the object
+      self._draw_arrow(x, y, arrow, max(sz, 16.0) * (1.3 if cutin else 1.0), rl.Color(*rgb, 255 if cutin else 240))
+    # A diamond sitting on the road at the object (filled and pulsing when the car is cutting in)
     top, right, bottom, left = rl.Vector2(x, y - sz * 1.4), rl.Vector2(x + sz, y - sz * 0.7), rl.Vector2(x, y), rl.Vector2(x - sz, y - sz * 0.7)
+    if cutin:
+      fill = rl.Color(*rgb, int(90 + 110 * pulse))
+      for a, b, c in ((top, left, bottom), (top, bottom, left), (top, right, bottom), (top, bottom, right)):
+        rl.draw_triangle(a, b, c, fill)  # both windings: raylib draws counter-clockwise only
+    shadow_line = rl.Color(0, 0, 0, 180)
     for a, b in ((top, right), (right, bottom), (bottom, left), (left, top)):
-      rl.draw_line_ex(a, b, 4.0, color)
+      if cutin:
+        rl.draw_line_ex(a, b, 10.0, shadow_line)
+      rl.draw_line_ex(a, b, 7.0 if cutin else 4.0, color)
 
     tag = _cutin_label() if cutin else _label(cls, settling)
     if ui_state.is_metric:
@@ -207,7 +261,7 @@ class Ars510Tracks:
     else:
       dist, speed = f"{tag}R {max(0.0, d) * 3.28084:.0f} ft", f"{max(0.0, v_ground * CV.MS_TO_MPH):.0f} mph"
 
-    font_size, line_h, margin = 32, 38, 20
+    font_size, line_h, margin = (40, 46, 20) if cutin else (32, 38, 20)
     text_y = y + 8
     shadow = rl.Color(0, 0, 0, 100 if settling else 200)
     for i, line in enumerate((dist,) if settling else (dist, speed)):
