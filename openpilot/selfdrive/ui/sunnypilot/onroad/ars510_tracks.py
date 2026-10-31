@@ -28,6 +28,7 @@ LANE_HALF_M = 1.8  # half a lane: an object's lateral distance from the predicte
 
 COLOR_PATH = (60, 220, 120)
 COLOR_SIDE = (255, 60, 60)  # next lanes: red (cyan was hard to see)
+SHOW_ALL_TRACKS = False  # False: draw only the cut-in / merge markers
 COLOR_CUTIN = (255, 190, 0)  # amber: a next-lane car drifting toward my lane (see _cutin)
 
 # Cut-in prediction (display only, 10/31): a next-lane car whose lateral distance to my path has been shrinking faster than
@@ -41,6 +42,13 @@ CUTIN_D = (25.0, 90.0)
 CUTIN_VREL = -1.5
 CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
 CUTIN_MIN_V_GROUND = 2.0  # m/s over the ground, forward: excludes oncoming cars
+# Wide merge (10/31 11:39, on-ramp car): a clearly slower car 2.6-5 m out, drifting in fast, is marked too. That car spent
+# 10 s at 3.5-4.5 m closing at 15-20 km/h and was marked for only 0.8 s, one second before it was in my lane.
+CUTIN_WIDE_OFF_MAX = 5.0
+CUTIN_WIDE_RATE = -0.3   # m/s: twice the near rate
+CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
+CUTIN_WIDE_D = (25.0, 110.0)
+CUTIN_RELEASE_FRAMES = 20  # keep a marked car marked for 1 s after the condition drops (the slope is noisy at 4-5 m)
 
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
@@ -90,6 +98,7 @@ class Ars510Tracks:
     self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
     self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
     self._hold: dict[int, int] = {}                      # track id -> consecutive frames the cut-in condition held
+    self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -127,10 +136,13 @@ class Ars510Tracks:
         arrow = 0
         if cutin:
           arrow = -1 if (y_right - path_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
-        self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin, arrow)
+        # 10/31, driver's request: only cars predicted to merge into my lane are drawn; the other radar markers are hidden
+        # (set SHOW_ALL_TRACKS = True to bring them back)
+        if cutin or SHOW_ALL_TRACKS:
+          self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin, arrow)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
-          self._hist.pop(tid, None); self._hold.pop(tid, None)
+          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None)
     except Exception:
       self._points = []
 
@@ -142,13 +154,23 @@ class Ars510Tracks:
       while h and frame - h[0][0] > CUTIN_WIN * 20:
         h.pop(0)
     ok = False
-    if len(h) >= 6 and not settling and CUTIN_OFF_MIN < off < CUTIN_OFF_MAX and vrel < CUTIN_VREL and CUTIN_D[0] <= d <= CUTIN_D[1]:
+    near = CUTIN_OFF_MIN < off < CUTIN_OFF_MAX and vrel < CUTIN_VREL and CUTIN_D[0] <= d <= CUTIN_D[1]
+    wide = CUTIN_OFF_MAX <= off < CUTIN_WIDE_OFF_MAX and vrel < CUTIN_WIDE_VREL and CUTIN_WIDE_D[0] <= d <= CUTIN_WIDE_D[1]
+    if len(h) >= 6 and not settling and (near or wide):
       t = np.array([x[0] for x in h], float) / 20.0; o = np.array([x[1] for x in h], float)
       slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
-      ok = slope < CUTIN_RATE
+      ok = slope < (CUTIN_RATE if near else CUTIN_WIDE_RATE)
     if fresh:
-      self._hold[tid] = self._hold.get(tid, 0) + 1 if ok else 0
-    return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES
+      held = self._hold.get(tid, 0)
+      if ok:
+        self._hold[tid] = held + 1
+        if self._hold[tid] >= CUTIN_HOLD_FRAMES:
+          self._release[tid] = CUTIN_RELEASE_FRAMES
+      else:
+        self._hold[tid] = 0
+        if self._release.get(tid, 0) > 0:
+          self._release[tid] -= 1
+    return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES or self._release.get(tid, 0) > 0
 
   def _draw_arrow(self, x: float, y: float, direction: int, sz: float, color):
     """A bold horizontal arrow beside the marker pointing the way the car is drifting (into my lane)."""
