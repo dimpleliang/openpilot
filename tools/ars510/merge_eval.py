@@ -19,7 +19,7 @@ import numpy as np
 from collections import defaultdict
 from openpilot.cereal import log
 
-REALDATA = "/data/media/0/realdata"
+REALDATA = os.environ.get("REALDATA", "/data/media/0/realdata")
 FMT = "<fffBH"
 SZ = struct.calcsize(FMT)
 HORIZON = 8.0
