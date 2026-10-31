@@ -36,6 +36,9 @@ STACK_M = 8.               # a second road this close to the best match is ambig
 DR_MAX_KM = 15.            # no GPS (tunnels, 雪山隧道 12.9 km): carry the last match forward by speed this far
 MAX_ALERTS = 2             # banners shown (and the only events the voice announces)
 SAY_GAP_S = 4.             # one announcement at a time ("前方三公里" + "故障車" is ~2 s)
+REMIND_KM = 1.0            # second announcement ("前方一公里") for events first announced at >= REMIND_FROM_KM ...
+REMIND_FROM_KM = 1.5
+REMIND_FRESH_S = 120.      # ... only while the event is still in a feed fetched within this time
 RANGE_KM = 1.0             # inside an event range at least this long (移動性施工, closures) -> "本路段"
 FETCH_RETRY_S = 15.
 MATCH_FRAMES = 3           # consecutive matches before the car counts as on the freeway
@@ -43,7 +46,7 @@ LONG_TERM_H = 24.          # 施工維護 older than this is long-term construct
 
 # 1968 event names that matter for the driver ("火" in the name also counts: 車輛火災, 其他火災, 邊坡起火, ...)
 TARGET = ("散落物", "事故", "故障車", "施工維護", "移動性施工", "機車誤闖", "動物誤闖", "自行車誤闖", "行人誤闖", "人員停留", "坑洞",
-          "路樹", "坍方", "路面積水", "道路封閉", "逆行車輛", "濃霧連動", "濃霧")
+          "路樹", "坍方", "路面積水", "道路封閉", "逆行車輛", "濃霧連動", "濃霧", "路面毀損", "遺留物")
 SHORT = {"機車誤闖": "機車誤闖", "動物誤闖": "動物", "自行車誤闖": "自行車誤闖", "行人誤闖": "行人", "施工維護": "施工",
          "移動性施工": "移動施工", "路面積水": "積水", "道路封閉": "封閉", "逆行車輛": "逆向車", "濃霧連動": "濃霧"}
 # reported positions of people / animals / vehicles on the move are rough (km posts in 0.5-1 km steps, updated in
@@ -54,7 +57,7 @@ APPROX_BEHIND_KM = 1.0
 VOICE = {"散落物": "debris", "事故": "accident", "故障車": "breakdown", "施工維護": "work", "移動性施工": "mobilework",
          "機車誤闖": "moto", "動物誤闖": "animal", "自行車誤闖": "bike", "行人誤闖": "ped", "人員停留": "person", "坑洞": "pothole",
          "路樹": "tree", "坍方": "landslide", "路面積水": "water", "道路封閉": "closed", "逆行車輛": "wrongway", "濃霧連動": "fog",
-         "濃霧": "fog", "車輛火災": "carfire", "邊坡起火": "slopefire"}
+         "濃霧": "fog", "車輛火災": "carfire", "邊坡起火": "slopefire", "路面毀損": "damage", "遺留物": "leftover"}
 SAY_FILE = "/dev/shm/hwyalert_say.json"
 SAY_OFF_FILE = "/data/hwyalert_voice_off"
 
@@ -296,6 +299,10 @@ class Feed:
     with self.lock:
       return self.events if time.monotonic() - self.t < FEED_MAX_AGE_S else []
 
+  def age(self):
+    with self.lock:
+      return time.monotonic() - self.t
+
 
 def write_json(path: str, obj: dict):
   tmp = path + ".tmp"
@@ -314,7 +321,9 @@ class Tracker:
     self.S = sections
     self.streak, self.last_key = 0, None
     self.held, self.held_dist, self.last_t = [], 0., None   # last good match, metres driven since (no GPS)
-    self.spoken, self.last_say_t = set(), -1e9
+    self.spoken: dict[str, float] = {}   # event id -> distance (km) at the first announcement
+    self.reminded: set[str] = set()
+    self.last_say_t = -1e9
 
   def locate(self, t, fix, v):
     """fix = (lon, lat, bearing) or None -> matches"""
@@ -335,7 +344,7 @@ class Tracker:
       return [(dist, r, d, km + (1 if inc else -1) * self.held_dist / 1000., inc) for dist, r, d, km, inc in self.held]
     return []
 
-  def step(self, t, fix, v, events):
+  def step(self, t, fix, v, events, feed_age=0.):
     """-> (state dict, voice clips or None)"""
     m = self.locate(t, fix, v)
     key = (m[0][1], m[0][2]) if m else None
@@ -348,12 +357,19 @@ class Tracker:
     state.update(road=f"{key[0]}{key[1]}", km=round(m[0][3], 2), dr=fix is None,
                  alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found])
     say = None
-    new = [(d, e) for d, e in found if e["id"] not in self.spoken]
-    if new and t - self.last_say_t >= SAY_GAP_S:
-      d, e = new[0]
-      self.spoken.add(e["id"])
-      self.last_say_t = t
-      say = voice_clips(d, e["name"])
+    if t - self.last_say_t >= SAY_GAP_S:
+      new = [(d, e) for d, e in found if e["id"] not in self.spoken]
+      remind = [(d, e) for d, e in found if e["id"] in self.spoken and e["id"] not in self.reminded and d <= REMIND_KM
+                and self.spoken[e["id"]] >= REMIND_FROM_KM and feed_age < REMIND_FRESH_S]
+      if new:
+        d, e = new[0]
+        self.spoken[e["id"]] = d
+      elif remind:
+        d, e = remind[0]
+        self.reminded.add(e["id"])
+      if new or remind:
+        self.last_say_t = t
+        say = voice_clips(d, e["name"])
     return state, say
 
 
@@ -380,7 +396,7 @@ def main():
           if sm.recv_frame[s] > 0 and sm.alive[s] and g.hasFix and abs(g.latitude) > 1:
             fix = (g.longitude, g.latitude, g.bearingDeg)
             break
-        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get())
+        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get(), feed.age())
         if say and not os.path.exists(SAY_OFF_FILE):
           say_seq += 1
           write_json(SAY_FILE, dict(seq=say_seq, t=time.time(), clips=say))
