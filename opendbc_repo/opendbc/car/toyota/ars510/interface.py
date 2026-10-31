@@ -43,7 +43,9 @@ GUARD_ID_STRIDE = 10_000_000  # added to a trackId after a guard episode, so rad
 RELINK_MIN_LOST_AGE = 30
 RELINK_MIN_PUBLISH_AGE = 6
 # Display only (the UI's radar markers): tracks from this age (radar cycles, ~0.06 s each) on are shown, settled or not.
-DISPLAY_MIN_AGE = 8
+# 10/31: 8 -> 4 (0.48 -> 0.24 s): a new car reached the UI's cut-in check only after 0.48 s, and the merge replay
+# (tools/ars510/merge_eval_slim.py, age >= 4) was scored from age 4. Age 1 is the placeholder template; 2-3 jump the most.
+DISPLAY_MIN_AGE = 4
 
 
 @dataclass(frozen=True)
