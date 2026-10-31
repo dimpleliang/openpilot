@@ -5,6 +5,8 @@ from importlib.resources import as_file
 
 import pyray as rl
 
+from openpilot.common.swaglog import cloudlog
+
 from openpilot.selfdrive.hwyalert.hwyalertd import STATE_FILE, TARGET, SHORT
 from openpilot.system.ui.lib.application import FONT_DIR
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -23,6 +25,7 @@ class HwyAlertRenderer:
     self._alerts: list[dict] = []
     self._t_read = 0.
     self._font = None
+    self._failed = False
 
   def _load_font(self):
     chars = sorted(set(map(chr, range(32, 127))) | set(GLYPHS))
@@ -44,8 +47,15 @@ class HwyAlertRenderer:
       self._alerts = []
 
   def render(self, rect: rl.Rectangle):
-    if not self._alerts:
+    if not self._alerts or self._failed:
       return
+    try:
+      self._render(rect)
+    except Exception:
+      self._failed = True   # never take the onroad UI down for the banner
+      cloudlog.exception("hwyalert banner failed")
+
+  def _render(self, rect: rl.Rectangle):
     if self._font is None:
       self._load_font()
     y = rect.y + 310  # below the 300 px header (set / current speed)
