@@ -220,8 +220,11 @@ class Ars510Tracks:
           merging.append((d, -arrow))
         # 10/31, driver's request: only cars predicted to merge into my lane are drawn; the other radar markers are hidden
         # (set SHOW_ALL_TRACKS = True to bring them back)
-        if cutin or SHOW_ALL_TRACKS:
-          self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin, arrow)
+        if cutin:
+          # 10/31 driver: the predicted cut-in is a steady solid circle with the arrow inside (no diamond, no side arrow)
+          self._draw_confirmed(pt, d, arrow, flash=False)
+        elif SHOW_ALL_TRACKS:
+          self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect, settling, cls, False, 0)
       if merging and SHOW_BANNER:
         self._draw_banner(min(merging), rect)
       if fresh:
@@ -272,11 +275,12 @@ class Ars510Tracks:
           self._release[tid] -= 1
     return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES or self._release.get(tid, 0) > 0
 
-  def _draw_confirmed(self, pt, d: float, direction: int):
-    """Confirmed cut-in: a flashing solid amber circle on the car with a dark arrow inside (the way it moved)."""
+  def _draw_confirmed(self, pt, d: float, direction: int, flash: bool = True):
+    """Cut-in marker: a solid amber circle on the car with a dark arrow inside pointing into my lane (the way it moves).
+    Steady while predicted; flashing once the car has really cut in and is slower (10/31 driver)."""
     x, y = pt
     r = float(np.clip((30 * 30) / (d / 3 + 30), 18.0, 34.0))
-    on = (rl.get_time() * CONFIRM_PULSE_HZ) % 1.0 < 0.6
+    on = (rl.get_time() * CONFIRM_PULSE_HZ) % 1.0 < 0.6 if flash else True
     cy = y - r * 1.1
     rl.draw_circle(int(x), int(cy + 3), r + 3, rl.Color(0, 0, 0, 150))
     rl.draw_circle(int(x), int(cy), r, rl.Color(*COLOR_CUTIN, 255 if on else 120))
