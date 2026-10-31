@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <ctime>
 #include <functional>
@@ -55,9 +54,6 @@ public:
 
   bool connected();
   bool comms_healthy();
-  // dimpleliang/ars510: can_send SPI deadline (ms). 5 onroad; pandad raises it during the offroad unlock window, when the
-  // panda may stall for >100 ms right after ignition off (10/31: one 0x750 send timed out and pandad fell into recovery).
-  std::atomic<unsigned int> can_send_timeout_ms = 5;
   std::string hw_serial();
 
   // Static functions

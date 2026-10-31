@@ -493,10 +493,12 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   熄火時四門關閉狀態下同一序列可解鎖。推測駕駛門已開時車身 ECU 不動作。改為：P 檔中**解開駕駛安全帶**（車門仍關）即全車解鎖
   （每次停車一次）；依駕駛要求不重複觸發：每次停在 P 檔只解鎖一次（安全帶或開門，先發生者）；熄火後 unlockd 也只送一次。
 
-### 自動解鎖已停用（10/31 14:00，駕駛要求）—— 解鎖指令紀錄
+### 自動解鎖已移除（10/31 14:00，駕駛要求）—— 解鎖指令紀錄
 
 `/data/ars510_door_lock` 內容改為 `lock`：只保留 D 檔 ≥ 10 km/h 自動上鎖；card 與 ars510_unlockd 都不再送解鎖。
-程式碼保留，要恢復就把檔案內容改回空白或 `lock unlock`（下次上電生效）。
+隨後依駕駛要求把解鎖程式整個移除：`auto_lock_unlock.py` 不再送解鎖（指令常數保留）、刪除 `selfdrive/ars510/unlockd.py`
+與 manager 項目、pandad（`pandad.cc`／`panda.cc`／`panda.h` 與二進位）還原為原版（熄火後不再保持 CAN 90 s）。
+要恢復請參考 git 紀錄 f564128～d02b4c9。
 
 **2023 RAV4 HEV 車身 ECU（0x750 子位址 0x40，回應 0x758）解鎖序列**，從鏡頭匯流排（bus 0）送，三步各一個單幀：
 

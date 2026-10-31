@@ -38,7 +38,7 @@ LOCK_AT_SPEED = 10 * CV.KPH_TO_MS
 class AutoLockController:
   def __init__(self, CP_SP):
     self.auto_lock_enabled = bool(CP_SP.flags & ToyotaFlagsSP.AUTO_LOCK.value)
-    self.auto_unlock_enabled = bool(CP_SP.flags & ToyotaFlagsSP.AUTO_UNLOCK.value)
+    self.auto_unlock_enabled = False  # 10/31 driver: unlock removed, whatever the flag
     self.last_gear = GearShifter.park
     self.last_door_open = False
     self.last_driver_door_open = True  # no edge at start-up: only a real change triggers
@@ -64,14 +64,7 @@ class AutoLockController:
     belt_unlatched = bool(getattr(CS.out, "seatbeltUnlatched", False))
     if current_gear == GearShifter.park:
       self.lock_once = False  # re-arm the lock for the next drive
-    else:
-      self.unlocked_in_park = False
-    # one unlock per stop in park: on the first of (driver unbuckles, driver's door opens); never repeated (driver, 10/31)
-    belt_edge = belt_unlatched and not self.last_belt_unlatched
-    door_edge = driver_door_open and not self.last_driver_door_open
-    if self.auto_unlock_enabled and current_gear == GearShifter.park and not self.unlocked_in_park and (belt_edge or door_edge):
-      self._queue(UNLOCK_CMD, UNLOCK_RETURN_CMD)
-      self.unlocked_in_park = True
+    # 10/31 driver: auto unlock removed (commands kept above and documented in ARS510_RADAR.md); lock only
 
     if self.auto_lock_enabled and current_gear != GearShifter.park:
       # auto lock once per drive: in drive, doors closed, above LOCK_AT_SPEED
