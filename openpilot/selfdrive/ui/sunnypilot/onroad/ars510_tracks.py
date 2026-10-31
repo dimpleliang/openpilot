@@ -90,6 +90,7 @@ CONFIRM_PULSE_HZ = 3.0
 # 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
 # at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
 CUTIN_PULSE_HZ = 2.5
+SHOW_BANNER = False  # 10/31 driver: no edge banner ("右側匯入／左側匯入"), the arrows on the car are enough
 CUTIN_SCALE = 1.5
 CUTIN_MIN_SIZE = 24.0
 BANNER_FONT = 56  # keep a marked car marked for 1 s after the condition drops (the slope is noisy at 4-5 m)
@@ -221,7 +222,7 @@ class Ars510Tracks:
         # (set SHOW_ALL_TRACKS = True to bring them back)
         if cutin or SHOW_ALL_TRACKS:
           self._draw_marker(pt, d, v + v_ego, COLOR_CUTIN if cutin else (COLOR_PATH if in_lane else COLOR_SIDE), rect, settling, cls, cutin, arrow)
-      if merging:
+      if merging and SHOW_BANNER:
         self._draw_banner(min(merging), rect)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
