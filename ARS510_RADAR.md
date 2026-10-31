@@ -287,6 +287,10 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   實作：`pandad.cc` 熄火後 90 秒內（有 `/data/ars510_door_lock` 檔）不省電、不切 NO_OUTPUT（保留 Toyota safety，0x750 已放行）；
   `selfdrive/ars510/unlockd.py`（manager `only_offroad`）監看 0x620 DOOR_OPEN_FL，開門（或啟動時已開）即經 sendcan 送同一組序列，
   每次熄火一次；之後程序留著閒置，避免 manager 重啟再解一次。
+  10/31 第一次實測失敗：開門後 4.9 s unlockd 有送，但同一刻 pandad 的 can_send SPI 傳輸逾時（can_send 期限只有 5→100 ms，
+  熄火後幾秒 panda 可能短暫停頓），pandad 離線時一旦 comms 不健康就退出 → pandad.py 走 recover 路徑（DFU 重刷韌體 10 s），
+  解鎖訊息沒送到。對策：視窗內 `Panda::can_send_timeout_ms` 5 → 1000 ms；unlockd 監看 0x758 `40 05 6F 28 11` 正面回應，
+  沒有回應就重送（最多 3 次），並把開門時間／嘗試次數／回應數寫入 cloudlog。
   ※ 測試時曾用 `systemctl stop comma` 停服務，athenad 一起停、SSH 中繼斷線、重啟指令沒跑到，要用 `setsid nohup` 腳本並以 trap 保證重啟。
 
 ## 雷達匯流排 DBC（除錯用，10/29）

@@ -229,6 +229,13 @@ std::optional<bool> send_panda_states(PubMaster *pm, Panda *panda, bool is_onroa
                         health.safety_mode_pkt != (uint8_t)(cereal::CarParams::SafetyModel::NO_OUTPUT) &&
                         health.safety_mode_pkt != (uint8_t)(cereal::CarParams::SafetyModel::ELM327);
 
+  static bool prev_offroad_unlock = false;
+  if (offroad_unlock != prev_offroad_unlock) {
+    LOGW("ARS510 offroad unlock window %s", offroad_unlock ? "open: CAN stays on, safety mode kept" : "closed");
+    prev_offroad_unlock = offroad_unlock;
+  }
+  panda->can_send_timeout_ms = offroad_unlock ? 1000 : 5;
+
   bool power_save_desired = !ignition_local && !offroad_unlock;
   if (((health.flags_pkt & HEALTH_FLAG_POWER_SAVE_ENABLED) != 0U) != power_save_desired) {
     panda->set_power_saving(power_save_desired);
