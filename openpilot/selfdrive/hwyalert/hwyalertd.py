@@ -46,6 +46,10 @@ TARGET = ("散落物", "事故", "故障車", "施工維護", "移動性施工",
           "路樹", "坍方", "路面積水", "道路封閉", "逆行車輛", "濃霧連動", "濃霧")
 SHORT = {"機車誤闖": "機車誤闖", "動物誤闖": "動物", "自行車誤闖": "自行車誤闖", "行人誤闖": "行人", "施工維護": "施工",
          "移動性施工": "移動施工", "路面積水": "積水", "道路封閉": "封閉", "逆行車輛": "逆向車", "濃霧連動": "濃霧"}
+# reported positions of people / animals / vehicles on the move are rough (km posts in 0.5-1 km steps, updated in
+# jumps of 1-3 km for 5-13 % of events): shown as "前方約 2 km" / "附近", and kept until 1 km past the reported point
+APPROX = ("機車誤闖", "動物誤闖", "自行車誤闖", "行人誤闖", "人員停留", "逆行車輛")
+APPROX_BEHIND_KM = 1.0
 # voice clips (assets/sounds/hwy_<clip>.wav, macOS "say -v Meijia"): distance + event, played once per event
 VOICE = {"散落物": "debris", "事故": "accident", "故障車": "breakdown", "施工維護": "work", "移動性施工": "mobilework",
          "機車誤闖": "moto", "動物誤闖": "animal", "自行車誤闖": "bike", "行人誤闖": "ped", "人員停留": "person", "坑洞": "pothole",
@@ -56,12 +60,12 @@ SAY_OFF_FILE = "/data/hwyalert_voice_off"
 
 
 # every character an alert text can contain (the UI loads only these glyphs)
-DISPLAY_CHARS = ("前方本路段 km（）[]、.–K0123456789第車道內外路肩全線匝封閉平面高架其他火災" + "".join(TARGET) + "".join(SHORT.values()) +
+DISPLAY_CHARS = ("前方約附近本路段 km（）[]、.–K0123456789第車道內外路肩全線匝封閉平面高架其他火災" + "".join(TARGET) + "".join(SHORT.values()) +
                  "".join(VOICE))
 
 
 def voice_clips(d_km: float, name: str) -> list[str]:
-  dist = "d3" if d_km >= 2.5 else "d2" if d_km >= 1.5 else "d1" if d_km >= 0.5 else "d0"
+  dist = "d3" if d_km >= 2.5 else "d2" if d_km >= 1.5 else "d1" if d_km >= 0.5 else "near" if name in APPROX else "d0"
   return [dist, VOICE.get(name, "fire" if "火" in name else "accident")]
 
 
@@ -222,19 +226,20 @@ def ahead(matches, events, pos=None, bearing=0.):
       continue
     km, inc = keys[k]
     sgn = 1 if inc else -1
+    behind = APPROX_BEHIND_KM if ev["name"] in APPROX else BEHIND_KM
     a, b = ev["km"], ev["km2"] if ev["km2"] is not None else ev["km"]
     lo, hi = (a, b) if (b - a) * sgn >= 0 else (b, a)   # lo = first reached along travel
     d_km = (lo - km) * sgn
-    inside = (hi - km) * sgn >= -BEHIND_KM and d_km <= 0  # inside an event range (moving construction, closures)
+    inside = (hi - km) * sgn >= -behind and d_km <= 0  # inside an event range (moving construction, closures)
     if inside:
       d_km = 0.
-    if not (-BEHIND_KM <= d_km <= ALERT_KM + 1.0):
+    if not (-behind <= d_km <= ALERT_KM + 1.0):
       continue
     if pos is not None and ev["lon"] is not None and d_km > 0:
       ex, ey = xy(ev["lon"], ev["lat"])
       dx, dy = ex - x, ey - y
       dist = math.hypot(dx, dy) / 1000.
-      if (dx * hx + dy * hy) < -BEHIND_KM * 1000 or dist > ALERT_KM:
+      if (dx * hx + dy * hy) < -behind * 1000 or dist > ALERT_KM:
         continue
       d_km = dist if (dx * hx + dy * hy) > 0 else 0.
     elif d_km > ALERT_KM:
@@ -256,7 +261,10 @@ def alert_text(d_km: float, ev: dict) -> str:
   if ev.get("range"):
     lo, hi = ev["range"]
     return f"本路段 {SHORT.get(ev['name'], ev['name'])}（{_k(lo)}–{_k(hi)}）" + (f" [{ev['tag']}]" if ev.get("tag") else "")
-  where = "前方" if d_km < 0.1 else f"前方 {d_km:.1f} km"
+  if ev["name"] in APPROX:
+    where = "附近" if d_km < 0.5 else f"前方約 {max(1, round(d_km))} km"
+  else:
+    where = "前方" if d_km < 0.1 else f"前方 {d_km:.1f} km"
   s = f"{where} {SHORT.get(ev['name'], ev['name'])}"
   if ev.get("lanes"):
     s += f"（{ev['lanes']}）"
