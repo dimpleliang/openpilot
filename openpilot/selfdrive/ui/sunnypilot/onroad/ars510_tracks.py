@@ -40,6 +40,7 @@ CUTIN_OFF_MIN, CUTIN_OFF_MAX = 0.8, 2.6
 CUTIN_D = (25.0, 90.0)
 CUTIN_VREL = -1.5
 CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
+CUTIN_MIN_V_GROUND = 2.0  # m/s over the ground, forward: excludes oncoming cars
 
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
@@ -119,7 +120,8 @@ class Ars510Tracks:
           continue
         off = abs(y_right - path_y(d))
         in_lane = off < LANE_HALF_M
-        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling) if tid >= 0 else False
+        # oncoming traffic (moving backward over the ground) never counts as a cut-in
+        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling) if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND) else False
         if tid >= 0:
           seen.add(tid)
         arrow = 0
