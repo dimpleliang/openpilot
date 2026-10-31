@@ -53,6 +53,8 @@ def tracks_of(seg):
       if addr not in (0x80, 0xB4, 0x24):
         continue
       REC.clear(); ri.update_frame(t, bus, addr, dat)
+      vl = [o.v_lat_ground for o in REC if o.geometry_valid and o.lateral_valid and 15 <= o.d_rel <= 120]
+      bias = float(np.median(vl)) if len(vl) >= 3 else 0.   # left-positive, common to all objects (my yaw, road bend)
       for o in REC:
         prev = life.get(o.slot)
         if prev is None or o.age < prev[0]:
@@ -69,37 +71,49 @@ def tracks_of(seg):
         vr = o.v_long_ground - v
         if o.v_long_ground < 2.0:   # oncoming / standing: never a cut-in
           continue
-        vlat = -o.v_lat_ground                     # right-positive
+        vlat = -(o.v_lat_ground - bias)            # right-positive, bias removed
         toward = -vlat if off > 0 else vlat        # + = moving toward my path
         curv50 = abs(float(np.interp(50., path[0], path[1])))
         is_lead = any(abs(o.d_rel - ld) < 4 and abs(yr - ly) < 1.5 for ld, ly in leads)
-        tr[life[o.slot][1]].append((t, o.d_rel, off, vr, toward, v, steer, curv50, is_lead))
+        tr[life[o.slot][1]].append((t, o.d_rel, off, vr, toward, v, steer, curv50, is_lead, int(o.lane_crossing_code or 0)))
   return tr
 
 
 class Rule:
-  def __init__(self, name, wide=False, gate=None, lat=False, curve=False, wide_hold=8, near=True):
+  def __init__(self, name, wide=False, gate=None, lat=False, curve=False, wide_hold=8, near=True, fast=False, vmax=None, fast_thr=0.5):
     self.name, self.wide, self.gate, self.lat, self.curve, self.wide_hold, self.near = name, wide, gate, lat, curve, wide_hold, near
+    self.fast, self.vmax, self.fast_thr = fast, vmax, fast_thr
 
   def marks(self, s):
     """indices where the track is marked"""
-    out = []; hold = 0; rel = 0; hist = []
-    for i, (t, d, off, vr, tow, v, steer, c50, lead) in enumerate(s):
+    out = []; hold = 0; rel = 0; hist = []; fastn = 0
+    for i, (t, d, off, vr, tow, v, steer, c50, lead, lc) in enumerate(s):
       a = abs(off); hist.append((t, a))
       while hist and t - hist[0][0] > 2.0:
         hist.pop(0)
       slope = 0.
       if len(hist) >= 6 and hist[-1][0] - hist[0][0] > 0.5:
         tt = np.array([h[0] for h in hist]); oo = np.array([h[1] for h in hist]); slope = float(np.polyfit(tt - tt[0], oo, 1)[0])
-      near = self.near and 0.8 < a < 2.6 and vr < -1.5 and 25 <= d <= 90 and slope < -0.15
+      vlim = self.vmax if self.vmax is not None else -1.5
+      near = self.near and 0.8 < a < 2.6 and vr < vlim and 25 <= d <= 90 and slope < -0.15
       wide = False; need = 8
-      if self.wide and 2.6 <= a < 5.0 and vr < -2.5 and 25 <= d <= 110:
+      if self.wide and 2.6 <= a < 5.0 and vr < (self.vmax if self.vmax is not None else -2.5) and 25 <= d <= 110:
         ok = (tow > 0.4) if self.lat else (slope < -0.3)
         if self.gate is not None and v < self.gate / 3.6:
           ok = False
         if self.curve and (abs(steer) > 20 or c50 > 3.0):
           ok = False
         wide = ok; need = self.wide_hold
+      fastok = False
+      if self.fast:
+        inr = 0.9 < a < 5.0 and 15 <= d <= 120 and vr < 1.5
+        curvy = self.curve and (abs(steer) > 15 or c50 > 2.5)
+        fastn = fastn + 1 if (inr and tow > self.fast_thr and not curvy) else 0
+        fastok = inr and not curvy and (lc in (2, 5) or fastn >= 3)
+      if self.curve and (abs(steer) > 15 or c50 > 2.5):
+        near = wide = False
+      if fastok:
+        near = True
       if lead:
         near = wide = False
       if near or wide:
@@ -114,10 +128,49 @@ class Rule:
     return out
 
 
-RULES = [Rule("old (near only)"), Rule("near+wide, no gate", wide=True), Rule("near+wide, gate 60", wide=True, gate=60),
+RULES = [Rule("installed (near+wide gate60, slow)", wide=True, gate=60),
+         Rule("NEW fast vlat0.5 + similar speed + no curve", wide=True, vmax=1.5, curve=True, fast=True),
+         Rule("NEW fast vlat0.8 + similar speed + no curve", wide=True, vmax=1.5, curve=True, fast=True, fast_thr=0.8),
+         Rule("old (near only)"), Rule("near+wide, no gate", wide=True), Rule("near+wide, gate 60", wide=True, gate=60),
          Rule("wide: ground lateral", wide=True, lat=True), Rule("wide: no curve/steer", wide=True, curve=True),
          Rule("wide: hold 1.5 s", wide=True, wide_hold=25),
          Rule("wide: lateral+curve+1.5 s", wide=True, lat=True, curve=True, wide_hold=25)]
+
+CACHE = os.environ.get("MERGE_CACHE", os.path.expanduser("~/.cache/ars510_merge_eval"))
+
+
+def prepared(f):
+  """(km by band, tracks) for one slim file, cached (decoding the object list is the slow part)."""
+  name = os.path.basename(f).replace(".pkl.zst", "")
+  cp = os.path.join(CACHE, name + ".pkl")
+  if os.path.exists(cp):
+    return pickle.load(open(cp, "rb"))
+  seg = load(f)
+  km = defaultdict(float)
+  car = seg["car"]
+  for (t0, v0, *_), (t1, *_) in zip(car, car[1:]):
+    for lo, hi in BANDS:
+      if lo <= v0 * 3.6 < hi:
+        km[(lo, hi)] += v0 * (t1 - t0) / 1000
+  out = (dict(km), dict(tracks_of(seg)))
+  os.makedirs(CACHE, exist_ok=True)
+  tmp = cp + ".part"
+  pickle.dump(out, open(tmp, "wb"), protocol=4); os.replace(tmp, cp)
+  return out
+
+
+def prep(files, budget_s):
+  """decode up to budget_s seconds of not-yet-cached files on all cores (for short shells), then return"""
+  import time
+  from multiprocessing import Pool
+  todo = [f for f in files if not os.path.exists(os.path.join(CACHE, os.path.basename(f).replace(".pkl.zst", "") + ".pkl"))]
+  t0 = time.monotonic(); done = 0
+  with Pool(os.cpu_count()) as pool:
+    for _ in pool.imap_unordered(prepared, todo):
+      done += 1
+      if time.monotonic() - t0 > budget_s:
+        pool.terminate(); break
+  print(f"prepared {done}, remaining {len(todo) - done}", flush=True)
 
 
 def main():
@@ -125,20 +178,20 @@ def main():
   files = sorted(glob.glob(os.path.join(d, "*.pkl.zst")))
   real = {}; km = defaultdict(float); stats = {r.name: defaultdict(lambda: [0, 0, [], set()]) for r in RULES}
   episodes = {r.name: [] for r in RULES}
+  if "--prep" in sys.argv:
+    prep(files, float(sys.argv[sys.argv.index("--prep") + 1])); return
   for f in files:
-    seg = load(f); name = os.path.basename(f).replace(".pkl.zst", "")
-    car = seg["car"]
-    for (t0, v0, *_), (t1, *_) in zip(car, car[1:]):
-      for lo, hi in BANDS:
-        if lo <= v0 * 3.6 < hi:
-          km[(lo, hi)] += v0 * (t1 - t0) / 1000
-    for key, s in tracks_of(seg).items():
+    name = os.path.basename(f).replace(".pkl.zst", "")
+    fkm, ftracks = prepared(f)
+    for b, x in fkm.items():
+      km[b] += x
+    for key, s in ftracks.items():
       if len(s) < 10:
         continue
       k = (name, key)
       # real cut-in
       out_t = None; tin = None
-      for t, dd, off, vr, tow, v, steer, c50, lead in s:
+      for t, dd, off, vr, tow, v, steer, c50, lead, lc in s:
         if abs(off) >= 1.8 and not lead:
           out_t = t
         elif out_t is not None and (abs(off) < 0.9 or lead) and v > 20 / 3.6 and 15 < dd < 110 and t - out_t < 6:
