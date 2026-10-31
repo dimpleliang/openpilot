@@ -125,6 +125,7 @@ NEAR_STOP_K = 1.15             # margin for actuator lag / PCM under-delivery
 NEAR_STOP_MAX_DECEL = -2.0     # m/s^2
 NEAR_STOP_TOO_CLOSE = 3.5      # m
 NEAR_STOP_HOLD_ACCEL = -1.5    # m/s^2
+NEAR_STOP_HOLD_VLEAD = 0.3     # m/s, the hold only behind a lead that has really stopped (not a crawling jam)
 NEAR_STOP_OFF_FILE = "/data/ars510_no_near_stop"
 
 
@@ -132,7 +133,7 @@ def near_stop_accel_floor(lead, v_ego):
   """Braking floor for a (nearly) stopped radar lead close ahead, or None."""
   if not (lead.present and lead.radar) or lead.dRel > NEAR_STOP_D_MAX or lead.vLead > NEAR_STOP_VLEAD_MAX:
     return None
-  if lead.dRel < NEAR_STOP_TOO_CLOSE:
+  if lead.dRel < NEAR_STOP_TOO_CLOSE and lead.vLead < NEAR_STOP_HOLD_VLEAD:
     return NEAR_STOP_HOLD_ACCEL
   if v_ego < NEAR_STOP_MIN_V:
     return None
