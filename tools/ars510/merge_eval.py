@@ -29,7 +29,7 @@ MIN_V = 60 / 3.6
 
 # keep in sync with ars510_tracks.py
 WIN, RATE, OFF_MIN, OFF_MAX, D, VREL, HOLD, MIN_VG = 2.0, -0.15, 0.8, 2.6, (25., 90.), -1.5, 10, 2.0
-W_OFF_MAX, W_RATE, W_VREL, W_D, RELEASE = 5.0, -0.3, -2.5, (25., 110.), 20
+W_OFF_MAX, W_RATE, W_VREL, W_D, RELEASE, W_MIN_V = 5.0, -0.3, -2.5, (25., 110.), 20, 60 / 3.6
 
 
 class Rule:
@@ -37,12 +37,12 @@ class Rule:
     self.wide = wide
     self.hist = defaultdict(list); self.hold = defaultdict(int); self.rel = defaultdict(int)
 
-  def step(self, tid, frame, off, d, vrel, settling):
+  def step(self, tid, frame, off, d, vrel, settling, v_ego=99.):
     h = self.hist[tid]; h.append((frame, off))
     while h and frame - h[0][0] > WIN * 20:
       h.pop(0)
     near = OFF_MIN < off < OFF_MAX and vrel < VREL and D[0] <= d <= D[1]
-    wide = self.wide and OFF_MAX <= off < W_OFF_MAX and vrel < W_VREL and W_D[0] <= d <= W_D[1]
+    wide = self.wide and v_ego > W_MIN_V and OFF_MAX <= off < W_OFF_MAX and vrel < W_VREL and W_D[0] <= d <= W_D[1]
     ok = False
     if len(h) >= 6 and not settling and (near or wide):
       t = np.array([x[0] for x in h], float) / 20.; o = np.array([x[1] for x in h], float)
@@ -120,7 +120,7 @@ def main():
           if is_lead or vr + v <= MIN_VG:
             continue
           for name, r in rules.items():
-            if r.step(tid, frame, off, d, vr, bool(fl & 2)):
+            if r.step(tid, frame, off, d, vr, bool(fl & 2), v):
               e = marks[name].setdefault(key, [t, t, d, off, vr, v, 0.])
               if v > MIN_V:
                 e[6] += 1 / 20

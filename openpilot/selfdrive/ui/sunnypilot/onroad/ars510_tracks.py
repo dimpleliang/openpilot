@@ -48,6 +48,7 @@ CUTIN_WIDE_OFF_MAX = 5.0
 CUTIN_WIDE_RATE = -0.3   # m/s: twice the near rate
 CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
 CUTIN_WIDE_D = (25.0, 110.0)
+CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
 CUTIN_RELEASE_FRAMES = 20  # keep a marked car marked for 1 s after the condition drops (the slope is noisy at 4-5 m)
 
 
@@ -130,7 +131,7 @@ class Ars510Tracks:
         off = abs(y_right - path_y(d))
         in_lane = off < LANE_HALF_M
         # oncoming traffic (moving backward over the ground) never counts as a cut-in
-        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling) if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND) else False
+        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling, v_ego) if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND) else False
         if tid >= 0:
           seen.add(tid)
         arrow = 0
@@ -146,7 +147,7 @@ class Ars510Tracks:
     except Exception:
       self._points = []
 
-  def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool) -> bool:
+  def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.) -> bool:
     """Lateral-offset trend over CUTIN_WIN: True while the car has been drifting toward my path for CUTIN_HOLD_FRAMES."""
     h = self._hist.setdefault(tid, [])
     if fresh:
@@ -155,7 +156,8 @@ class Ars510Tracks:
         h.pop(0)
     ok = False
     near = CUTIN_OFF_MIN < off < CUTIN_OFF_MAX and vrel < CUTIN_VREL and CUTIN_D[0] <= d <= CUTIN_D[1]
-    wide = CUTIN_OFF_MAX <= off < CUTIN_WIDE_OFF_MAX and vrel < CUTIN_WIDE_VREL and CUTIN_WIDE_D[0] <= d <= CUTIN_WIDE_D[1]
+    wide = v_ego > CUTIN_WIDE_MIN_V_EGO and CUTIN_OFF_MAX <= off < CUTIN_WIDE_OFF_MAX and vrel < CUTIN_WIDE_VREL and \
+      CUTIN_WIDE_D[0] <= d <= CUTIN_WIDE_D[1]
     if len(h) >= 6 and not settling and (near or wide):
       t = np.array([x[0] for x in h], float) / 20.0; o = np.array([x[1] for x in h], float)
       slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
