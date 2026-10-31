@@ -67,6 +67,14 @@ CUTIN_MAX_VREL = 1.5         # m/s, fast trigger only: slower or about my speed 
 CURVE_STEER_DEG = 15.0       # no cut-in marking while steering more than this ...
 CURVE_PATH_Y_50 = 2.5        # ... or while my path bends more than this at 50 m
 LC_CUTIN = (2, 5)
+# 10/31 23:07: a car overtaking from the right rear was first seen 11 m ahead, 22 km/h faster, moving into my lane at
+# 1.6-1.8 m/s, and was in my lane 1.3 s later; the fast trigger required <= +1.5 m/s relative speed and >= 15 m. Close
+# range: within CLOSE_D, any relative speed, settling or not, CLOSE_HOLD records toward my path. Replay 241 km: recall
+# 60-90 km/h 27 -> 35 %, 90+ 36 -> 43 %, false marks 151 -> 154 / 102 -> 102 per 100 km (close lateral data is good).
+CLOSE_D = (5.0, 40.0)        # m
+CLOSE_OFF = (0.9, 4.0)       # m from my path
+CLOSE_VLAT_TOWARD = 1.0      # m/s
+CLOSE_HOLD_FRAMES = 3        # radar records (~0.18 s)
 # 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
 # at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
 CUTIN_PULSE_HZ = 2.5
@@ -124,6 +132,7 @@ class Ars510Tracks:
     self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
     self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
     self._hold: dict[int, int] = {}                      # track id -> consecutive frames the cut-in condition held
+    self._close: dict[int, int] = {}                     # track id -> consecutive close-range records moving toward my path
     self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
 
@@ -181,7 +190,7 @@ class Ars510Tracks:
         self._draw_banner(min(merging), rect)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
-          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None)
+          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None); self._close.pop(tid, None)
     except Exception:
       self._points = []
 
@@ -205,7 +214,12 @@ class Ars510Tracks:
     in_range = FAST_OFF[0] < off < FAST_OFF[1] and FAST_D[0] <= d <= FAST_D[1] and vrel < CUTIN_MAX_VREL
     if fresh:
       self._fast[tid] = self._fast.get(tid, 0) + 1 if (in_range and toward == toward and toward > FAST_VLAT_TOWARD) else 0
-    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES):
+    close = CLOSE_OFF[0] < off < CLOSE_OFF[1] and CLOSE_D[0] <= d <= CLOSE_D[1]
+    if fresh:
+      self._close[tid] = self._close.get(tid, 0) + 1 if (close and toward == toward and toward > CLOSE_VLAT_TOWARD) else 0
+    if close and self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES:
+      in_range = True
+    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES or self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES):
       ok = True
       if fresh:
         self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)  # mark on this record
