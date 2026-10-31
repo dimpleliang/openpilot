@@ -103,14 +103,15 @@ def main():
         leads = [(l.dRel, l.yRel) for l in (m.radarState.leadOne, m.radarState.leadTwo) if l.present and l.radar]
       elif w == "customReservedRawData0" and path is not None and len(path[0]):
         p = bytes(m.customReservedRawData0)
-        if len(p) < 4 or p[:2] != b"A5" or p[2] != 2:
+        if len(p) < 4 or p[:2] != b"A5" or p[2] not in (2, 3):
           continue
+        fmt = FMT if p[2] == 2 else "<fffBHhB"; sz = struct.calcsize(fmt)
         frame += 1
         for i in range(p[3]):
-          o = 4 + i * SZ
-          if o + SZ > len(p):
+          o = 4 + i * sz
+          if o + sz > len(p):
             break
-          d, y, vr, fl, tid = struct.unpack_from(FMT, p, o)
+          d, y, vr, fl, tid = struct.unpack_from(fmt, p, o)[:5]
           if not (0.5 < d < 120):
             continue
           is_lead = any(abs(d - a) < 4 and abs(y - b) < 1.5 for a, b in leads)

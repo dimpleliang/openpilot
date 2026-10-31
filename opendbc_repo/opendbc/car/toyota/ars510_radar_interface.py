@@ -135,7 +135,7 @@ WANTED = {(RADAR_BUS, ID80_ADDR), (CAR_BUS, TOYOTA_SPEED_ADDR), (CAR_BUS, TOYOTA
 # Payload: b"A5" + version byte + count byte, then per object <fffB: dRel, yRel, vRel, flags (bit 0 = sent to radard, bit 1 = still settling,
 # bits 2-4 = radar object class: 1 unclassified, 2 car, 3 large vehicle, 4 pedestrian, 5 provisional, 6 two-wheeler).
 DISPLAY_SERVICE = "customReservedRawData0"
-DISPLAY_FMT = "<fffBH"  # v2 (10/31): + native track id, so the UI can follow a car between frames (cut-in marking)
+DISPLAY_FMT = "<fffBHhB"  # v3 (10/31): + track id (v2), + radar lateral speed (cm/s, left-positive) and lane-crossing code (cut-in marking)
 
 
 class _DisplayPublisher:
@@ -153,9 +153,12 @@ class _DisplayPublisher:
         self._messaging = messaging
       import struct
       pts = points[:64]
-      payload = b"A5" + bytes([2, len(pts)]) + b"".join(
+      def vlat_cm(r):
+        v = r[7] if len(r) > 7 and r[7] == r[7] else 0.0
+        return max(-32767, min(32767, int(round(v * 100))))
+      payload = b"A5" + bytes([3, len(pts)]) + b"".join(
         struct.pack(DISPLAY_FMT, r[0], r[1], r[2] if r[2] == r[2] else 0.0, (1 if r[3] else 0) | (2 if r[4] else 0) | ((r[5] & 7) << 2),
-                    r[6] if len(r) > 6 else 0)
+                    r[6] if len(r) > 6 else 0, vlat_cm(r), (r[8] & 0xFF) if len(r) > 8 else 0)
         for r in pts)
       msg = self._messaging.new_message(None, valid=True)  # Data field: set, not init()
       setattr(msg, DISPLAY_SERVICE, payload)

@@ -20,6 +20,7 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 SERVICE = "customReservedRawData0"
 FMT_V1 = "<fffB"
 FMT = "<fffBH"  # v2: + native track id
+FMT_V3 = "<fffBHhB"  # v3: + radar lateral speed (cm/s, left-positive), lane-crossing code (2 / 5 cut-in from left / right)
 STALE_FRAMES = 10  # ui frames (20 Hz) without a radar record before the markers go away
 MAX_DRAW_M = 120.0
 LEAD_MATCH_D_M = 2.0
@@ -50,6 +51,23 @@ CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
 CUTIN_WIDE_D = (25.0, 110.0)
 CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
 CUTIN_RELEASE_FRAMES = 20
+# 10/31 driver: mark as soon as the radar reports the car moving toward my lane, not only when slower (similar speed counts),
+# and not in curves. Fast trigger: the radar's own lateral speed toward my path, minus the median lateral speed of the
+# other objects in the same record (all of them show a common bias with my yaw / the road's bend; 13:22: merging car
+# 0.97 m/s at 112 m on its first record, a car keeping its lane 0.7-1.1 m/s), held FAST_HOLD_FRAMES. The radar's
+# lane-crossing code (2 / 5 = cut-in from left / right) marks at once.
+FAST_VLAT_TOWARD = 1.0       # m/s, relative lateral speed toward my path
+FAST_HOLD_FRAMES = 8         # radar records (~0.5 s)
+FAST_OFF = (0.9, 5.0)        # m from my path
+FAST_D = (15.0, 120.0)       # m
+CUTIN_MAX_VREL = 1.5         # m/s, fast trigger only: slower or about my speed (a car pulling away faster is not marked)
+# Replay of 294 segments / 241 km (10/30-31, 242 real cut-ins): allowing about-my-speed cars in the 2 s trend rules doubled the
+# false marks (60-90 km/h: 142 -> 290 per 100 km) for +10 points of recall, so the trend rules keep "slower"; the fast
+# radar-lateral-speed trigger (1.0 m/s, 0.5 s, about-my-speed allowed) adds recall above 90 km/h (26 -> 32 %, warning
+# 1.3 -> 1.8 s median) at +8-15 % false marks; skipping curves removes a few. A 0.5 m/s / 0.18 s trigger was not better.
+CURVE_STEER_DEG = 15.0       # no cut-in marking while steering more than this ...
+CURVE_PATH_Y_50 = 2.5        # ... or while my path bends more than this at 50 m
+LC_CUTIN = (2, 5)
 # 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
 # at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
 CUTIN_PULSE_HZ = 2.5
@@ -82,10 +100,11 @@ def _cutin_label() -> str:
     return "CUT-IN "
 
 
-def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool, int, int]]:
-  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2):
+def parse(payload: bytes) -> list[tuple]:
+  """(d, y, vrel, sent, settling, class, track id, v_lat left-positive m/s, lane-crossing code)"""
+  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2, 3):
     return []
-  fmt = FMT_V1 if payload[2] == 1 else FMT
+  fmt = {1: FMT_V1, 2: FMT, 3: FMT_V3}[payload[2]]
   size = struct.calcsize(fmt)
   n = payload[3]
   out = []
@@ -95,7 +114,8 @@ def parse(payload: bytes) -> list[tuple[float, float, float, bool, bool, int, in
       break
     f = struct.unpack_from(fmt, payload, off)
     d, y, v, flags = f[:4]
-    out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7, f[4] if len(f) > 4 else -1))
+    out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7, f[4] if len(f) > 4 else -1,
+                f[5] / 100. if len(f) > 5 else float("nan"), f[6] if len(f) > 6 else 0))
   return out
 
 
@@ -105,6 +125,7 @@ class Ars510Tracks:
     self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
     self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
     self._hold: dict[int, int] = {}                      # track id -> consecutive frames the cut-in condition held
+    self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
@@ -126,7 +147,11 @@ class Ars510Tracks:
       fresh = sm.updated[SERVICE]
       seen = set()
       merging = []  # (d, side) of the cars marked as cutting in; side +1 = coming from my right
-      for d, y, v, _sent, settling, cls, tid in self._points:
+      # 10/31 driver: no cut-in marking in curves (my steering or my path bending)
+      curve = abs(sm['carState'].steeringAngleDeg) > CURVE_STEER_DEG or abs(path_y(50.)) > CURVE_PATH_Y_50
+      vlats = [p[7] for p in self._points if p[7] == p[7] and FAST_D[0] <= p[0] <= FAST_D[1]]
+      vlat_bias = float(np.median(vlats)) if len(vlats) >= 3 else 0.
+      for d, y, v, _sent, settling, cls, tid, vlat, lc in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
         if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
@@ -138,7 +163,10 @@ class Ars510Tracks:
         off = abs(y_right - path_y(d))
         in_lane = off < LANE_HALF_M
         # oncoming traffic (moving backward over the ground) never counts as a cut-in
-        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling, v_ego) if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND) else False
+        off_signed = y_right - path_y(d)
+        toward = (vlat - vlat_bias) * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
+        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling, v_ego, toward, lc) \
+          if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
         if tid >= 0:
           seen.add(tid)
         arrow = 0
@@ -153,11 +181,12 @@ class Ars510Tracks:
         self._draw_banner(min(merging), rect)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
-          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None)
+          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None)
     except Exception:
       self._points = []
 
-  def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.) -> bool:
+  def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.,
+             toward: float = float("nan"), lc: int = 0) -> bool:
     """Lateral-offset trend over CUTIN_WIN: True while the car has been drifting toward my path for CUTIN_HOLD_FRAMES."""
     h = self._hist.setdefault(tid, [])
     if fresh:
@@ -172,6 +201,14 @@ class Ars510Tracks:
       t = np.array([x[0] for x in h], float) / 20.0; o = np.array([x[1] for x in h], float)
       slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
       ok = slope < (CUTIN_RATE if near else CUTIN_WIDE_RATE)
+    # fast: the radar itself reports the car moving toward my path (relative lateral speed), or its cut-in code
+    in_range = FAST_OFF[0] < off < FAST_OFF[1] and FAST_D[0] <= d <= FAST_D[1] and vrel < CUTIN_MAX_VREL
+    if fresh:
+      self._fast[tid] = self._fast.get(tid, 0) + 1 if (in_range and toward == toward and toward > FAST_VLAT_TOWARD) else 0
+    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES):
+      ok = True
+      if fresh:
+        self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)  # mark on this record
     if fresh:
       held = self._hold.get(tid, 0)
       if ok:
