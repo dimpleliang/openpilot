@@ -29,6 +29,11 @@ UNLOCK_RETURN_CMD = b'\x40\x05\x2f\x28\x11\x00\x80\x00'
 SEQ_STEP_FRAMES = 5     # 50 ms between session and command
 SEQ_RETURN_FRAMES = 100  # 1 s later: give control back
 LOCK_AT_SPEED = 10 * CV.KPH_TO_MS
+# 10/31 13:40, twice: in park the unlock sequence was sent 10 ms after the driver's door opened and the body ECU answered
+# positively (6F 28 11), but the other doors stayed locked; the same sequence with all doors closed (ignition off test,
+# 10/31) unlocked all four. So in park the unlock is also sent when the driver's seatbelt is unlatched (normally a few
+# seconds before the door opens), and a door-open unlock is repeated UNLOCK_RETRY_FRAMES later.
+UNLOCK_RETRY_FRAMES = 200      # 2 s
 
 
 class AutoLockController:
@@ -39,6 +44,9 @@ class AutoLockController:
     self.last_door_open = False
     self.last_driver_door_open = False
     self.lock_once = False
+    self.last_belt_unlatched = False
+    self.unlocked_in_park = False   # the seatbelt unlock fires once per stop in park
+    self.retry_in = -1              # frames until the door-open unlock is repeated (-1: none)
     self.pending: list[tuple[int, bytes]] = []  # (frames until send, data)
 
   def _queue(self, cmd: bytes, return_cmd: bytes):
@@ -55,11 +63,27 @@ class AutoLockController:
 
     current_gear = CS.out.gearShifter
     driver_door_open = bool(getattr(CS, "driver_door_open", False))
+    belt_unlatched = bool(getattr(CS.out, "seatbeltUnlatched", False))
     if current_gear == GearShifter.park:
       self.lock_once = False  # re-arm the lock for the next drive
+    else:
+      self.unlocked_in_park = False
+      self.retry_in = -1
+    if self.retry_in > 0:
+      self.retry_in -= 1
     if self.auto_unlock_enabled and current_gear == GearShifter.park and driver_door_open and not self.last_driver_door_open:
       # 10/30, driver's request: no unlock on the shift to park itself; in park, opening the driver's door unlocks all doors
       self._queue(UNLOCK_CMD, UNLOCK_RETURN_CMD)
+      self.unlocked_in_park = True
+      self.retry_in = UNLOCK_RETRY_FRAMES
+    elif self.auto_unlock_enabled and current_gear == GearShifter.park and belt_unlatched and not self.last_belt_unlatched \
+         and not self.unlocked_in_park and not driver_door_open:
+      # in park, the driver unbuckles (doors still closed): unlock all doors, once per stop
+      self._queue(UNLOCK_CMD, UNLOCK_RETURN_CMD)
+      self.unlocked_in_park = True
+    elif self.retry_in == 0 and not self.pending:
+      self._queue(UNLOCK_CMD, UNLOCK_RETURN_CMD)
+      self.retry_in = -1
 
     elif self.auto_lock_enabled:
       # auto lock once per drive: in drive, doors closed, above LOCK_AT_SPEED
@@ -70,6 +94,7 @@ class AutoLockController:
     self.last_gear = current_gear
     self.last_door_open = CS.out.doorOpen
     self.last_driver_door_open = driver_door_open
+    self.last_belt_unlatched = belt_unlatched
     if self.pending:
       due = [d for f, d in self.pending if f <= 0]
       self.pending = [(f - 1, d) for f, d in self.pending if f > 0]

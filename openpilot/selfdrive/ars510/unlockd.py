@@ -68,6 +68,14 @@ def main():
         if st["ack"]:
           break
         time.sleep(0.5)
+      # 10/31 13:40: with the driver's door already open the body ECU acked the unlock but did not move the other locks;
+      # repeat once 2 s later regardless of the ack
+      time.sleep(2.0)
+      send(pm, SESSION_CMD)
+      time.sleep(0.05)
+      send(pm, UNLOCK_CMD)
+      time.sleep(1.0)
+      send(pm, UNLOCK_RETURN_CMD)
       cloudlog.warning(f"ARS510 offroad unlock: door opened {t_door:.1f}s after ignition off, {attempt} attempt(s), "
                        f"body ECU ack={st['ack']}, can msgs={st['n']}")
       break
