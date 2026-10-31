@@ -201,25 +201,3 @@ def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params
     # 0x750 is only in the panda TX allowlist with openpilot longitudinal, so it stays off with stock longitudinal.
     if CP.carFingerprint in (TSS2_CAR - SECOC_CAR) and CP.openpilotLongitudinalControl:
       CP_SP.flags |= ToyotaFlagsSP.SP_ENHANCED_BSM.value
-
-      # dimpleliang/ars510: automatic door lock (>= 10 km/h in D) / unlock (shift to P), sunnypilot/opendbc#354.
-      # UDS IO control on 0x750 sub-address 0x40 (main body ECU), in the panda TX allowlist only with openpilot long.
-      # Opt-in until there is a setting: the file DOOR_LOCK_FILE, containing "lock" and/or "unlock" (empty = both).
-      door_lock = _door_lock_mode()
-      if "lock" in door_lock:
-        CP_SP.flags |= ToyotaFlagsSP.AUTO_LOCK.value
-      if "unlock" in door_lock:
-        CP_SP.flags |= ToyotaFlagsSP.AUTO_UNLOCK.value
-
-
-DOOR_LOCK_FILE = "/data/ars510_door_lock"
-
-
-def _door_lock_mode() -> set[str]:
-  """dimpleliang/ars510: {"lock", "unlock"} subset from DOOR_LOCK_FILE; empty set when the file is absent."""
-  try:
-    with open(DOOR_LOCK_FILE) as f:
-      words = set(f.read().lower().replace(",", " ").split())
-  except OSError:
-    return set()
-  return (words & {"lock", "unlock"}) or {"lock", "unlock"}

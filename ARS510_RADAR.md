@@ -264,7 +264,7 @@ carstate.py 維持原樣。`ars510_acc_target.dbc` 同步為 PR 版本（多 POW
   （3 m/s 以下不擋，方向盤打著也能起步）。回放 21:41：21:41:42 的 +0.53 會被壓成 0。
 - `desire_helper.py`：計時式自動變道只在 60 km/h 以上；以下要推方向盤才變道。高速公路行為不變。
 
-## 自動上鎖／解鎖（移植 sunnypilot/opendbc#354，10/28）
+## 自動上鎖／解鎖（移植 sunnypilot/opendbc#354，10/28；10/31 全部移除）
 
 rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 檔、車門關閉、車速 ≥ 10 km/h 時上鎖一次；換到 P 檔時解鎖。
 透過 0x750 子位址 0x40（主車身 ECU）的 UDS IO 控制（`40 05 30 11 00 80` 上鎖、`… 40` 解鎖）。
@@ -523,3 +523,9 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 此分支要給其他人一起使用，車上不再自動產生報告：刪除 `ars510_reportd`（manager 項目與 `selfdrive/ars510/`）及
 `tools/ars510/pull_reports.sh`。報告程式移到 `tools/ars510/drive_report.py`，在電腦上對從 connect 下載或用 ssh 拉回的
 rlog 執行（`REALDATA=<資料夾> python3 tools/ars510/drive_report.py <route>`，輸出預設 `~/ars510_reports`）。
+
+## 移除自動上鎖（10/31）
+
+依駕駛要求（分支要給其他人使用），自動上鎖也移除：刪除 `opendbc/sunnypilot/car/toyota/auto_lock_unlock.py`、carcontroller 的呼叫、
+`interfaces.py` 的 `/data/ars510_door_lock` 旗標設定、carstate 的 `driver_door_open`。`ToyotaFlagsSP.AUTO_LOCK/AUTO_UNLOCK` 數值保留不用；
+panda `toyota.h` 的 0x750 門鎖白名單保留（改它需重建韌體，且沒有程式會送）。上鎖／解鎖指令序列見上方紀錄，恢復可參考 git 歷史。
