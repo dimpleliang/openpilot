@@ -32,6 +32,8 @@ BEHIND_KM = 0.15           # ... and just passed (GPS / km-post noise)
 MATCH_M = 40.              # GPS to section polyline
 MATCH_HDG = 45.            # heading vs polyline direction (deg)
 MATCH_MIN_V = 5.           # heading is only trusted above this speed (m/s)
+STACK_M = 8.               # a second road this close to the best match is ambiguous: show its events too, tagged
+HOLD_SLOW_S = 120.         # below MATCH_MIN_V (jams) keep the last match this long
 MATCH_FRAMES = 3           # consecutive matches before the car counts as on the freeway
 LONG_TERM_H = 24.          # 施工維護 older than this is long-term construction: not shown
 
@@ -181,7 +183,8 @@ def ahead(matches, events, lon, lat, bearing):
   """Events on the matched road/dir, ALERT_KM ahead, nearest first: [(dist km, event)]"""
   if not matches:
     return []
-  keys = {(r, d): (km, inc) for _, r, d, km, inc in matches}
+  # roads within STACK_M of the best match (國1 and 汐五高架 run stacked / side by side and share km posts)
+  keys = {(r, d): (km, inc) for dist, r, d, km, inc in matches if dist <= matches[0][0] + STACK_M}
   # stacked roads (國1 and 汐五高架 share km posts): label the road when both match
   both = len({r for r, _ in keys}) > 1
   x, y = xy(lon, lat)
@@ -268,6 +271,7 @@ def main():
   sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState"])
   rk = Ratekeeper(1.0, print_delay_threshold=None)
   streak, last_key, last_ids = 0, None, ()
+  held, held_t = [], 0.
   try:
     while True:
       sm.update(0)
@@ -280,8 +284,13 @@ def main():
             break
         v = sm["carState"].vEgo
         matches = []
-        if gps is not None and v > MATCH_MIN_V and abs(gps.latitude) > 1:
-          matches = sections.match(gps.longitude, gps.latitude, gps.bearingDeg)
+        if gps is not None and abs(gps.latitude) > 1:
+          if v > MATCH_MIN_V:
+            matches = sections.match(gps.longitude, gps.latitude, gps.bearingDeg)
+            if matches:
+              held, held_t = matches, time.monotonic()
+          elif held and time.monotonic() - held_t < HOLD_SLOW_S:
+            matches = held   # slow traffic: heading is noise, stay on the last road
         key = (matches[0][1], matches[0][2]) if matches else None
         streak = streak + 1 if key is not None and key == last_key else (1 if key else 0)
         last_key = key

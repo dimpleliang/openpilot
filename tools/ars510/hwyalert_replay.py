@@ -67,12 +67,18 @@ def main():
   S = H.Sections()
   last_t, streak, last_key, last_txt = 0., 0, None, None
   n = on = 0
+  held, held_t = [], 0.
   for t, lon, lat, brg, v in gps_points(sys.argv[1]):
     if t - last_t < 1.0:
       continue
     last_t = t
     n += 1
-    m = S.match(lon, lat, brg) if v > H.MATCH_MIN_V else []
+    if v > H.MATCH_MIN_V:
+      m = S.match(lon, lat, brg)
+      if m:
+        held, held_t = m, t
+    else:
+      m = held if held and t - held_t < H.HOLD_SLOW_S else []
     key = (m[0][1], m[0][2]) if m else None
     streak = streak + 1 if key is not None and key == last_key else (1 if key else 0)
     last_key = key
