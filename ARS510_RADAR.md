@@ -281,6 +281,13 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
   另加：靜止（< 1 m/s）時有車門打開（駕駛從裡面拉把手）→ 全車解鎖，方便乘客。
   10/30 依駕駛要求改為：打 P 檔本身不解鎖；P 檔中**駕駛座車門**（DOOR_OPEN_FL）打開的那一刻才全車解鎖；其他門或非 P 檔開門不解鎖。
   中控主機 0x7D0 在鏡頭匯流排上沒有回應（亮度那條路要走 OBD 口）；儀表 0x7C0 有回應。
+- 10/31 熄火後解鎖：駕駛習慣是熄火後才開門，此時 card 已停、pandad 進省電＋NO_OUTPUT，開門偵測永遠不會觸發（紀錄：10/30 起
+  每次停車 P 檔後 doorOpen 都是 False 直到紀錄結束）。實測（停 openpilot、直接接 panda）：熄火後 1～2 分鐘匯流排仍醒
+  （bus0 約 65 則/秒）、0x620 的門狀態照常變化、`2F 2811` 四門都解鎖（0x758 回 `6F 28 11`）；約 7 分鐘後匯流排休眠、收不到任何訊息。
+  實作：`pandad.cc` 熄火後 90 秒內（有 `/data/ars510_door_lock` 檔）不省電、不切 NO_OUTPUT（保留 Toyota safety，0x750 已放行）；
+  `selfdrive/ars510/unlockd.py`（manager `only_offroad`）監看 0x620 DOOR_OPEN_FL，開門（或啟動時已開）即經 sendcan 送同一組序列，
+  每次熄火一次；之後程序留著閒置，避免 manager 重啟再解一次。
+  ※ 測試時曾用 `systemctl stop comma` 停服務，athenad 一起停、SSH 中繼斷線、重啟指令沒跑到，要用 `setsid nohup` 腳本並以 trap 保證重啟。
 
 ## 雷達匯流排 DBC（除錯用，10/29）
 

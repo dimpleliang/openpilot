@@ -142,6 +142,7 @@ procs = [
   PythonProcess("card", "openpilot.selfdrive.car.card", only_onroad),
   PythonProcess("deleter", "openpilot.system.loggerd.deleter", always_run),
   PythonProcess("ars510_reportd", "openpilot.selfdrive.ars510.reportd", only_offroad),  # ars510: drive reports after ignition off
+  PythonProcess("ars510_unlockd", "openpilot.selfdrive.ars510.unlockd", only_offroad),  # ars510: unlock doors after ignition off
   PythonProcess("dmonitoringd", "openpilot.selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "openpilot.system.qcomgpsd.qcomgpsd", qcomgps, enabled=COMMA_HARDWARE),
   PythonProcess("pandad", "openpilot.selfdrive.pandad.pandad", always_run),

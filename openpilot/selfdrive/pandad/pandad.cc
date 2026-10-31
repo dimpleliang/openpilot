@@ -18,6 +18,9 @@
 #include "common/hardware/hw.h"
 
 #define MAX_IR_PANDA_VAL 50
+// dimpleliang/ars510: offroad door unlock window (see send_panda_states and selfdrive/ars510/unlockd.py)
+#define OFFROAD_UNLOCK_WINDOW_S 90.0
+#define OFFROAD_UNLOCK_FILE "/data/ars510_door_lock"
 #define CUTOFF_IL 400
 #define SATURATE_IL 1000
 
@@ -210,13 +213,29 @@ std::optional<bool> send_panda_states(PubMaster *pm, Panda *panda, bool is_onroa
     panda->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
   }
 
-  bool power_save_desired = !ignition_local;
+  // dimpleliang/ars510: offroad door unlock. The driver opens the door after the car is switched off, when card no longer
+  // runs. For OFFROAD_UNLOCK_WINDOW_S after ignition off (opt-in: /data/ars510_door_lock, see opendbc sunnypilot
+  // interfaces.py) keep the CAN transceivers on and keep the car's safety mode (its tx hook already allows the 0x750 door
+  // frames), so ars510_unlockd can watch BODY_CONTROL_STATE and send the unlock. Tested 10/31: the bus stays awake for
+  // 1-2 minutes after power off and the body ECU still unlocks all four doors; by ~7 minutes it is asleep.
+  static bool prev_ignition = false;
+  static double ignition_off_t = -1e9;
+  double now = seconds_since_boot();
+  if (prev_ignition && !ignition_local) {
+    ignition_off_t = now;
+  }
+  prev_ignition = ignition_local;
+  bool offroad_unlock = !ignition_local && (now - ignition_off_t < OFFROAD_UNLOCK_WINDOW_S) && util::file_exists(OFFROAD_UNLOCK_FILE) &&
+                        health.safety_mode_pkt != (uint8_t)(cereal::CarParams::SafetyModel::NO_OUTPUT) &&
+                        health.safety_mode_pkt != (uint8_t)(cereal::CarParams::SafetyModel::ELM327);
+
+  bool power_save_desired = !ignition_local && !offroad_unlock;
   if (((health.flags_pkt & HEALTH_FLAG_POWER_SAVE_ENABLED) != 0U) != power_save_desired) {
     panda->set_power_saving(power_save_desired);
   }
 
   // set safety mode to NO_OUTPUT when car is off or we're not onroad. ELM327 is an alternative if we want to leverage athenad/connect
-  bool should_close_relay = !ignition_local || !is_onroad;
+  bool should_close_relay = (!ignition_local || !is_onroad) && !offroad_unlock;
   if (should_close_relay && (health.safety_mode_pkt != (uint8_t)(cereal::CarParams::SafetyModel::NO_OUTPUT))) {
     panda->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
   }
