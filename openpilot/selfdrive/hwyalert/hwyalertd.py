@@ -44,6 +44,8 @@ REMIND_FROM_KM = 1.5
 REMIND_FRESH_S = 120.      # ... only while the event is still in a feed fetched within this time
 RANGE_KM = 1.0             # inside an event range at least this long (移動性施工, closures) -> "本路段"
 FETCH_RETRY_S = 15.
+CONFIRM_V = 60 / 3.6       # m/s: alerts start only once the car has driven this fast while matched to the road (a surface
+                           # road right under an elevated freeway matches by position and heading; it rarely reaches 60 km/h)
 MATCH_FRAMES = 3           # consecutive matches before the car counts as on the freeway
 LONG_TERM_H = 24.          # 施工維護 older than this is long-term construction: not shown
 
@@ -323,6 +325,7 @@ class Tracker:
   def __init__(self, sections: Sections):
     self.S = sections
     self.streak, self.last_key = 0, None
+    self.fast_ok = False                                     # reached CONFIRM_V on the current road
     self.held, self.held_dist, self.last_t = [], 0., None   # last good match, metres driven since (no GPS)
     self.last_fix, self.rejects = None, 0                     # (t, x, y) of the last accepted fix
     self.spoken: dict[str, float] = {}   # event id -> distance (km) at the first announcement
@@ -363,9 +366,13 @@ class Tracker:
     m = self.locate(t, fix, v)
     key = (m[0][1], m[0][2]) if m else None
     self.streak = self.streak + 1 if key is not None and key == self.last_key else (1 if key else 0)
+    if key != self.last_key:
+      self.fast_ok = False
     self.last_key = key
+    if key is not None and v >= CONFIRM_V:
+      self.fast_ok = True
     state = dict(road="", alerts=[])
-    if not m or self.streak < MATCH_FRAMES:
+    if not m or self.streak < MATCH_FRAMES or not self.fast_ok:
       return state, None
     found = ahead(m, events, fix[:2] if fix else None, fix[2] if fix else 0.)[:MAX_ALERTS]
     state.update(road=f"{key[0]}{key[1]}", km=round(m[0][3], 2), dr=fix is None,
