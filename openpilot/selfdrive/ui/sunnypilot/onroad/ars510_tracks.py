@@ -107,7 +107,8 @@ LINE_GATE_M = -1.5
 # (<60 / 60-90 / 90+ km/h), recall 20/34/30 -> 17/34/20 %, warning median 0.2/1.1/0.6 -> -0.2/0.7/0.1 s.
 LINE_STRICT_M = -1.0
 STRICT_TOWARD = 1.2          # m/s
-SHOW_AFTER_S = 0.3
+SHOW_AFTER_S = 0.0          # 11/01 driver: 0.3 s was too late. Without the hold: false 60/35/20 per 100 km, recall
+                             # 18/34/20 %, warning median 0.2/1.0/0.4 s (the hold alone cost ~0.4 s)
 LINE_PATH_EXTRA_M = 0.3
 LINE_MIN_PROB = 0.5
 CUTIN_PULSE_HZ = 2.5
