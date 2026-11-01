@@ -142,6 +142,11 @@ HAZARD_RATE_S = 1.5
 HAZARD_RATE_MIN_N = 15
 HAZARD_RATE_ERR_MPS = 2.0
 HAZARD_MIN_V = 60.0 / 3.6
+# the radar's own range uncertainty (range_unc_code, ~0.23 m per count): objects it is unsure about are not candidates.
+# 11/01 replay 241 km: every object 80 m+ shows range / speed mismatches with range_unc ~34-47 (8-11 m); the 10/30 20:56:45
+# false hazard had 47. Cut-in candidates (25-90 m) get a looser gate.
+HAZARD_MAX_RANGE_UNC = 20
+CUTIN_MAX_RANGE_UNC = 30
 CUTIN_D_M = (25.0, 90.0)
 CUTIN_MAX_Y_M = 3.5
 CUTIN_MAX_VREL = -2.0
@@ -322,7 +327,8 @@ class Ars510RadarInterface(RadarInterfaceBase):
       rows = getattr(self.ars, "far_rows", None) or []
       cut = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
              and r[5] in FAR_LOG_CLASSES and CUTIN_D_M[0] <= r[0] < CUTIN_D_M[1] and abs(r[1]) < CUTIN_MAX_Y_M and r[2] == r[2]
-             and r[2] < CUTIN_MAX_VREL and not any(abs(r[0] - d) < 6.0 and abs(r[1] - y) < 1.5 for d, y in self.last_out)]
+             and r[2] < CUTIN_MAX_VREL and (len(r) < 11 or r[9] < CUTIN_MAX_RANGE_UNC)
+             and not any(abs(r[0] - d) < 6.0 and abs(r[1] - y) < 1.5 for d, y in self.last_out)]
       self.cutin_points = [{"trackId": 0, "dRel": float(c[0]), "yRel": float(c[1]), "vRel": float(c[2])} for c in sorted(cut)[:1]]
       cands = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
                and r[5] in FAR_LOG_CLASSES and r[0] >= min_d and abs(r[1]) < FAR_LOG_MAX_Y_M and r[2] == r[2] and r[2] < FAR_LOG_MAX_VREL]
@@ -359,9 +365,9 @@ class Ars510RadarInterface(RadarInterfaceBase):
       rows = getattr(self.ars, "far_rows", None) or []
       seen = set(); best = None
       for r in rows:
-        if len(r) < 9:
+        if len(r) < 11:
           break
-        d, y, vrel, age, exist, cls, tid, yv, vg = r
+        d, y, vrel, age, exist, cls, tid, yv, vg, runc, vunc = r
         seen.add(tid)
         h = st.setdefault(tid, {"vmax": 0.0, "hist": deque()})
         h["vmax"] = max(h["vmax"], vg)
@@ -369,6 +375,8 @@ class Ars510RadarInterface(RadarInterfaceBase):
         while h["hist"] and t - h["hist"][0][0] > HAZARD_RATE_S:
           h["hist"].popleft()
         if v_ego is None or v_ego < HAZARD_MIN_V or cls not in FAR_LOG_CLASSES or age < HAZARD_MIN_AGE or exist < FAR_LOG_MIN_EXIST:
+          continue
+        if runc >= HAZARD_MAX_RANGE_UNC:
           continue
         if not (HAZARD_D_M[0] < d < HAZARD_D_M[1]) or abs(y) > HAZARD_MAX_Y_M or vrel != vrel or vrel >= HAZARD_MAX_VREL:
           continue

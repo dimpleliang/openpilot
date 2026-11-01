@@ -498,7 +498,7 @@ class Ars510NativeRadarInterface:
         points = []
         display: list[list] = []
         far_rows: list[tuple] = []  # every geometry-valid object: (dRel, yRel, vRel, age, existence %, class, tid, ego-frame lateral speed,
-        #                             v over ground), for the far-object coast and the hazard coast
+        #                             v over ground, range uncertainty code, speed uncertainty code), for the far-object / hazard coasts
         for slot, obj, tid in decoded:
             if not obj.geometry_valid or not obj.lateral_valid:
                 continue
@@ -522,7 +522,8 @@ class Ars510NativeRadarInterface:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
             far_rows.append((float(d_rel), float(obj.y_rel), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0),
-                             int(tid), self._yv_rel(obj, time_s), float(v_ground) if cfg.fused_speed_filter and v_ego is not None else float(obj.v_long_ground)))
+                             int(tid), self._yv_rel(obj, time_s), float(v_ground) if cfg.fused_speed_filter and v_ego is not None else float(obj.v_long_ground),
+                             int(obj.range_unc_code if obj.range_unc_code is not None else 127), int(obj.vel_unc_code)))
             shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
                 shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0, int(tid) & 0xFFFF,
