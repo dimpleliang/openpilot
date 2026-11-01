@@ -83,6 +83,16 @@ SOFT_STOP_TRUE_STOP_V = 0.02    # m/s
 SOFT_STOP_POSE_TAU = 0.2        # s, filter on the pose acceleration
 SOFT_STOP_COAST_MIN_DECEL = 0.03  # m/s^2, filtered decel below this while held = not slowing: add brake
 SOFT_STOP_MAX_COAST = 2.5       # s
+# 11/01 route 36 (20 stops): the pitch rebound is gone (<= 0.05 in 15 of 20), but in 5 stops the car moved forward again
+# 0.5-0.6 s after it had stopped (wheel speed 0 -> 0.3 m/s, pose +0.25) and the brake had to grab a second time: the
+# pre-release had taken the request to -0.05 and the true stop was only recognised when the filtered decel had been
+# below SOFT_STOP_COAST_MIN_DECEL for PRE_RELEASE_FAIL_T, ~0.6 s after the stop, while the D-gear creep torque pushed
+# the car off against almost no brake. The stop is now recognised from the raw pose: wheel speed 0 and |pose accel| <
+# SOFT_STOP_STILL_A for SOFT_STOP_STILL_T, and the request then goes to BRAKE_HOLD_ACCEL at once (brake added at
+# standstill does not pitch the car) before the usual ramp to stopAccel.
+SOFT_STOP_STILL_A = 0.06        # m/s^2
+SOFT_STOP_STILL_T = 0.12        # s
+SOFT_STOP_STILL_WHEEL_V = 0.01  # m/s
 # Pre-release (10/28): a human stops without a jolt by easing the pedal in the last tenths of a second, so there is no
 # deceleration left when the wheels stop. The PCM gives no light braking at crawl speed (either nothing or >= -0.3) and
 # lags ~0.4 s, so instead the request is eased to PRE_RELEASE_ACCEL when the pose-based time to stop (v_est / decel)
@@ -167,6 +177,19 @@ class LongControl:
     self.pre_release_frames = 0
     self.pre_release_slow = 0
     self.pre_release_start = 0.0
+    self.still_frames = 0
+
+  def update_still(self, CS, pose_accel):
+    """True stop from the raw pose: wheels read 0 and no longitudinal acceleration for SOFT_STOP_STILL_T."""
+    if pose_accel is None or self.true_stopped:
+      return
+    if CS.vEgoRaw < SOFT_STOP_STILL_WHEEL_V and abs(pose_accel) < SOFT_STOP_STILL_A:
+      self.still_frames += 1
+    else:
+      self.still_frames = 0
+    if self.still_frames * DT_CTRL >= SOFT_STOP_STILL_T:
+      self.true_stopped = True
+      self.v_est = 0.0
 
   def update_pre_release(self, pose_accel):
     """Ease the request just before the predicted true stop (see PRE_RELEASE_*). Returns True while releasing."""
@@ -240,7 +263,8 @@ class LongControl:
     self.coast_active = True
     if self.true_stopped or self.v_est <= SOFT_STOP_TRUE_STOP_V or self.coast_frames * DT_CTRL >= SOFT_STOP_MAX_COAST:
       self.true_stopped = True
-      return self.ramp_to_stop(output_accel)
+      # stopped: engage the brake against the creep torque at once, then ramp to stopAccel as before
+      return self.ramp_to_stop(min(output_accel, BRAKE_HOLD_ACCEL))
     rate = self.add_brake_rate(self.pose_a_f, output_accel)
     if -self.pose_a_f < SOFT_STOP_COAST_MIN_DECEL:
       # not slowing (idle creep): add brake (gently, at the stock rate if it keeps creeping) until it does
@@ -268,6 +292,7 @@ class LongControl:
 
     elif self.long_control_state == LongCtrlState.stopping:
       output_accel = min(self.last_output_accel, 0.0)
+      self.update_still(CS, pose_accel)
       if a_target < output_accel - SOFT_STOP_URGENT_MARGIN:
         output_accel = a_target
         self.brake_added = True
@@ -340,6 +365,7 @@ class LongControl:
       self.brake_added = False
       self.pre_release = False
       self.pre_release_failed = False
+      self.still_frames = 0
     self.prev_v_ego = CS.vEgo
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
