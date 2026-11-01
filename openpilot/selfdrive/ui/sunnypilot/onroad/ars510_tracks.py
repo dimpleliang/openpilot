@@ -70,6 +70,12 @@ CURVE_STEER_DEG = 15.0       # no cut-in marking while steering more than this .
 CURVE_PATH_Y_50 = 2.5        # ... or while my path bends more than this at 50 m ...
 CURVE_MIN_V = 60 / 3.6       # ... below this speed (predicted cut-ins only; 10/31 driver: handle curves)
 LC_CUTIN = (2, 5)
+# 11/01 16:41: a car 10 m ahead on my right merged in slowly (0.5-0.7 m/s sideways, about my speed) and was never marked:
+# too close for the trend / fast rules (>= 15-25 m), too slow for the close rule (> 1.0 m/s). Slow close merge: CLOSE_D /
+# CLOSE_OFF, toward my path > SLOW_TOWARD for SLOW_HOLD_RECORDS (~1 s). Replay 124 km: recall 60-90 km/h 34 -> 44 %,
+# false marks 60/35/20 -> 63/35/22 per 100 km; 16:41 marked 2.6 s before it became the lead.
+SLOW_TOWARD = 0.4            # m/s
+SLOW_HOLD_RECORDS = 17       # radar records (~16.7 Hz)
 # 10/31 23:07: a car overtaking from the right rear was first seen 11 m ahead, 22 km/h faster, moving into my lane at
 # 1.6-1.8 m/s, and was in my lane 1.3 s later; the fast trigger required <= +1.5 m/s relative speed and >= 15 m. Close
 # range: within CLOSE_D, any relative speed, settling or not, CLOSE_HOLD records toward my path. Replay 241 km: recall
@@ -172,6 +178,7 @@ class Ars510Tracks:
     self._side: dict[int, int] = {}                      # track id -> side it was last seen on (+1 my right)
     self._close: dict[int, int] = {}                     # track id -> consecutive close-range records moving toward my path
     self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
+    self._slow: dict[int, int] = {}                      # track id -> consecutive close-range records moving in slowly
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
     self._ego_lc = EgoLaneChange()                       # my own lane change: no markers (ars510_ego_lc.py)
     self._qual_t: dict[int, float] = {}                  # track id -> start of the current run passing the strict check
@@ -278,7 +285,7 @@ class Ars510Tracks:
         self._draw_banner(min(merging), rect)
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
-          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None); self._close.pop(tid, None)
+          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None); self._close.pop(tid, None); self._slow.pop(tid, None)
           self._out_t.pop(tid, None); self._confirm_t.pop(tid, None); self._side.pop(tid, None); self._qual_t.pop(tid, None)
     except Exception:
       self._points = []
@@ -319,9 +326,12 @@ class Ars510Tracks:
     close = CLOSE_OFF[0] < off < CLOSE_OFF[1] and CLOSE_D[0] <= d <= CLOSE_D[1]
     if fresh:
       self._close[tid] = self._close.get(tid, 0) + 1 if (close and toward == toward and toward > CLOSE_VLAT_TOWARD) else 0
-    if close and self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES:
+    if fresh:
+      self._slow[tid] = self._slow.get(tid, 0) + 1 if (close and toward == toward and toward > SLOW_TOWARD) else 0
+    if close and (self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES or self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS):
       in_range = True
-    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES or self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES):
+    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES or self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES or
+                     (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS)):
       ok = True
       if fresh:
         self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)  # mark on this record
