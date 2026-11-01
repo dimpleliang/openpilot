@@ -119,19 +119,17 @@ FAR_OBJ_TRACK_ID = 1 << 28
 # one of the published (ACC / summary) cars. radarTracks point with trackId CUTIN_TRACK_ID; radard ignores it.
 # 46:00 on 10/30: a car merged from the right over 9 s (y -2.1 -> -0.7) before the radar's ACC took it at 65 m.
 CUTIN_TRACK_ID = 1 << 27
-# hazard (coast only, 11/01): a tracked car that is closing fast on a short time-to-collision while the camera has not
-# made it the lead (a car spinning / cutting across after losing control). Here: class car / large vehicle, age >=
-# HAZARD_MIN_AGE, existence >= FAR_LOG_MIN_EXIST, HAZARD_D_M, was moving (v over ground > HAZARD_WAS_MOVING_MPS at some
-# point), not oncoming, closing faster than HAZARD_MAX_VREL with time-to-collision < HAZARD_TTC_S, and the range really
+# hazard (coast only, 11/01): an object that is closing fast on a short time-to-collision while the camera has not
+# made it the lead (a car spinning / cutting across after losing control). Kept simple on purpose (11/01 driver: too many
+# conditions, each one a way to miss the real thing): HAZARD_D_M, the radar sure of its range (range_unc <
+# HAZARD_MAX_RANGE_UNC), closing faster than HAZARD_MAX_VREL with time-to-collision < HAZARD_TTC_S, and the range really
 # shrinking at that rate (HAZARD_RATE_S of range history within HAZARD_RATE_ERR_MPS of vRel: the object list's speed
 # drifts at 40 m+, 10/30 20:56:45 read -21 m/s against a range that did not move). The planner gates it against the
 # model path and holds it for HAZARD_HOLD cycles before easing off (longitudinal_planner.py HAZARD_*). radarTracks point
-# with trackId HAZARD_TRACK_ID (+ yvRel toward my lane); radard ignores it. Replay 241 km, 10/30 - 10/31: 1 false
-# candidate of 0.1 s before the hold.
+# with trackId HAZARD_TRACK_ID; radard ignores it. Replay 241 km, 10/30 - 10/31: with or without the class / existence /
+# was-moving / not-oncoming / age gates, 1 episode of 0.3 s (already the lead) -> those gates are left out.
 HAZARD_TRACK_ID = 1 << 26
 HAZARD_D_M = (5.0, 80.0)
-HAZARD_MIN_AGE = 8
-HAZARD_WAS_MOVING_MPS = 5.0
 HAZARD_MAX_VREL = -3.0
 HAZARD_TTC_S = 4.0
 HAZARD_MAX_Y_M = 3.5
@@ -369,18 +367,15 @@ class Ars510RadarInterface(RadarInterfaceBase):
           break
         d, y, vrel, age, exist, cls, tid, yv, vg, runc, vunc = r
         seen.add(tid)
-        h = st.setdefault(tid, {"vmax": 0.0, "hist": deque()})
-        h["vmax"] = max(h["vmax"], vg)
+        h = st.setdefault(tid, {"hist": deque()})
         h["hist"].append((t, d))
         while h["hist"] and t - h["hist"][0][0] > HAZARD_RATE_S:
           h["hist"].popleft()
-        if v_ego is None or v_ego < HAZARD_MIN_V or cls not in FAR_LOG_CLASSES or age < HAZARD_MIN_AGE or exist < FAR_LOG_MIN_EXIST:
-          continue
-        if runc >= HAZARD_MAX_RANGE_UNC:
+        if v_ego is None or v_ego < HAZARD_MIN_V or runc >= HAZARD_MAX_RANGE_UNC:
           continue
         if not (HAZARD_D_M[0] < d < HAZARD_D_M[1]) or abs(y) > HAZARD_MAX_Y_M or vrel != vrel or vrel >= HAZARD_MAX_VREL:
           continue
-        if d / -vrel > HAZARD_TTC_S or h["vmax"] < HAZARD_WAS_MOVING_MPS or vg < -1.0:
+        if d / -vrel > HAZARD_TTC_S:
           continue
         toward = ((-yv if y > 0 else yv) if yv == yv else 0.0)   # y and yv left-positive: + = moving toward my centre line
         if abs(y) >= HAZARD_PATH_Y_M and toward <= HAZARD_CROSS_VY:
