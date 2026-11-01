@@ -17,6 +17,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDX
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
@@ -159,6 +160,7 @@ CONFIRM_JERK = 0.5               # m/s^3
 CONFIRM_MIN_V = 20. / 3.6
 CONFIRM_SPECIAL_ID = 1 << 27     # CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
 CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
+# 11/01: no confirmation while I change lanes myself (ars510_ego_lc.py): the cars of the lane I move into are not cutting in
 
 
 A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
@@ -270,6 +272,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.near_stop_active = False  # ars510: near-stop braking floor in effect, see NEAR_STOP_K
     self.near_stop_off = False
     self.ci_out_t: dict[int, float] = {}   # ars510 confirmed cut-in: track id -> last time far off the path
+    self.ego_lc = EgoLaneChange()
     self.ci_until = 0.                      # coast while time < this
     self.ci_closing = 0.
     self.ci_cap = None
@@ -473,6 +476,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.CP.openpilotLongitudinalControl and not self.ci_off and 'radarTracks' in sm.data and v_ego > CONFIRM_MIN_V:
       px = np.array(sm['modelV2'].position.x); py = np.array(sm['modelV2'].position.y)
       curve = len(px) < 2  # 10/31: curves handled too (replay: 98 vs 66 confirmations, still 91 % real)
+      if self.ego_lc.update(sm['carState'], sm['modelV2'], now):
+        curve = True   # my own lane change: track the out-of-path times but confirm nothing
       if len(px) >= 2 and sm.updated['radarTracks']:
         for pnt in sm['radarTracks'].points:
           tid = int(pnt.trackId)

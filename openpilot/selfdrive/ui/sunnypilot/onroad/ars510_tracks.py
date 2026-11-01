@@ -10,6 +10,8 @@ range and speed have not converged) is drawn faint with its distance only. Pedes
 import struct
 
 import numpy as np
+
+from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
 import pyray as rl
 
 from openpilot.common.constants import CV
@@ -162,6 +164,7 @@ class Ars510Tracks:
     self._close: dict[int, int] = {}                     # track id -> consecutive close-range records moving toward my path
     self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
+    self._ego_lc = EgoLaneChange()                       # my own lane change: no markers (ars510_ego_lc.py)
     self._lane_w = 3.5                                   # filtered lane width (m), both lane lines reliable at 8 m
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
@@ -191,6 +194,7 @@ class Ars510Tracks:
       # replay of 241 km, that alone beats subtracting the other objects' median (fast trigger recall above 90 km/h 32 -> 36 %)
       vlat_bias = 0.
       now = rl.get_time()
+      ego_lc = self._ego_lc.update(sm['carState'], sm['modelV2'], now)
       lanes = None
       md = sm['modelV2']
       if len(md.laneLines) >= 3 and len(md.laneLineProbs) >= 3:
@@ -209,7 +213,7 @@ class Ars510Tracks:
         if tid >= 0:
           if abs(off_c) >= CONFIRM_FROM:
             self._out_t[tid] = now
-          if abs(off_c) < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
+          if not ego_lc and abs(off_c) < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
              v_ego > CUTIN_MIN_V_GROUND and now - self._out_t.get(tid, -99.) < CONFIRM_WIN and tid not in self._confirm_t:
             # arrow: the way it moved (came from my right -> it moved left)
             came_right = self._side.get(tid, 0) > 0
@@ -237,7 +241,7 @@ class Ars510Tracks:
           if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
         if tid >= 0:
           seen.add(tid)
-        if cutin and not self._near_line(lanes, d, y_right, off_signed):
+        if cutin and (ego_lc or not self._near_line(lanes, d, y_right, off_signed)):
           cutin = False   # display only; the rule's own state above keeps running
         arrow = 0
         if cutin:
