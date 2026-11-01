@@ -3,7 +3,7 @@
 
   PYTHONPATH=/data/openpilot python3 tools/ars510/coast_learn.py route_prefix [...]
 
-Coasting = no gas, no brake (and none for 1.5 s), openpilot either disengaged or asking for |accel| < 0.05, v > 3 m/s,
+Coasting = driver in control (openpilot not engaged), no gas, no brake (and none for 1.5 s), v > 3 m/s,
 |pitch| < 0.02 rad (livePose, or liveLocationKalman on this fork). Prints per band the measured deceleration (raw and slope-corrected) next to a drag-only
 estimate (rho 1.2, Cd 0.32, A 2.6 m2, 1900 kg, Crr 0.010); the gap to the estimate is what regen / engine braking adds.
 """
@@ -64,14 +64,14 @@ def main():
               continue
             act = m.carOutput.actuatorsOutput
             eng = ss.enabled if ss else False
-            coasting = (not cs.gasPressed and not cs.brakePressed and t - last_press > 1.5 and
-                        ((not eng) or abs(act.accel) < 0.05))
+            del act
+            coasting = (not eng) and not cs.gasPressed and not cs.brakePressed and t - last_press > 1.5
             if coasting and cs.vEgo > 3 and abs(pitch) < 0.02:
               samples.append((cs.vEgo, cs.aEgo, pitch, cs.aEgo + 9.81 * math.sin(pitch), eng))
       except Exception:
         pass
   a = np.array(samples)
-  print(f"samples {len(a)} (10 Hz); while engaged {int(a[:, 4].sum()) if len(a) else 0}")
+  print(f"samples {len(a)} (10 Hz, driver coasting only)")
   print("km/h      n   a_raw p25/p50/p75      slope-corrected p50   drag-only estimate")
   rho, cd, A, m, crr = 1.2, 0.32, 2.6, 1900, 0.010
   for lo, hi in BANDS:
