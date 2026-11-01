@@ -154,6 +154,7 @@ FAR_RO_MAX_Y = 1.5
 FAR_RO_HOLD_S = 1.0
 FAR_OBJ_TRACK_ID = 1 << 28  # must match opendbc car/toyota/ars510_radar_interface.py
 CUTIN_TRACK_ID = 1 << 27    # idem: cut-in candidate for the planner's coast, never a lead track
+HAZARD_TRACK_ID = 1 << 26   # idem: hazard candidate for the planner's coast, never a lead track
 VRU_TRACK_ID_BASE = 1 << 30  # must match opendbc car/toyota/ars510_radar_interface.py (radarTrackId is Int32)
 DISPLAY_FMT = "<fffBH"  # v2 display rows (ars510_radar_interface.py); v1 "<fffB" and v3 "<fffBHhB" also accepted
 DISPLAY_FMT_SIZE = struct.calcsize(DISPLAY_FMT)
@@ -311,7 +312,7 @@ class RadarD:
       self.last_v_ego_frame = sm.recv_frame['carState']
 
     # ars510: the far-object point (FAR_OBJ_TRACK_ID) is for the planner's early ease-off only, never a lead track
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points if pt.trackId not in (FAR_OBJ_TRACK_ID, CUTIN_TRACK_ID)}
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points if pt.trackId not in (FAR_OBJ_TRACK_ID, CUTIN_TRACK_ID, HAZARD_TRACK_ID)}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -330,7 +331,7 @@ class RadarD:
         classes = parse_display_classes(bytes(sm[display_service]))
     self.vru_classes = {}
     for pt in rr.points:
-      if pt.trackId in (FAR_OBJ_TRACK_ID, CUTIN_TRACK_ID):
+      if pt.trackId in (FAR_OBJ_TRACK_ID, CUTIN_TRACK_ID, HAZARD_TRACK_ID):
         continue
       if pt.trackId >= VRU_TRACK_ID_BASE:
         self.vru_classes[pt.trackId] = 6

@@ -119,6 +119,26 @@ FAR_OBJ_TRACK_ID = 1 << 28
 # one of the published (ACC / summary) cars. radarTracks point with trackId CUTIN_TRACK_ID; radard ignores it.
 # 46:00 on 10/30: a car merged from the right over 9 s (y -2.1 -> -0.7) before the radar's ACC took it at 65 m.
 CUTIN_TRACK_ID = 1 << 27
+# hazard (coast only, 11/01): a tracked car that is closing fast on a short time-to-collision while the camera has not
+# made it the lead (a car spinning / cutting across after losing control). Here: class car / large vehicle, age >=
+# HAZARD_MIN_AGE, existence >= FAR_LOG_MIN_EXIST, HAZARD_D_M, was moving (v over ground > HAZARD_WAS_MOVING_MPS at some
+# point), not oncoming, closing faster than HAZARD_MAX_VREL with time-to-collision < HAZARD_TTC_S, and the range really
+# shrinking at that rate (HAZARD_RATE_S of range history within HAZARD_RATE_ERR_MPS of vRel: the object list's speed
+# drifts at 40 m+, 10/30 20:56:45 read -21 m/s against a range that did not move). The planner gates it against the
+# model path and holds it for HAZARD_HOLD cycles before easing off (longitudinal_planner.py HAZARD_*). radarTracks point
+# with trackId HAZARD_TRACK_ID (+ yvRel toward my lane); radard ignores it. Replay 241 km, 10/30 - 10/31: 1 false
+# candidate of 0.1 s before the hold.
+HAZARD_TRACK_ID = 1 << 26
+HAZARD_D_M = (5.0, 80.0)
+HAZARD_MIN_AGE = 8
+HAZARD_WAS_MOVING_MPS = 5.0
+HAZARD_MAX_VREL = -3.0
+HAZARD_TTC_S = 4.0
+HAZARD_MAX_Y_M = 3.5
+HAZARD_RATE_S = 1.5
+HAZARD_RATE_MIN_N = 15
+HAZARD_RATE_ERR_MPS = 2.0
+HAZARD_MIN_V = 60.0 / 3.6
 CUTIN_D_M = (25.0, 90.0)
 CUTIN_MAX_Y_M = 3.5
 CUTIN_MAX_VREL = -2.0
@@ -278,6 +298,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
         self.vru_time_s = out["time_s"]
         self.far_points = self._far_stopped(out)
         self._log_far(out, display)
+        self._hazard(out)
         vru_xy = {(p["dRel"], p["yRel"]) for p in self.vru_points}
         for row in display:  # "sent to radard": a VRU point, or the object the ACC target / a summary reports
           row[3] = (row[0], row[1]) in vru_xy or any(abs(row[0] - d) < VRU_SAME_D_M and abs(row[1] - y) < VRU_SAME_Y_M
@@ -326,6 +347,47 @@ class Ars510RadarInterface(RadarInterfaceBase):
       self.cutin_points = []
       carlog.exception("ARS510 far object log")
 
+  def _hazard(self, out) -> None:
+    """Hazard candidate for the planner's coast (HAZARD_*): closest qualifying object-list car -> self.hazard_points."""
+    try:
+      t = out["time_s"]
+      v_ego = self.ars._fresh_ego_speed(t)
+      st = self.__dict__.setdefault("hazard_st", {})   # tid -> {"vmax", "hist": deque((t, d))}
+      rows = getattr(self.ars, "far_rows", None) or []
+      seen = set(); best = None
+      for r in rows:
+        if len(r) < 9:
+          break
+        d, y, vrel, age, exist, cls, tid, yv, vg = r
+        seen.add(tid)
+        h = st.setdefault(tid, {"vmax": 0.0, "hist": deque()})
+        h["vmax"] = max(h["vmax"], vg)
+        h["hist"].append((t, d))
+        while h["hist"] and t - h["hist"][0][0] > HAZARD_RATE_S:
+          h["hist"].popleft()
+        if v_ego is None or v_ego < HAZARD_MIN_V or cls not in FAR_LOG_CLASSES or age < HAZARD_MIN_AGE or exist < FAR_LOG_MIN_EXIST:
+          continue
+        if not (HAZARD_D_M[0] < d < HAZARD_D_M[1]) or abs(y) > HAZARD_MAX_Y_M or vrel != vrel or vrel >= HAZARD_MAX_VREL:
+          continue
+        if d / -vrel > HAZARD_TTC_S or h["vmax"] < HAZARD_WAS_MOVING_MPS or vg < -1.0:
+          continue
+        hist = h["hist"]
+        if len(hist) < HAZARD_RATE_MIN_N or hist[-1][0] - hist[0][0] < HAZARD_RATE_S - 0.2:
+          continue
+        tm = sum(x[0] for x in hist) / len(hist); dm = sum(x[1] for x in hist) / len(hist)
+        den = sum((x[0] - tm) ** 2 for x in hist)
+        rate = sum((x[0] - tm) * (x[1] - dm) for x in hist) / den if den > 0 else 0.0
+        if abs(rate - vrel) > HAZARD_RATE_ERR_MPS:
+          continue
+        if best is None or d < best["dRel"]:
+          best = {"trackId": 0, "dRel": float(d), "yRel": float(y), "vRel": float(vrel), "yvRel": float(yv)}
+      for tid in [k for k in st if k not in seen]:
+        del st[tid]
+      self.hazard_points = [best] if best else []
+    except Exception:
+      self.hazard_points = []
+      carlog.exception("ARS510 hazard")
+
   def _far_stopped(self, out) -> list:
     t = out["time_s"]
     v_ego = self.ars._fresh_ego_speed(t)
@@ -372,7 +434,8 @@ class Ars510RadarInterface(RadarInterfaceBase):
     extra = []
     for points, id_base in ((self.vru_points, VRU_TRACK_ID_BASE), (self.far_points, FAR_TRACK_ID_BASE),
                             (getattr(self, "far_obj_points", []), FAR_OBJ_TRACK_ID),
-                            (getattr(self, "cutin_points", []), CUTIN_TRACK_ID)):
+                            (getattr(self, "cutin_points", []), CUTIN_TRACK_ID),
+                            (getattr(self, "hazard_points", []), HAZARD_TRACK_ID)):
       for p in points:
         if any(abs(p["dRel"] - q.dRel) < VRU_SAME_D_M and abs(p["yRel"] - q.yRel) < VRU_SAME_Y_M for q in base):
           continue

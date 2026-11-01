@@ -158,8 +158,23 @@ CONFIRM_K = 0.06                 # (m/s^2) per (m/s) of closing speed
 CONFIRM_MAX_DECEL = -0.3         # m/s^2
 CONFIRM_JERK = 0.5               # m/s^3
 CONFIRM_MIN_V = 20. / 3.6
-CONFIRM_SPECIAL_ID = 1 << 27     # CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
+CONFIRM_SPECIAL_ID = 1 << 26     # HAZARD / CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
 CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
+# ars510: hazard coast (11/01, driver: "at least lift off"). The radar interface's hazard candidate (radarTracks
+# HAZARD_TRACK_ID, see ars510_radar_interface.py HAZARD_*: a tracked car closing fast on a short time-to-collision that
+# the camera has not made the lead) within HAZARD_PATH_M of the model path, or within HAZARD_CROSS_M and moving toward
+# my path faster than HAZARD_CROSS_VY, for HAZARD_HOLD cycles -> acceleration capped at HAZARD_ACCEL (lift-off, no
+# braking: the MPC brakes once radard takes the car), reached at HAZARD_JERK, kept HAZARD_KEEP_S after the candidate
+# drops. Off: /data/ars510_no_hazard_coast. cloudlog "ARS510 hazard coast on/off".
+HAZARD_TRACK_ID = 1 << 26
+HAZARD_PATH_M = 1.5
+HAZARD_CROSS_M = 3.5
+HAZARD_CROSS_VY = 1.5
+HAZARD_HOLD = 10                 # planner cycles (0.5 s)
+HAZARD_ACCEL = -0.5
+HAZARD_JERK = 1.0
+HAZARD_KEEP_S = 1.0
+HAZARD_OFF_FILE = "/data/ars510_no_hazard_coast"
 # 11/01: no confirmation while I change lanes myself (ars510_ego_lc.py): the cars of the lane I move into are not cutting in
 
 
@@ -272,6 +287,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.near_stop_active = False  # ars510: near-stop braking floor in effect, see NEAR_STOP_K
     self.near_stop_off = False
     self.ci_out_t: dict[int, float] = {}   # ars510 confirmed cut-in: track id -> last time far off the path
+    self.hz_cnt, self.hz_until, self.hz_cap, self.hz_off, self.hz_on = 0, 0., None, False, False
     self.ego_lc = EgoLaneChange()
     self.ci_until = 0.                      # coast while time < this
     self.ci_closing = 0.
@@ -502,6 +518,38 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = min(output_a_target, cap)
     else:
       self.ci_cap = None
+
+    # ars510: hazard coast (see HAZARD_*)
+    if self.far_lead_cnt == 0:
+      self.hz_off = os.path.exists(HAZARD_OFF_FILE)
+    hz = None
+    if self.CP.openpilotLongitudinalControl and not self.hz_off and 'radarTracks' in sm.data and sm.updated['radarTracks']:
+      pos = sm['modelV2'].position
+      for p in sm['radarTracks'].points:
+        if int(p.trackId) != HAZARD_TRACK_ID:
+          continue
+        path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 else 0.
+        off = -float(p.yRel) - path_y   # right-positive offset to the model path
+        yv = float(getattr(p, "yvRel", float("nan")))   # left-positive (radar frame)
+        toward = (-yv if off > 0 else yv) if yv == yv else 0.
+        if abs(off) < HAZARD_PATH_M or (abs(off) < HAZARD_CROSS_M and toward > HAZARD_CROSS_VY):
+          hz = p
+        break
+      self.hz_cnt = self.hz_cnt + 1 if hz is not None else max(self.hz_cnt - 2, 0)
+      if self.hz_cnt >= HAZARD_HOLD:
+        self.hz_until = now + HAZARD_KEEP_S
+        if not self.hz_on:
+          cloudlog.info(f"ARS510 hazard coast on d={hz.dRel:.1f} vRel={hz.vRel:.1f} y={hz.yRel:.1f} v={v_ego*3.6:.0f}")
+          self.hz_on = True
+    if now < self.hz_until and not reset_state:
+      cap = max(a_prev, HAZARD_ACCEL) if self.hz_cap is None else max(HAZARD_ACCEL, self.hz_cap - HAZARD_JERK * self.dt)
+      self.hz_cap = cap
+      output_a_target = min(output_a_target, cap)
+    else:
+      self.hz_cap = None
+      if self.hz_on:
+        cloudlog.info("ARS510 hazard coast off")
+        self.hz_on = False
 
     # ars510: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction
     CS = sm['carState']
