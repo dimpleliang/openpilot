@@ -46,6 +46,10 @@ RANGE_KM = 1.0             # inside an event range at least this long (移動性
 FETCH_RETRY_S = 15.
 CONFIRM_V = 60 / 3.6       # m/s: alerts start only once the car has driven this fast while matched to the road (a surface
                            # road right under an elevated freeway matches by position and heading; it rarely reaches 60 km/h)
+# ... or sunnypilot's map data (OSM, liveMapDataSP) says the current road is a freeway: name contains one of
+# MAP_FREEWAY_WORDS, or the mapped speed limit is >= MAP_FREEWAY_LIMIT. Jammed from the on-ramp on, this is what confirms.
+MAP_FREEWAY_WORDS = ("高速公路", "國道", "高架道路", "聯絡道", "聯絡線", "支線", "環線")
+MAP_FREEWAY_LIMIT = 80 / 3.6
 MATCH_FRAMES = 3           # consecutive matches before the car counts as on the freeway
 LONG_TERM_H = 24.          # 施工維護 older than this is long-term construction: not shown
 
@@ -361,15 +365,15 @@ class Tracker:
       return [(dist, r, d, km + (1 if inc else -1) * self.held_dist / 1000., inc) for dist, r, d, km, inc in self.held]
     return []
 
-  def step(self, t, fix, v, events, feed_age=0.):
-    """-> (state dict, voice clips or None)"""
+  def step(self, t, fix, v, events, feed_age=0., map_freeway=False):
+    """-> (state dict, voice clips or None). map_freeway: the map data says this road is a freeway."""
     m = self.locate(t, fix, v)
     key = (m[0][1], m[0][2]) if m else None
     self.streak = self.streak + 1 if key is not None and key == self.last_key else (1 if key else 0)
     if key != self.last_key:
       self.fast_ok = False
     self.last_key = key
-    if key is not None and v >= CONFIRM_V:
+    if key is not None and (v >= CONFIRM_V or map_freeway):
       self.fast_ok = True
     state = dict(road="", alerts=[])
     if not m or self.streak < MATCH_FRAMES or not self.fast_ok:
@@ -403,9 +407,11 @@ def main():
   feed = Feed()
   stop = threading.Event()
   threading.Thread(target=feed.fetch_loop, args=(stop,), daemon=True).start()
-  sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState"])
+  sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState", "liveMapDataSP"],
+                           ignore_alive=["liveMapDataSP"], ignore_avg_freq=["liveMapDataSP"], ignore_valid=["liveMapDataSP"])
   rk = Ratekeeper(1.0, print_delay_threshold=None)
   last_ids, say_seq = (), 0
+  last_road_name = None
   try:
     while True:
       sm.update(0)
@@ -417,7 +423,13 @@ def main():
           if sm.recv_frame[s] > 0 and sm.alive[s] and g.hasFix and abs(g.latitude) > 1:
             fix = (g.longitude, g.latitude, g.bearingDeg)
             break
-        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get(), feed.age())
+        lm = sm["liveMapDataSP"]
+        road_name = str(lm.roadName) if sm.recv_frame["liveMapDataSP"] > 0 else ""
+        map_fw = any(w in road_name for w in MAP_FREEWAY_WORDS) or (lm.speedLimitValid and lm.speedLimit >= MAP_FREEWAY_LIMIT)
+        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get(), feed.age(), map_fw)
+        if road_name != last_road_name:
+          cloudlog.info(f"hwyalert map road: {road_name!r} limit={lm.speedLimit * 3.6:.0f} freeway={map_fw} matched={state['road']!r}")
+          last_road_name = road_name
         if say and not os.path.exists(SAY_OFF_FILE):
           say_seq += 1
           write_json(SAY_FILE, dict(seq=say_seq, t=time.time(), clips=say))
