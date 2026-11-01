@@ -1,5 +1,6 @@
 #!/bin/bash
-# ars510: pull every finished segment's rlog/qlog from the comma over Tailscale, then free the space on the device.
+# ars510: pull every finished segment's rlog/qlog/qcamera (low-res road video) from the comma over Tailscale, then free
+# the rlog's space on the device. Full-resolution video on demand: pull_video.sh.
 # Runs from launchd every 15 min (see ts_pull.plist). Safe to run while driving: rsync is niced on the device and
 # the segment currently being written (newest) is skipped. The rlog is deleted on the device only after it arrived
 # here with the same size; the video stays there for the device's own cleanup / comma connect, so the camera can
@@ -23,10 +24,10 @@ list=$(ssh $O $HOST 'cd /data/media/0/realdata && for d in $(ls -d */ | tr -d / 
 n=0; freed=0
 while read -r s remote; do
   [ -n "$s" ] || continue
-  [ "$remote" = "0" ] && [ -s "$DEST/$s/rlog.zst" ] && continue   # already pulled and freed
+  [ "$remote" = "0" ] && [ -s "$DEST/$s/rlog.zst" ] && [ -s "$DEST/$s/qcamera.ts" ] && continue   # already pulled and freed
   mkdir -p "$DEST/$s"
   rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" \
-        --include='rlog*' --include='qlog*' --exclude='*' \
+        --include='rlog*' --include='qlog*' --include='qcamera.ts' --exclude='*' \
         "$HOST:/data/media/0/realdata/$s/" "$DEST/$s/" < /dev/null || { echo "rsync failed $s"; continue; }
   n=$((n + 1))
   if [ "${KEEP:-0}" != "1" ] && [ "$remote" -gt 0 ]; then

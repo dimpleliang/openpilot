@@ -181,7 +181,7 @@ comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表�
   11/01 啟用：車機節點 `comma-1`（100.102.239.55）、Mac `liangmac-mini`。Mac 端 `~/ars510_rlogs/ts_pull.sh`（repo 備份
   `tools/ars510/mac/ts_pull.sh`）由 launchd `com.ars510.tspull` 每 15 分鐘跑：只拉 rlog／qlog 到 `~/ars510_rlogs/raw/<segment>/`，
   核對大小後刪車機上的 rlog（影片留給車機自己清），行車中跳過正在寫的最新片段。ssh 別名 `comma-ts`（走 tailnet，不經 ssh.comma.ai）。
-  紀錄：`~/ars510_rlogs/ts_pull.log`。首次同步約 13 GB，經 DERP 中繼約 1.3 MB/s。這取代「每趟都傳到 comma」的需求，不需 comma token。
+  同時抓 qcamera.ts（低畫質路況影像，3–5 MB/分）；高畫質影片用 `~/ars510_rlogs/pull_video.sh <片段或路程>`（`ALL=1` 含廣角與駕駛鏡頭）按需抓，影片本身留在車機等它自己清。紀錄：`~/ars510_rlogs/ts_pull.log`。首次同步約 13 GB，經 DERP 中繼約 1.3 MB/s。這取代「每趟都傳到 comma」的需求，不需 comma token。
   兩者都要 comma 開著（車子發動或熄火後尚未自動關機）。
 
 ## 車道內機車優先（radard）
