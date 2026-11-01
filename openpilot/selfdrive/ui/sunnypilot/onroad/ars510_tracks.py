@@ -100,6 +100,14 @@ CONFIRM_PULSE_HZ = 3.0
 # 91/75/37 (<60 / 60-90 / 90+ km/h), recall 21/37/32 -> 21/37/26 %, warning median 0.4/1.5/1.8 -> 0.3/1.2/0.8 s.
 # The confirmed cut-in (flashing circle, planner lift-off) is not gated.
 LINE_GATE_M = -1.5
+# 11/01 false-mark study (124 km, own lane changes excluded): most false marks were cars wandering in their own lane
+# (0.5 m toward the line, then back out), starting ~1.3 m from the line with a weak sideways speed and gone within 0.5 s.
+# A predicted cut-in is shown only once the object is within LINE_STRICT_M of the line OR moving toward my path at
+# >= STRICT_TOWARD m/s, continuously for SHOW_AFTER_S. Replay: false marks per 100 km 68/75/35 -> 43/16/11
+# (<60 / 60-90 / 90+ km/h), recall 20/34/30 -> 17/34/20 %, warning median 0.2/1.1/0.6 -> -0.2/0.7/0.1 s.
+LINE_STRICT_M = -1.0
+STRICT_TOWARD = 1.2          # m/s
+SHOW_AFTER_S = 0.3
 LINE_PATH_EXTRA_M = 0.3
 LINE_MIN_PROB = 0.5
 CUTIN_PULSE_HZ = 2.5
@@ -165,6 +173,7 @@ class Ars510Tracks:
     self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
     self._ego_lc = EgoLaneChange()                       # my own lane change: no markers (ars510_ego_lc.py)
+    self._qual_t: dict[int, float] = {}                  # track id -> start of the current run passing the strict check
     self._lane_w = 3.5                                   # filtered lane width (m), both lane lines reliable at 8 m
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
@@ -241,8 +250,18 @@ class Ars510Tracks:
           if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
         if tid >= 0:
           seen.add(tid)
-        if cutin and (ego_lc or not self._near_line(lanes, d, y_right, off_signed)):
-          cutin = False   # display only; the rule's own state above keeps running
+        qual = False
+        if cutin:
+          intr = self._intrusion(lanes, d, y_right, off_signed)
+          if ego_lc or intr < LINE_GATE_M:
+            cutin = False   # display only; the rule's own state above keeps running
+          elif intr >= LINE_STRICT_M or (toward == toward and toward >= STRICT_TOWARD):
+            qual = True
+            cutin = now - self._qual_t.setdefault(tid, now) >= SHOW_AFTER_S
+          else:
+            cutin = False
+        if not qual:
+          self._qual_t.pop(tid, None)
         arrow = 0
         if cutin:
           arrow = -1 if (y_right - path_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
@@ -259,19 +278,22 @@ class Ars510Tracks:
       if fresh:
         for tid in [k for k in self._hist if k not in seen]:
           self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None); self._close.pop(tid, None)
-          self._out_t.pop(tid, None); self._confirm_t.pop(tid, None); self._side.pop(tid, None)
+          self._out_t.pop(tid, None); self._confirm_t.pop(tid, None); self._side.pop(tid, None); self._qual_t.pop(tid, None)
     except Exception:
       self._points = []
 
-  def _near_line(self, lanes, d: float, y_right: float, off_signed: float) -> bool:
-    """LINE_GATE_M: True while the object is close enough to crossing the lane line on its side."""
+  def _intrusion(self, lanes, d: float, y_right: float, off_signed: float) -> float:
+    """How far the object is past the lane line on its side (+ = inside my lane). Without a reliable line: my path
+    +- half the filtered lane width, less LINE_PATH_EXTRA_M (my own place in the lane is unknown)."""
     if lanes is not None:
       x, y, p = lanes[1] if off_signed > 0 else lanes[0]
       if p >= LINE_MIN_PROB and len(x) > 1:
         ly = float(np.interp(d, x, y))
-        intr = (ly - y_right) if off_signed > 0 else (y_right - ly)   # + = past the line, inside my lane
-        return intr >= LINE_GATE_M
-    return self._lane_w / 2. - abs(off_signed) >= LINE_GATE_M + LINE_PATH_EXTRA_M
+        return (ly - y_right) if off_signed > 0 else (y_right - ly)
+    return self._lane_w / 2. - abs(off_signed) - LINE_PATH_EXTRA_M
+
+  def _near_line(self, lanes, d: float, y_right: float, off_signed: float) -> bool:
+    return self._intrusion(lanes, d, y_right, off_signed) >= LINE_GATE_M
 
   def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.,
              toward: float = float("nan"), lc: int = 0) -> bool:
