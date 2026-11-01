@@ -135,6 +135,9 @@ HAZARD_WAS_MOVING_MPS = 5.0
 HAZARD_MAX_VREL = -3.0
 HAZARD_TTC_S = 4.0
 HAZARD_MAX_Y_M = 3.5
+HAZARD_PATH_Y_M = 1.5          # in my lane (radar frame; the planner re-checks against the model path) ...
+HAZARD_CROSS_VY = 1.5          # ... or within HAZARD_MAX_Y_M and moving toward the centre line faster than this (m/s):
+                               # sunnypilot's RadarPoint has no yvRel field, so the lateral check must live here
 HAZARD_RATE_S = 1.5
 HAZARD_RATE_MIN_N = 15
 HAZARD_RATE_ERR_MPS = 2.0
@@ -370,6 +373,9 @@ class Ars510RadarInterface(RadarInterfaceBase):
         if not (HAZARD_D_M[0] < d < HAZARD_D_M[1]) or abs(y) > HAZARD_MAX_Y_M or vrel != vrel or vrel >= HAZARD_MAX_VREL:
           continue
         if d / -vrel > HAZARD_TTC_S or h["vmax"] < HAZARD_WAS_MOVING_MPS or vg < -1.0:
+          continue
+        toward = ((-yv if y > 0 else yv) if yv == yv else 0.0)   # y and yv left-positive: + = moving toward my centre line
+        if abs(y) >= HAZARD_PATH_Y_M and toward <= HAZARD_CROSS_VY:
           continue
         hist = h["hist"]
         if len(hist) < HAZARD_RATE_MIN_N or hist[-1][0] - hist[0][0] < HAZARD_RATE_S - 0.2:

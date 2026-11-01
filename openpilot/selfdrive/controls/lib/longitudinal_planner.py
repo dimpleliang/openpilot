@@ -163,13 +163,11 @@ CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
 # ars510: hazard coast (11/01, driver: "at least lift off"). The radar interface's hazard candidate (radarTracks
 # HAZARD_TRACK_ID, see ars510_radar_interface.py HAZARD_*: a tracked car closing fast on a short time-to-collision that
 # the camera has not made the lead) within HAZARD_PATH_M of the model path, or within HAZARD_CROSS_M and moving toward
-# my path faster than HAZARD_CROSS_VY, for HAZARD_HOLD cycles -> acceleration capped at HAZARD_ACCEL (lift-off, no
+# my path faster than HAZARD_CROSS_VY (that check lives in the interface: RadarPoint carries no lateral speed here), for HAZARD_HOLD cycles -> acceleration capped at HAZARD_ACCEL (lift-off, no
 # braking: the MPC brakes once radard takes the car), reached at HAZARD_JERK, kept HAZARD_KEEP_S after the candidate
 # drops. Off: /data/ars510_no_hazard_coast. cloudlog "ARS510 hazard coast on/off".
 HAZARD_TRACK_ID = 1 << 26
-HAZARD_PATH_M = 1.5
 HAZARD_CROSS_M = 3.5
-HAZARD_CROSS_VY = 1.5
 HAZARD_HOLD = 10                 # planner cycles (0.5 s)
 HAZARD_ACCEL = -0.5
 HAZARD_JERK = 1.0
@@ -530,9 +528,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           continue
         path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 else 0.
         off = -float(p.yRel) - path_y   # right-positive offset to the model path
-        yv = float(getattr(p, "yvRel", float("nan")))   # left-positive (radar frame)
-        toward = (-yv if off > 0 else yv) if yv == yv else 0.
-        if abs(off) < HAZARD_PATH_M or (abs(off) < HAZARD_CROSS_M and toward > HAZARD_CROSS_VY):
+        if abs(off) < HAZARD_CROSS_M:   # the interface already required in-lane or moving toward my lane
           hz = p
         break
       self.hz_cnt = self.hz_cnt + 1 if hz is not None else max(self.hz_cnt - 2, 0)
