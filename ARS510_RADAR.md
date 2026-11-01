@@ -5,7 +5,7 @@
 
 - 不需要 CAN filter 即可讀取雷達；但開啟 openpilot 縱向控制（Alpha）時雷達會被靜音，原廠 PCS/AEB 失效，儀表會顯示 PCS 故障。
 - 變更只在 `opendbc_repo/opendbc/car/toyota/`（新增 ars510 套件與 interface.py 結尾的 hook 區塊）與 `opendbc_repo/opendbc/dbc/ars510_acc_target.dbc`，以及下方畫面標示的 chevron_metrics.py，其餘與 staging 相同。
-- 裝置安裝網址：`https://installer.comma.ai/dimpleliang/ars510`
+- 裝置安裝網址：`installer.comma.ai/dimpleliang/ars510-dev`（`ars510` 分支已停止更新）
 - 要還原成純視覺：改裝回 sunnypilot 的 `staging`。
 - 更新做法：以上游 staging 重新套用本分支變更後 force push 本分支。舊的 tn-prebuilt 版本保留在 `ars510-tn` 分支。
 
@@ -574,7 +574,7 @@ panda `toyota.h` 的 0x750 門鎖白名單保留（改它需重建韌體，且�
 
 ## 國道事件提醒（11/01）
 
-- 資料：高公局 `https://tisvcloud.freeway.gov.tw/history/motc20/LiveEvents.xml`（每 60 秒，失敗 15 秒重試；舊格式 1min_incident_data_1968.xml 不使用）。欄位說明與 60 天分析另見文件「高公局 1968／即時事件資料：欄位說明與 60 天分析」。
+- 資料：高公局 `https://tisvcloud.freeway.gov.tw/history/motc20/LiveEvents.xml`（每 60 秒，失敗 15 秒重試；舊格式 1min_incident_data_1968.xml 不使用）。欄位說明與 180 天分析另見文件「高公局 1968／即時事件資料：欄位說明與 180 天分析」。
 - 程式：`selfdrive/hwyalert/hwyalertd.py`（onroad 背景程式）→ `/dev/shm/hwyalert.json` → 畫面橫幅 `ui/sunnypilot/onroad/hwy_alert.py`；語音 `/dev/shm/hwyalert_say.json` → `soundd`。
 - 定位：GPS 位置＋航向比對內建國道路段線型（`freeway_sections.json.gz`，由 Section.xml＋SectionShape.xml 產生，分方向；台南北外環–永康里程修正、汐五高架中豐–中壢轉接二補線）。40 m 內、航向差 45° 內、連續 3 秒；低速（< 18 km/h）不看航向、只要仍在原路段 40 m 內就保留；沒有 GPS（隧道）用車速沿原路段推算，最多 15 km。
 - 事件：散落物、事故、故障車、施工維護（已存在 > 24 h 除外）、移動性施工、各種誤闖、人員停留、坑洞、路樹、坍方、路面積水、道路封閉、逆行車輛、濃霧、路面毀損、遺留物、名稱含「火」。不含匝道事件（LocationType 1、2）。只取同路、同方向、前方 3 km 內，最多 2 筆。
