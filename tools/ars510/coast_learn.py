@@ -5,9 +5,9 @@
 
 Coasting = no gas, no brake pedal (and none for 1.5 s), v > 3 m/s, |road pitch| < 0.02 rad, and either
   driver: openpilot not engaged, or
-  engaged: openpilot asking for accel <= 0 (so the ECU has lifted the throttle) and the ACC brake lights are off
+  engaged: openpilot asking for accel <= -0.2 (so the ECU has lifted the throttle, below hold-speed noise) and the ACC brake lights are off
            (ESP_CONTROL.BRAKE_LIGHTS_ACC, CAN 0x3B7) for the last 1 s.
-Road pitch = liveLocationKalman device pitch minus the mount pitch (extrinsicsCalibration.rpyCalib[1]). Prints per band the
+Road pitch = liveLocationKalman device pitch plus the mount pitch (extrinsicsCalibration.rpyCalib[1]; verified sign: residual median 0.4 deg). D gear only. Prints per band the
 measured deceleration (raw and slope-corrected, driver and engaged separately) next to a drag-only estimate (rho 1.2, Cd 0.32,
 A 2.6 m2, 1900 kg, Crr 0.010); the gap to the estimate is what regen / engine braking adds.
 """
@@ -80,11 +80,11 @@ def main():
             eng = ss.enabled if ss else False
             no_pedal = not cs.gasPressed and not cs.brakePressed and t - last_press > 1.5
             if eng:
-              coasting = no_pedal and m.carOutput.actuatorsOutput.accel <= 0.0 and t - last_acc_brake > 1.0
+              coasting = no_pedal and m.carOutput.actuatorsOutput.accel <= -0.2 and t - last_acc_brake > 1.0
             else:
               coasting = no_pedal
-            road_pitch = pitch - calib
-            if coasting and cs.vEgo > 3 and abs(road_pitch) < 0.02:
+            road_pitch = pitch + calib
+            if coasting and cs.vEgo > 3 and abs(road_pitch) < 0.02 and cs.gearShifter == "drive":
               samples.append((cs.vEgo, cs.aEgo, road_pitch, cs.aEgo + 9.81 * math.sin(road_pitch), eng,
                               -1 if eng_running is None else int(eng_running)))
       except Exception:
