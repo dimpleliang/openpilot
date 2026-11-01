@@ -391,6 +391,8 @@ class Ars510NativeRadarInterface:
     MISMATCH_S = 1.5
     MISMATCH_N = 10
     MISMATCH_MPS = 5.0
+    MISMATCH_MAX_RANGE_UNC = 20   # only tracks whose own range uncertainty is small (~4.5 m): replay 241 km, every object
+                                  # 80 m+ mismatches (range_unc ~ 8-11 m, the radar says so itself); with this gate ~75 / 100 km
 
     def _mismatch_log(self, tid: int, time_s: float, obj: NativeObject, v_ego: float, v_fused: float, d_fused: float) -> None:
         """carlog "ARS510 speed/range mismatch" once per track: raw range rate vs raw object speed (see __init__)."""
@@ -401,6 +403,9 @@ class Ars510NativeRadarInterface:
                 h.pop(0)
             if tid in self._mm_logged or obj.age < 8 or len(h) < 15 or h[-1][0] - h[0][0] < self.MISMATCH_S - 0.2:
                 return
+            if obj.range_unc_code is None or obj.range_unc_code >= self.MISMATCH_MAX_RANGE_UNC:
+                return
+            step = max(abs(b[1] - a[1]) for a, b in zip(h, h[1:]))   # largest one-record range jump (slot / id relink?)
             tm = sum(x[0] for x in h) / len(h); dm = sum(x[1] for x in h) / len(h)
             den = sum((x[0] - tm) ** 2 for x in h)
             rate = sum((x[0] - tm) * (x[1] - dm) for x in h) / den if den > 0 else 0.0
@@ -413,7 +418,7 @@ class Ars510NativeRadarInterface:
                                    f"range_rate {rate:.1f} vrel_raw {vrel_raw:.1f} vrel_fused {v_fused - v_ego:.1f} v_ego {v_ego:.1f} "
                                    f"age {obj.age} class {obj.object_class} exist {obj.existence_pct} vel_code {obj.vel_code} "
                                    f"vel_unc {obj.vel_unc_code} range_unc {obj.range_unc_code} move {obj.movement_code} "
-                                   f"predicted {obj.predicted} cam {obj.camera_assoc} score {obj.secondary_score_pct}")
+                                   f"predicted {obj.predicted} cam {obj.camera_assoc} score {obj.secondary_score_pct} slot {obj.slot} max_step {step:.1f}")
             else:
                 self._mm_cnt[tid] = 0
         except Exception:
