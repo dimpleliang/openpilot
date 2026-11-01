@@ -34,6 +34,9 @@ MATCH_HDG = 45.            # heading vs polyline direction (deg)
 MATCH_MIN_V = 5.           # heading is only trusted above this speed (m/s)
 STACK_M = 8.               # a second road this close to the best match is ambiguous: show its events too, tagged
 DR_MAX_KM = 15.            # no GPS (tunnels, 雪山隧道 12.9 km): carry the last match forward by speed this far
+JUMP_M = 50.               # a fix that moved this much more (or less) than speed x time is ignored (no GPS this second);
+JUMP_MAX_REJECT = 3        # ... at most this many in a row, then the new position is taken (11/01: 8 such jumps in 5.2 h,
+                           # all 2-40 km/h at a car park, none on a freeway; comma 3X horizontalAccuracy is always 0)
 MAX_ALERTS = 2             # banners shown (and the only events the voice announces)
 SAY_GAP_S = 4.             # one announcement at a time ("前方三公里" + "故障車" is ~2 s)
 REMIND_KM = 1.0            # second announcement ("前方一公里") for events first announced at >= REMIND_FROM_KM ...
@@ -321,6 +324,7 @@ class Tracker:
     self.S = sections
     self.streak, self.last_key = 0, None
     self.held, self.held_dist, self.last_t = [], 0., None   # last good match, metres driven since (no GPS)
+    self.last_fix, self.rejects = None, 0                     # (t, x, y) of the last accepted fix
     self.spoken: dict[str, float] = {}   # event id -> distance (km) at the first announcement
     self.reminded: set[str] = set()
     self.last_say_t = -1e9
@@ -329,6 +333,16 @@ class Tracker:
     """fix = (lon, lat, bearing) or None -> matches"""
     dt = 0. if self.last_t is None else min(max(t - self.last_t, 0.), 5.)
     self.last_t = t
+    if fix is not None:
+      x, y = xy(fix[0], fix[1])
+      lf = self.last_fix
+      if lf is not None and 0.5 < t - lf[0] < 2.5 and abs(math.hypot(x - lf[1], y - lf[2]) - v * (t - lf[0])) > JUMP_M \
+         and self.rejects < JUMP_MAX_REJECT:
+        self.rejects += 1
+        fix = None
+      else:
+        self.rejects = 0
+        self.last_fix = (t, x, y)
     if fix is not None:
       lon, lat, brg = fix
       if v > MATCH_MIN_V:
