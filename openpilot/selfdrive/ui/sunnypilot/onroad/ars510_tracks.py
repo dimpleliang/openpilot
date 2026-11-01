@@ -90,6 +90,16 @@ CONFIRM_SHOW_S = 3.0         # s the circle stays after the car stops qualifying
 CONFIRM_PULSE_HZ = 3.0
 # 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
 # at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
+# 11/01 lane-line gate (idea from herizon1054/openpilot radard_ext v9.6.6+, which adopts a cut-in only once a radar point
+# is on the line): a predicted cut-in is shown only while the object is within LINE_GATE_M of the model lane line on its
+# side (laneLines[1] / [2], probability >= LINE_MIN_PROB); without a reliable line, within LINE_GATE_M + LINE_PATH_EXTRA_M
+# of my path +- half the filtered lane width. ARS510 y is near the car centre, so -1.5 m is about a car edge 0.6 m from
+# the line. Replay of 124 km with lane lines (tools/ars510/merge_eval_lanes.py): false marks per 100 km 102/140/81 ->
+# 91/75/37 (<60 / 60-90 / 90+ km/h), recall 21/37/32 -> 21/37/26 %, warning median 0.4/1.5/1.8 -> 0.3/1.2/0.8 s.
+# The confirmed cut-in (flashing circle, planner lift-off) is not gated.
+LINE_GATE_M = -1.5
+LINE_PATH_EXTRA_M = 0.3
+LINE_MIN_PROB = 0.5
 CUTIN_PULSE_HZ = 2.5
 SHOW_BANNER = False  # 10/31 driver: no edge banner ("右側匯入／左側匯入"), the arrows on the car are enough
 CUTIN_SCALE = 1.5
@@ -152,6 +162,7 @@ class Ars510Tracks:
     self._close: dict[int, int] = {}                     # track id -> consecutive close-range records moving toward my path
     self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
     self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
+    self._lane_w = 3.5                                   # filtered lane width (m), both lane lines reliable at 8 m
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -180,6 +191,15 @@ class Ars510Tracks:
       # replay of 241 km, that alone beats subtracting the other objects' median (fast trigger recall above 90 km/h 32 -> 36 %)
       vlat_bias = 0.
       now = rl.get_time()
+      lanes = None
+      md = sm['modelV2']
+      if len(md.laneLines) >= 3 and len(md.laneLineProbs) >= 3:
+        lanes = [(np.asarray(md.laneLines[i].x, dtype=float), np.asarray(md.laneLines[i].y, dtype=float) + camera_offset,
+                  float(md.laneLineProbs[i])) for i in (1, 2)]
+        if sm.updated['modelV2'] and lanes[0][2] >= LINE_MIN_PROB and lanes[1][2] >= LINE_MIN_PROB and len(lanes[0][0]) > 1:
+          w = float(np.interp(8., lanes[1][0], lanes[1][1]) - np.interp(8., lanes[0][0], lanes[0][1]))
+          if 2.5 < w < 4.5:
+            self._lane_w += 0.05 * (float(np.clip(w, 3.0, 4.0)) - self._lane_w)
       for d, y, v, _sent, settling, cls, tid, vlat, lc in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
@@ -217,6 +237,8 @@ class Ars510Tracks:
           if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
         if tid >= 0:
           seen.add(tid)
+        if cutin and not self._near_line(lanes, d, y_right, off_signed):
+          cutin = False   # display only; the rule's own state above keeps running
         arrow = 0
         if cutin:
           arrow = -1 if (y_right - path_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
@@ -236,6 +258,16 @@ class Ars510Tracks:
           self._out_t.pop(tid, None); self._confirm_t.pop(tid, None); self._side.pop(tid, None)
     except Exception:
       self._points = []
+
+  def _near_line(self, lanes, d: float, y_right: float, off_signed: float) -> bool:
+    """LINE_GATE_M: True while the object is close enough to crossing the lane line on its side."""
+    if lanes is not None:
+      x, y, p = lanes[1] if off_signed > 0 else lanes[0]
+      if p >= LINE_MIN_PROB and len(x) > 1:
+        ly = float(np.interp(d, x, y))
+        intr = (ly - y_right) if off_signed > 0 else (y_right - ly)   # + = past the line, inside my lane
+        return intr >= LINE_GATE_M
+    return self._lane_w / 2. - abs(off_signed) >= LINE_GATE_M + LINE_PATH_EXTRA_M
 
   def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.,
              toward: float = float("nan"), lc: int = 0) -> bool:
