@@ -633,3 +633,7 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
   不加煞車（radard 接手後 MPC 煞）。關閉：`/data/ars510_no_hazard_coast`。cloudlog「ARS510 hazard coast on/off」。
 - 重播 241 km（10/30–10/31）：第一版條件（無移動／一致性檢查）每 100 km 誤觸發 42 次，多為路邊停車與對向；加條件後 1 次（已是前車、0.3 s）。
   真正的失控案例手上沒有，規則只驗證了「不誤觸」，沒驗證「會觸發」。
+- 11/01 速度／距離不一致紀錄（`ars510/interface.py` `_mismatch_log`）：每個軌跡原始量測距離 1.5 s 的變化率與原始物件速度差 > 5 m/s、連續 10 筆，
+  carlog 一行「ARS510 speed/range mismatch」帶原始碼（vel_code、vel_unc、range_unc、movement、predicted、camera_assoc、score、融合前後速度與距離），
+  每軌跡一次。目的：累積案例後判斷是雷達本身、還是我們的解碼／融合造成 10/30 20:56:45 那種「速度 −21 m/s 但距離不動」的讀值。
+- 11/01 危險物收油：TTC < 2 s 時跳過 0.5 s 持續條件（`HAZARD_FAST_TTC_S`），距離一致性維持。

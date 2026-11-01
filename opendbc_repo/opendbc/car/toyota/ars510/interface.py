@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from math import exp, isfinite, nan, pi
 from collections.abc import Iterable
 
+from opendbc.car.carlog import carlog
 from .constants import (ACC_TARGET_POS_ADDR, ACC_TARGET_VREL_ADDR, CAR_BUS, ID80_ADDR, RADAR_BUS,
                         TOYOTA_KINEMATICS_ADDR, TOYOTA_SPEED_ADDR)
 from .objects import ACCEL_LIKE, NativeObject, decode_native_slot
@@ -209,6 +210,12 @@ class Ars510NativeRadarInterface:
         self._claimed: set[int] = set()
         self._range_est: dict[int, tuple[float, float, float]] = {}
         self._fused: dict[int, tuple[float, float, float]] = {}  # tid -> (t, over-ground speed, variance)
+        # speed / range mismatch log (11/01): 10/30 20:56:45 an object 70 m out read vRel -21 m/s for 1.5 s while its range
+        # did not move. Raw measured range history per track; when the raw range rate and the raw object speed disagree by
+        # MISMATCH_MPS for MISMATCH_N records, one carlog line with the raw codes (is it the radar, or our decoding / fusion?)
+        self._mm_hist: dict[int, list[tuple[float, float]]] = {}
+        self._mm_cnt: dict[int, int] = {}
+        self._mm_logged: set[int] = set()
         self._acc_vrel: tuple[float, float] | None = None  # (time, closing speed)
         self._acc_pos: tuple[float, float, float] | None = None  # (time, x, y)
         self._acc_assoc: tuple[int, float, float] | None = None  # (tid, last x, last y)
@@ -381,6 +388,37 @@ class Ars510NativeRadarInterface:
         self._fused[tid] = (time_s, v, p)
         return v, p ** 0.5
 
+    MISMATCH_S = 1.5
+    MISMATCH_N = 10
+    MISMATCH_MPS = 5.0
+
+    def _mismatch_log(self, tid: int, time_s: float, obj: NativeObject, v_ego: float, v_fused: float, d_fused: float) -> None:
+        """carlog "ARS510 speed/range mismatch" once per track: raw range rate vs raw object speed (see __init__)."""
+        try:
+            h = self._mm_hist.setdefault(tid, [])
+            h.append((time_s, float(obj.d_rel)))
+            while h and time_s - h[0][0] > self.MISMATCH_S:
+                h.pop(0)
+            if tid in self._mm_logged or obj.age < 8 or len(h) < 15 or h[-1][0] - h[0][0] < self.MISMATCH_S - 0.2:
+                return
+            tm = sum(x[0] for x in h) / len(h); dm = sum(x[1] for x in h) / len(h)
+            den = sum((x[0] - tm) ** 2 for x in h)
+            rate = sum((x[0] - tm) * (x[1] - dm) for x in h) / den if den > 0 else 0.0
+            vrel_raw = obj.v_long_ground * self.config.vground_scale - v_ego
+            if abs(rate - vrel_raw) > self.MISMATCH_MPS and abs(vrel_raw) > 3.0:
+                self._mm_cnt[tid] = self._mm_cnt.get(tid, 0) + 1
+                if self._mm_cnt[tid] >= self.MISMATCH_N:
+                    self._mm_logged.add(tid)
+                    carlog.warning(f"ARS510 speed/range mismatch: tid {tid} d_raw {obj.d_rel:.1f} d_fused {d_fused:.1f} y {obj.y_rel:.1f} "
+                                   f"range_rate {rate:.1f} vrel_raw {vrel_raw:.1f} vrel_fused {v_fused - v_ego:.1f} v_ego {v_ego:.1f} "
+                                   f"age {obj.age} class {obj.object_class} exist {obj.existence_pct} vel_code {obj.vel_code} "
+                                   f"vel_unc {obj.vel_unc_code} range_unc {obj.range_unc_code} move {obj.movement_code} "
+                                   f"predicted {obj.predicted} cam {obj.camera_assoc} score {obj.secondary_score_pct}")
+            else:
+                self._mm_cnt[tid] = 0
+        except Exception:
+            pass
+
     def _fused_range(self, tid: int, time_s: float, d_meas: float, vrel: float) -> float:
         prev = self._range_est.get(tid)
         if prev is None or not isfinite(vrel) or not isfinite(prev[2]) or not 0.0 < time_s - prev[0] <= 0.5:
@@ -473,6 +511,8 @@ class Ars510NativeRadarInterface:
                 vrel = float(v_ground - v_ego) if v_ego is not None else nan
             d_meas = self._acc_pos[1] if cfg.acc_range and acc_tid is not None and tid == acc_tid and self._acc_pos is not None else obj.d_rel
             d_rel = self._fused_range(tid, time_s, d_meas, vrel) if cfg.range_fusion_gain > 0 else d_meas
+            if v_ego is not None:
+                self._mismatch_log(tid, time_s, obj, v_ego, v_ground, d_rel)
             if obj.age >= 2:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
@@ -541,6 +581,11 @@ class Ars510NativeRadarInterface:
             for k in [k for k, v in self._last.items() if v[0] < horizon]:
                 self._last.pop(k, None)
                 self._first.pop(k, None)
+        for store in (self._mm_hist, self._mm_cnt):
+            if len(store) > 400:
+                store.clear()
+        if len(self._mm_logged) > 2000:
+            self._mm_logged.clear()
         for store in (self._range_est, self._fused, self._guard_state):
             if len(store) > 400:
                 for k in [k for k, v in store.items() if v[0] < time_s - 5.0]:

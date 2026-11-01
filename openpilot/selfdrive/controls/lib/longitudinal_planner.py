@@ -169,6 +169,7 @@ CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
 HAZARD_TRACK_ID = 1 << 26
 HAZARD_CROSS_M = 3.5
 HAZARD_HOLD = 10                 # planner cycles (0.5 s)
+HAZARD_FAST_TTC_S = 2.0          # closer than this (time-to-collision) the hold is skipped
 HAZARD_ACCEL = -0.5
 HAZARD_JERK = 1.0
 HAZARD_KEEP_S = 1.0
@@ -532,6 +533,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           hz = p
         break
       self.hz_cnt = self.hz_cnt + 1 if hz is not None else max(self.hz_cnt - 2, 0)
+      if hz is not None and hz.vRel < 0 and hz.dRel / -hz.vRel < HAZARD_FAST_TTC_S:
+        self.hz_cnt = max(self.hz_cnt, HAZARD_HOLD)
       if self.hz_cnt >= HAZARD_HOLD:
         self.hz_until = now + HAZARD_KEEP_S
         if not self.hz_on:
