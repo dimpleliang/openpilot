@@ -67,10 +67,10 @@ def main():
             ac = m.liveLocationKalman.accelerationCalibrated
             if ac.valid and len(ac.value) == 3:
               pose.append((t, ac.value[0]))
+            if m.liveLocationKalman.orientationNED.valid:
+              pitch.append((t, m.liveLocationKalman.orientationNED.value[1]))
           elif w == "longitudinalPlan":
             plan.append((t, m.longitudinalPlan.aTarget, m.longitudinalPlan.shouldStop))
-          elif w == "liveLocationKalman" and m.liveLocationKalman.orientationNED.valid:
-            pitch.append((t, m.liveLocationKalman.orientationNED.value[1]))
           elif w == "extrinsicsCalibration" and len(m.extrinsicsCalibration.rpyCalib) == 3:
             calib = float(m.extrinsicsCalibration.rpyCalib[1])
           elif w == "can":
