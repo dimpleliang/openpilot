@@ -178,6 +178,10 @@ comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表�
 - **Tailscale**：`scripts/tailscale/install.sh` 把靜態 arm64 版裝進 `/data/tailscale`（AGNOS 更新只換系統分割區，`/data` 保留），
   `launch_chffrplus.sh` 每次開機呼叫 `scripts/tailscale/start.sh` 帶起 `tailscaled`（未安裝則直接跳過，不影響 openpilot 啟動）。
   首次需在裝置上 `sudo /data/tailscale/tailscale --socket=/data/tailscale/tailscaled.sock up --hostname=comma` 並開連結登入。
+  11/01 啟用：車機節點 `comma-1`（100.102.239.55）、Mac `liangmac-mini`。Mac 端 `~/ars510_rlogs/ts_pull.sh`（repo 備份
+  `tools/ars510/mac/ts_pull.sh`）由 launchd `com.ars510.tspull` 每 15 分鐘跑：只拉 rlog／qlog 到 `~/ars510_rlogs/raw/<segment>/`，
+  核對大小後刪車機上的 rlog（影片留給車機自己清），行車中跳過正在寫的最新片段。ssh 別名 `comma-ts`（走 tailnet，不經 ssh.comma.ai）。
+  紀錄：`~/ars510_rlogs/ts_pull.log`。首次同步約 13 GB，經 DERP 中繼約 1.3 MB/s。這取代「每趟都傳到 comma」的需求，不需 comma token。
   兩者都要 comma 開著（車子發動或熄火後尚未自動關機）。
 
 ## 車道內機車優先（radard）
