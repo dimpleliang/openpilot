@@ -825,6 +825,17 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 - 未修、記錄：鎖的 120 分鐘搶鎖可能誤搶活任務（改 PID 鎖）；傳輸中無 watchdog（每段前檢查）；15 km 展望可能混入 8 m 內的其他候選道路，
   狀態列未標示「高架／平面」。
 
+### G. 11/02 Codex 第三輪（G1 重構覆核；原文 Mac `~/ars510_rlogs/review/codex_review3.md`）
+- 結論：d0ca8ae 相對 462845c **未找到行為差異**（它自己重跑 396 萬幀合成＋比對 stall 歷史與 PID 內部值，皆一致）；Q12 屬「等價 mutant」，保留。
+- harness 待補：依實際相位觸發並 assert 覆蓋、stall 歷史與 PID 納入 strict、門檻兩側／gas interceptor／連續停車；rlog 抽取的 pose 過期用 150 ms，
+  實際 controlsd 是 alive（約 500 ms），「實車逐幀還原」的說法要收斂為「兩版同輸入比對」。
+- 新增兩版共有的怪行為：Q14 stall 清除後同幀重鎖（踩踏板那幀仍進 stopping）；Q15 coast 計時跨 off／pid 累積，接管時直接以超時判真停；
+  Q16 pose 中斷後 release 可再次觸發；Q17 CAPTURE 加煞不設 brake_added，輪速恢復後 APPROACH 可能放掉。
+- 第二步順序：(1) Q4／Q10／Q16／Q17 — 集中「禁止放煞」條件，release 每次停車只一次、區分真失敗與 urgent 取消，回煞取 min(底層, 回煞)；
+  (2) Q6／Q7＋Q1／Q2／Q3／Q11／Q15 — 估速加可信範圍與資料年齡，pose 缺失擴大不確定度，still 不截斷估速，超時進保守 CAPTURE 不宣告真停；
+  (3) Q5／Q14 — brake hold 先清後設、排除油門，stall 遇踏板清 latch 與歷史並立即返回。之後 Q8、Q9。
+- 第二步前先做小整理（仍等價）：保存 base_phase、獨立 release context、停止證據來源、集中 entry/exit、記錄裁決原因。
+
 ### D. 基礎設施
 - [x] D1 Mac 原生自動建庫＋每日摘要（11/02）：`~/ars510_rlogs/venv`（python3.11，pycapnp 等 wheel）、程式碼 sparse clone `~/ars510_rlogs/op`
   （每次先 `git pull --ff-only`）、`post_pull.sh` 由 `ts_pull.sh` 結尾呼叫 → `db/build_db.py`（增量，`ARS510_OP_ROOT`）→ `db/daily_summary.py`
