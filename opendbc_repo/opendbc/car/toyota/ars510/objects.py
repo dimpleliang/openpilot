@@ -58,6 +58,16 @@ MOVEMENT_CODE = NativeField("movement_code", 109, 3, 0.0, 1.0, "code", "likely")
 # Bit 13 is a separate raw flag (docs/03).
 RAW8_LOW5 = NativeField("raw8_low5", 8, 5, 0.0, 1.0, "code", "confirmed")
 RAW13_BIT = NativeField("raw13_bit", 13, 1, 0.0, 1.0, "bit", "raw")
+# dimpleliang/ars510, 11/02 offline analysis of 109 km / 806k slot records (tools/ars510/mac, analysis/bits):
+# 0|2 slot status: 0 empty / deletion record, 1 measured this cycle, 2 unconfirmed (extrapolated). Status 2 never reaches
+# existence >= 99 %, carries 2-3x the uncertainty and vanishes the next cycle 12.7 % of the time (status 1: 1.1 %).
+SLOT_STATUS = NativeField("slot_status", 0, 2, 0.0, 1.0, "state", "confirmed_structure")
+# 131|4 lane-assignment confidence: 15 - min(w_ego, 15 - w_ego) of the ego-lane weight 156|4 (within 1 on 99.6 %).
+LANE_CONFIDENCE = NativeField("lane_confidence", 131, 4, 0.0, 1.0, "code", "likely")
+# 136|4 radar / camera fusion weight in 1/15: 15 with no camera association, 14 for camera_assoc 1, 5-9 for 2-3.
+CAMERA_WEIGHT = NativeField("camera_weight", 136, 4, 0.0, 1.0, "code", "likely")
+# 140|3 size-ordered class code, one-to-one with object_class 163|3 (1->0, 4->1, 5->3, 6->4, 2->5, 3->7) on 784k rows.
+CLASS_SIZE_CODE = NativeField("class_size_code", 140, 3, 0.0, 1.0, "code", "confirmed_structure")
 # Lane state 128|3: 3 ego lane, 2 right lane, 4 left lane; 1 / 5 / 7 = all-zero lane weights (docs/03).
 RAW_WEIGHT_STATE128 = NativeField("raw_weight_state128", 128, 3, 0.0, 1.0, "code", "confirmed_structure")
 # Lane weights in 1/15 steps: 148|4 right lane, 152|4 left lane, 156|4 ego lane; nonzero triplets sum to 15 or 16
@@ -156,7 +166,8 @@ class NativeObject:
     y_rel: float  # m, left positive
     v_long_ground: float  # m/s over ground (minus ego speed = vRel)
     v_lat_ground: float  # m/s, provisional
-    accel_like_code: int  # centred code, unscaled
+    accel_like_code: int  # centred code, unscaled; over-ground longitudinal acceleration, about 0.125 m/s^2 per count
+    #                       (11/02: against the ACC target's relative acceleration plus a_ego, slope 7.9 counts per m/s^2, r 0.49)
     move_state: int  # legacy low two bits; see movement_code for distinct full states
     oncoming_flag: bool  # raw oncoming-like state; can reset within the allocation
     vel_unc_code: int  # velocity-uncertainty code (240|7), about 0.043-0.045 m/s per count against the ACC target
@@ -185,6 +196,10 @@ class NativeObject:
     orientation_unc_code: int | None = None  # 200|7, 63 for stopped objects, 127 sentinel
     secondary_score_pct: int | None = None  # 184|8, track-confidence percent: 0 on the age-0 deletion record, 100 on 98 % of rows
     lane_crossing_code: int | None = None  # 120|3: 0 none, 2 / 5 cut-in from the left / right, 3 / 4 cut-out to the left / right
+    slot_status: int | None = None  # 0|2: 1 measured this cycle, 2 extrapolated (see SLOT_STATUS)
+    lane_confidence: int | None = None  # 131|4 lane-assignment confidence 0-15
+    camera_weight: int | None = None  # 136|4 radar / camera fusion weight in 1/15 (15 = radar only)
+    class_size_code: int | None = None  # 140|3 size-ordered class code (see CLASS_SIZE_CODE)
 
 
 def is_init_template(age: int, slot: bytes) -> bool:
@@ -233,6 +248,10 @@ def decode_native_slot(slot_index: int, slot: bytes) -> NativeObject:
         orientation_unc_code=int(field_code(slot, UNC_ORIENT_200)),
         secondary_score_pct=int(field_code(slot, SECONDARY_SCORE_184)),
         lane_crossing_code=int(field_code(slot, LANE_CROSSING_120)),
+        slot_status=int(field_code(slot, SLOT_STATUS)),
+        lane_confidence=int(field_code(slot, LANE_CONFIDENCE)),
+        camera_weight=int(field_code(slot, CAMERA_WEIGHT)),
+        class_size_code=int(field_code(slot, CLASS_SIZE_CODE)),
     )
 
 

@@ -659,3 +659,37 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
   不確定度 < 20 仍有 180 次（75／100 km，中位 42 m），這些才值得查是不是我們的 ID 指派把兩個物件接在一起。
 - 11/01 危險物收油：TTC < 2 s 時跳過 0.5 s 持續條件（`HAZARD_FAST_TTC_S`），距離一致性維持。
 - 11/01 採用雷達自報的距離不確定度：危險物候選要求 range_unc < 20（約 4.5 m）、切入候選（規劃器用的 CUTIN_TRACK_ID）< 30；far_rows 多帶 range_unc、vel_unc。
+
+## 離線雷達全量分析（11/02，Mac，109 km／333 段）
+
+資料：Tailscale 同步到 Mac 的 rlog 全部解成 parquet（`~/ars510_rlogs/db/`，`build_db.py` 可增量，331 MB），
+三份報告在 `~/ars510_rlogs/analysis/{calib,bits,timing}/report.md`。
+
+- **速度／距離不一致（駕駛要求特別記錄的「bug」）→ 不是解碼問題。** 物件層每 100 km 約 5,600 件（中位 0.42 s），radard 選出的前車只
+  2.8 件／100 km 且都 < 0.6 s。主因：range_unc ≥ 20 的遠距物件 32%、雷達重新定位／slot 換物件 22%、外推 13%、其餘是 25–60 m 無鏡頭關聯
+  的距離遊走。殘差分佈平滑、無 2 的冪邊界或符號翻轉；ACC_TARGET 與物件表沒有一幀時差（等效 +0.014 s）。雷達內部時鐘每筆 60.28 ms
+  極穩，logger 看到 > 80 ms 的缺口全是 USB 批次抖動；真正漏 record 20 處／86 筆（開機期為主）。
+- **校準**：偏航對位 ≤ 0.2°（前車法與靜止物法符號相反、量級都在量測極限內）→ 不補償；橫向偏置 +0.13 m（雷達偏左）。距離 20 m 內 +0.6 m
+  （停車時 +0.8，反射中心較深）；> 60 m 不可靠（IQR 8 m、27% 讀短 > 3 m、漏偵 39%）。**停車時近距漏偵**：前車 5–6 m 時物件表 48% 沒有它，
+  近距必須保留 ACC target 來源。偵測延遲：鏡頭先看到時雷達新軌跡中位 0.83 s（p90 2.3 s）；雷達先 40%。
+- **鬼影**：existence／class_confidence 幾乎沒鑑別力（AUC 0.55）；有效的是 object_class ∈ {2,3}（真車 90%／鬼影 36%）與 camera_assoc > 0
+  （78%／25%）。鬼影集中在行人／二輪／未分類、低 height_code、彎道 > 15°（22%）。
+- **未解析位元**（`analysis/bits`）：表頭 bytes 1–4 是 32-bit 時間戳（100 µs；byte4 是它的 bit 24，不是旗標）、bytes 5–6 15-bit 計數器、
+  byte8 高 nibble 滾動計數；slot 0|2 狀態（1 實測／2 外推：existence 從不 ≥ 99%、不確定度 2–3×、下週期消失 12.7% vs 1.1%）、140|3 尺寸排序
+  類別碼（與 163|3 一對一）、131|4 車道歸屬信心、136|4 雷達／鏡頭融合權重、96|10 第二組橫向速度（車道對齊座標）、182|1 橫越 VRU 旗標；
+  accel_like_code 是對地縱向加速度約 0.125 m/s²/碼；0x202／0x23B 校驗碼 = CRC-8 J1850（0x1D，init/xorout FF）。未解：表頭 byte13
+  （與物件數、車速相關）、slot 168–177、0x196 事件 bytes。herizon1054 fork 無 ARS510 專用解析。
+- **改動**（同日）：`objects.py` 新增 slot_status／lane_confidence／camera_weight／class_size_code；`interface.py` 發布加鬼影門
+  （25 m 外、類別 1／4、無鏡頭關聯不發布；`ghost_gate_min_d_m`，二輪仍走 VRU 通道），far_rows 多帶 camera_assoc，mismatch logger 改
+  range_unc < 12 且 |y| < 2.5；`HAZARD_MAX_RANGE_UNC` 20 → 12、`CUTIN_MAX_RANGE_UNC` 30 → 20（有鏡頭關聯可放行）。slot_status 不當門檻
+  （radard 層擋不到東西）。待辦：彎道 > 15° 時路徑門改用模型車道中心；慢速 ACC-target 路徑門 15 → 8 m。
+
+## 11/02 行車回饋
+
+- **11:06 煞車不舒服、多次抖動**（route 38 seg 6–8）：塞車跟停時前車 3.6–4.3 m，駕駛踩油門蠕行 → 放開 → openpilot 立即以 −0.7～−0.9 煞
+  （e2e 要求），再踩再煞，4 次循環；11:07:55 在前車 4.3 m、9.6 km/h 接管，前車逼近 −1.1 m/s，直接 −2.0（實測 −2.26）煞停。原因是
+  openpilot 的最小跟車距離（約 4.5–6 m）大於駕駛蠕行時的 3–4 m，每次接管都先補煞車。不是控制振盪。
+- **11:17:22「TAKE CONTROL IMMEDIATELY / locationd Temporary Error」**（有聲）：一筆 cameraOdometry 無效（模型掉一幀，間隔 117 ms）→
+  locationd `inputsOK` 只有一幀（50 ms）為 False → 原廠程式立刻發大警報。locationd 本身容忍這種輸入（INPUT_INVALID_LIMIT），
+  `selfdrived` 改為持續 0.5 s 才報（`LOCATIOND_ERROR_DEBOUNCE_S`）。
+- **時速 0 不做匯入標示**（駕駛要求）：`CUTIN_MIN_V_EGO = 1.0 m/s`。

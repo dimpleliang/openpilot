@@ -112,6 +112,9 @@ class NativeInterfaceConfig:
     # stationary track's speed is near zero and robust, and radard only uses it once the camera's lead agrees (speed check),
     # so this gives the planner radar range on a stopped car from ~100 m instead of 60 m. 0 = off (fused: 3.0)
     far_slow_keep_mps: float = 0.0
+    # dimpleliang/ars510: beyond this range, unclassified / pedestrian objects (GHOST_CLASSES) without a camera association are
+    # not published (ghost filter, 11/02). 0 = off (fused: 25)
+    ghost_gate_min_d_m: float = 0.0
     # Stationary tracks (|over-ground speed| < path_gate_stationary_mps) within path_gate_min_range_m are path-gated to
     # path_gate_stationary_m of the path curved with max(v_ego, 2 m/s): parked cars and roadside objects close in stay out
     # of the lane, where radard's low-speed rule would otherwise stop for them as the path curves away. 0 = off (fused: 0.5 m/s, 1.5 m)
@@ -168,9 +171,11 @@ FUSED_CONFIG = replace(BASE_CONFIG, range_fusion_gain=0.1, relink_max_gap_s=0.0,
                        # dimpleliang/ars510: drop oncoming tracks (radar-marked and over-ground speed below -2 m/s) from radard.
                        oncoming_min_mps=2.0,
                        # dimpleliang/ars510: stopped cars in the path keep publishing beyond 60 m (see far_slow_keep_mps).
-                       far_slow_keep_mps=3.0)
+                       far_slow_keep_mps=3.0,
+                       ghost_gate_min_d_m=25.0)
 
 
+GHOST_CLASSES = (1, 4)  # 163|3 unclassified, pedestrian (cars 2/3 and two-wheelers 5/6 pass; 5/6 feed the VRU channel)
 NATIVE_VREL_STATUS = "native_over_ground_minus_ego"
 UNRESOLVED_NAN = "unresolved_nan"
 
@@ -220,6 +225,7 @@ class Ars510NativeRadarInterface:
         self._acc_pos: tuple[float, float, float] | None = None  # (time, x, y)
         self._acc_assoc: tuple[int, float, float] | None = None  # (tid, last x, last y)
         self.path_gated = 0
+        self.ghost_gated = 0  # dimpleliang/ars510: objects withheld by the ghost gate (class / camera association)
         self.oncoming_suppressed = 0
         # ARS510 display: every object of the last record from DISPLAY_MIN_AGE on, before the path gates:
         # [dRel, yRel, vRel, published, settling (younger than min_publish_age), radar object class 163|3]
@@ -391,7 +397,9 @@ class Ars510NativeRadarInterface:
     MISMATCH_S = 1.5
     MISMATCH_N = 10
     MISMATCH_MPS = 5.0
-    MISMATCH_MAX_RANGE_UNC = 20   # only tracks whose own range uncertainty is small (~4.5 m): replay 241 km, every object
+    MISMATCH_MAX_RANGE_UNC = 12   # only tracks whose own range uncertainty is small (~2.8 m; 11/02: 20 still let through objects
+    #                               whose range just wanders at 25-60 m): replay 241 km, every object
+    MISMATCH_MAX_Y_M = 2.5        # 11/02: 63 % of the remaining mismatches were a lane over with no camera match; log the in-path ones
                                   # 80 m+ mismatches (range_unc ~ 8-11 m, the radar says so itself); with this gate ~75 / 100 km
 
     def _mismatch_log(self, tid: int, time_s: float, obj: NativeObject, v_ego: float, v_fused: float, d_fused: float) -> None:
@@ -403,7 +411,7 @@ class Ars510NativeRadarInterface:
                 h.pop(0)
             if tid in self._mm_logged or obj.age < 8 or len(h) < 15 or h[-1][0] - h[0][0] < self.MISMATCH_S - 0.2:
                 return
-            if obj.range_unc_code is None or obj.range_unc_code >= self.MISMATCH_MAX_RANGE_UNC:
+            if obj.range_unc_code is None or obj.range_unc_code >= self.MISMATCH_MAX_RANGE_UNC or abs(obj.y_rel) > self.MISMATCH_MAX_Y_M:
                 return
             step = max(abs(b[1] - a[1]) for a, b in zip(h, h[1:]))   # largest one-record range jump (slot / id relink?)
             tm = sum(x[0] for x in h) / len(h); dm = sum(x[1] for x in h) / len(h)
@@ -498,7 +506,8 @@ class Ars510NativeRadarInterface:
         points = []
         display: list[list] = []
         far_rows: list[tuple] = []  # every geometry-valid object: (dRel, yRel, vRel, age, existence %, class, tid, ego-frame lateral speed,
-        #                             v over ground, range uncertainty code, speed uncertainty code), for the far-object / hazard coasts
+        #                             v over ground, range uncertainty code, speed uncertainty code, camera association), for the
+        #                             far-object / cut-in / hazard coasts
         for slot, obj, tid in decoded:
             if not obj.geometry_valid or not obj.lateral_valid:
                 continue
@@ -523,7 +532,8 @@ class Ars510NativeRadarInterface:
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
             far_rows.append((float(d_rel), float(obj.y_rel), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0),
                              int(tid), self._yv_rel(obj, time_s), float(v_ground) if cfg.fused_speed_filter and v_ego is not None else float(obj.v_long_ground),
-                             int(obj.range_unc_code if obj.range_unc_code is not None else 127), int(obj.vel_unc_code)))
+                             int(obj.range_unc_code if obj.range_unc_code is not None else 127), int(obj.vel_unc_code),
+                             int(obj.camera_assoc or 0)))
             shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
                 shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0, int(tid) & 0xFFFF,
@@ -531,6 +541,15 @@ class Ars510NativeRadarInterface:
                 display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
+                continue
+            if (cfg.ghost_gate_min_d_m > 0 and tid != acc_tid and d_rel > cfg.ghost_gate_min_d_m
+                    and (obj.object_class or 0) in GHOST_CLASSES and not obj.camera_assoc):
+                # dimpleliang/ars510 11/02 (109 km offline, analysis/calib): existence / class confidence do not separate ghosts from
+                # real cars (AUC 0.55); object class and camera association do (real cars: class 2/3 90 %, camera 78 %; ghosts: 36 % /
+                # 25 %). Ghosts concentrate in unclassified / pedestrian objects without a camera match, low height codes and
+                # curves. Beyond ghost_gate_min_d_m such objects are withheld from radard; two-wheelers keep their own VRU channel,
+                # and close in the low-speed rule still sees everything.
+                self.ghost_gated += 1
                 continue
             if (cfg.oncoming_min_mps > 0 and tid != acc_tid and (obj.oncoming_flag or obj.movement_code == 2)
                     and v_ground < -cfg.oncoming_min_mps):

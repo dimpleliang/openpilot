@@ -45,6 +45,8 @@ CUTIN_D = (25.0, 90.0)
 CUTIN_VREL = -1.5
 CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
 CUTIN_MIN_V_GROUND = 2.0  # m/s over the ground, forward: excludes oncoming cars
+CUTIN_MIN_V_EGO = 1.0     # m/s: no cut-in marks while I am (nearly) stopped (11/02 driver: cars moving across a stopped
+                          # car are not merges; at a light / in a jam every lateral mover got an amber circle)
 # Wide merge (10/31 11:39, on-ramp car): a clearly slower car 2.6-5 m out, drifting in fast, is marked too. That car spent
 # 10 s at 3.5-4.5 m closing at 15-20 km/h and was marked for only 0.8 s, one second before it was in my lane.
 CUTIN_WIDE_OFF_MAX = 5.0
@@ -255,7 +257,7 @@ class Ars510Tracks:
         off_signed = y_right - path_y(d)
         toward = (vlat - vlat_bias) * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
         cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling, v_ego, toward, lc) \
-          if (tid >= 0 and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
+          if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
         if tid >= 0:
           seen.add(tid)
         qual = False

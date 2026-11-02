@@ -143,8 +143,11 @@ HAZARD_MIN_V = 60.0 / 3.6
 # the radar's own range uncertainty (range_unc_code, ~0.23 m per count): objects it is unsure about are not candidates.
 # 11/01 replay 241 km: every object 80 m+ shows range / speed mismatches with range_unc ~34-47 (8-11 m); the 10/30 20:56:45
 # false hazard had 47. Cut-in candidates (25-90 m) get a looser gate.
-HAZARD_MAX_RANGE_UNC = 20
-CUTIN_MAX_RANGE_UNC = 30
+# 11/02 offline (109 km, tools/ars510/mac analysis/timing): among in-path hazard candidates (10-90 m, closing > 2 m/s) the range
+# / speed inconsistency rate is 22.5 % overall, 10.5 % below range_unc 20, 5.2 % below 12 (keeps 31 % of candidates, none
+# beyond 60 m), 2.3 % below 8 (only < 25 m left). Cut-in candidates: 30 -> 20, or a camera association instead.
+HAZARD_MAX_RANGE_UNC = 12
+CUTIN_MAX_RANGE_UNC = 20
 CUTIN_D_M = (25.0, 90.0)
 CUTIN_MAX_Y_M = 3.5
 CUTIN_MAX_VREL = -2.0
@@ -325,7 +328,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
       rows = getattr(self.ars, "far_rows", None) or []
       cut = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
              and r[5] in FAR_LOG_CLASSES and CUTIN_D_M[0] <= r[0] < CUTIN_D_M[1] and abs(r[1]) < CUTIN_MAX_Y_M and r[2] == r[2]
-             and r[2] < CUTIN_MAX_VREL and (len(r) < 11 or r[9] < CUTIN_MAX_RANGE_UNC)
+             and r[2] < CUTIN_MAX_VREL and (len(r) < 11 or r[9] < CUTIN_MAX_RANGE_UNC or (len(r) > 11 and r[11] > 0))
              and not any(abs(r[0] - d) < 6.0 and abs(r[1] - y) < 1.5 for d, y in self.last_out)]
       self.cutin_points = [{"trackId": 0, "dRel": float(c[0]), "yRel": float(c[1]), "vRel": float(c[2])} for c in sorted(cut)[:1]]
       cands = [r for r in rows if v_ego is not None and v_ego > FAR_LOG_MIN_V and r[3] >= FAR_LOG_MIN_AGE and r[4] >= FAR_LOG_MIN_EXIST
@@ -365,7 +368,7 @@ class Ars510RadarInterface(RadarInterfaceBase):
       for r in rows:
         if len(r) < 11:
           break
-        d, y, vrel, age, exist, cls, tid, yv, vg, runc, vunc = r
+        d, y, vrel, age, exist, cls, tid, yv, vg, runc, vunc = r[:11]
         seen.add(tid)
         h = st.setdefault(tid, {"hist": deque()})
         h["hist"].append((t, d))

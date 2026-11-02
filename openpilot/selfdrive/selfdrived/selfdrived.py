@@ -34,6 +34,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import Butto
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 REPLAY = "REPLAY" in os.environ
+LOCATIOND_ERROR_DEBOUNCE_S = 0.5  # dimpleliang/ars510: see locationd_bad_frames
 SIMULATION = "SIMULATION" in os.environ
 TESTING_CLOSET = "TESTING_CLOSET" in os.environ
 
@@ -137,6 +138,11 @@ class SelfdriveD:
     self.last_functional_fan_frame = 0
     self.events_prev = []
     self.logged_comm_issue = None
+    # dimpleliang/ars510: locationd flags inputsOK=False for a single 50 ms frame whenever one cameraOdometry message is
+    # invalid (a dropped model frame; 11/02 11:17:22, route 38 seg 17), and the stock code turns that into a loud
+    # "TAKE CONTROL IMMEDIATELY / locationd Temporary Error". locationd itself tolerates such inputs (INPUT_INVALID_LIMIT);
+    # the alert is only raised once the condition has lasted LOCATIOND_ERROR_DEBOUNCE_S.
+    self.locationd_bad_frames = 0
     self.not_running_prev = None
     self.personality = get_sanitize_int_param(
       "LongitudinalPersonality",
@@ -455,7 +461,11 @@ class SelfdriveD:
       if self.sm.seen['deviceMotion'] and not self.sm['deviceMotion'].posenetOK:
         self.events.add(EventName.posenetInvalid)
       if self.sm.seen['deviceMotion'] and not self.sm['deviceMotion'].inputsOK:
-        self.events.add(EventName.locationdTemporaryError)
+        self.locationd_bad_frames += 1
+        if self.locationd_bad_frames * DT_CTRL >= LOCATIOND_ERROR_DEBOUNCE_S:
+          self.events.add(EventName.locationdTemporaryError)
+      else:
+        self.locationd_bad_frames = 0
       if (self.sm.seen['vehicleParameters'] and not self.sm['vehicleParameters'].valid and cal_status == log.ExtrinsicsCalibration.Status.calibrated and
           not TESTING_CLOSET and (not SIMULATION or REPLAY)):
         self.events.add(EventName.paramsdTemporaryError)
