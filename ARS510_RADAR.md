@@ -694,6 +694,6 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
   50 ms 為 False → 原廠程式立刻發大警報。**真正原因是記憶體回收風暴**：兩次事件當下 free 從 50–60 MB 跳到 270–340 MB、page cache
   掉 200–280 MB、`kswapd0` 吃 15–22% CPU（平時 0）。今天多了 Tailscale 行車中同步 rlog：rsync 讀 GB 級檔案把 cache 灌滿、
   tailscaled 最高 27% CPU；整趟 kswapd 爆發 23 次／810 個 2 s 視窗，昨天（無同步）只有 1／479，掉幀也只在開機載模型那一次。
-  處置：`ts_pull.sh` 改為車機 offroad 才同步（`ONROAD_OK=1` 可強制）。曾加過 selfdrived 0.5 s 去抖，駕駛要求改回原本（警報照原廠
+  處置：`ts_pull.sh` 行車中改用車機端 `tools/ars510/cat_nocache.py` 串流（每讀 1 MiB 就 `posix_fadvise(DONTNEED)` 丟出 page cache、nice 19、ionice idle、限速 400 KB/s，可續傳），停車後才用 rsync 全速；行車中的效果待下次路測以 kswapd 統計確認。曾加過 selfdrived 0.5 s 去抖，駕駛要求改回原本（警報照原廠
   立即發出，掉幀就該知道）。分析腳本 `~/moddrop.py`（Mac VM）。
 - **時速 0 不做匯入標示**（駕駛要求）：`CUTIN_MIN_V_EGO = 1.0 m/s`。
