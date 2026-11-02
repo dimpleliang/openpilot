@@ -71,3 +71,4 @@ while read -r s r_sz q_sz c_sz; do
   fi
 done <<< "$list"
 echo "done ($mode): $n segments pulled, $freed rlogs freed on the device, local $(du -sh "$DEST" | cut -f1)"
+~/ars510_rlogs/post_pull.sh   # Mac native: git pull decode sources, incremental parquet build, daily summary (db/build.log, summary/summary.log)

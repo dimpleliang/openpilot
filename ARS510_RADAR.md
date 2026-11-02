@@ -746,5 +746,8 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 - [ ] C4 >80 km/h 接近停止車輛的事件（far_slow_keep 從未在高速驗證）。
 
 ### D. 基礎設施
-- [ ] D1 `build_db.py` 掛進 Mac 15 分鐘排程（同步完就增量建庫）；每日自動跑 stop_events／moddrop／mismatch 統計寫成一頁摘要。
+- [x] D1 Mac 原生自動建庫＋每日摘要（11/02）：`~/ars510_rlogs/venv`（python3.11，pycapnp 等 wheel）、程式碼 sparse clone `~/ars510_rlogs/op`
+  （每次先 `git pull --ff-only`）、`post_pull.sh` 由 `ts_pull.sh` 結尾呼叫 → `db/build_db.py`（增量，`ARS510_OP_ROOT`）→ `db/daily_summary.py`
+  → `summary/YYYY-MM-DD.md` 與 `latest.md`（里程、煞停品質、模型掉幀、雷達切換／鬼影門／不一致、同步健康）。index 多 `wall_t_start`、
+  model 多 `frame_id`／`frame_drop_perc`（全量重建 121 s）。備份：`tools/ars510/mac/{post_pull.sh,db/}`。
 - [ ] D2 R2／多人上傳：暫停（11/02 決定），需要時從 Worker 方案重啟。
