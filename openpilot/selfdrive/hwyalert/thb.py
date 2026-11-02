@@ -1,6 +1,8 @@
 """Expressway incidents (公路局 THB, 台61-台88) from TDX, for hwyalertd.
 
-TDX 道路事件 v1 `LiveEvent/Highway` is one nationwide call (every province road and county); only the expressways
+TDX 道路事件 v1 `LiveEvent/Highway` is one nationwide call (every province road and county), made at most once every
+FETCH_S (30 min, owner's limit: TDX bills per call; the last result is kept in EVENTS_CACHE so a restart or the next drive
+does not call again early); only the expressways
 (快速公路, RoadClass 1 in the 公路局 section list) are kept. Section polylines with km posts come from `Section/Highway` +
 `SectionShape/Highway`, cached in SECTIONS_CACHE and refreshed every SECTIONS_MAX_AGE_D days.
 
@@ -21,14 +23,14 @@ CRED_FILE = "/data/tdx_credentials.json"
 OFF_FILE = "/data/hwyalert_thb_off"
 SECTIONS_CACHE = "/data/hwyalert_thb_sections.json.gz"
 SECTIONS_MAX_AGE_D = 7.
+EVENTS_CACHE = "/data/hwyalert_thb_events.json"
 TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 API = "https://tdx.transportdata.tw/api/basic"
 EVENTS_PATH = "/v1/Traffic/RoadEvent/LiveEvent/Highway"
 SECTION_PATH = "/v2/Road/Traffic/Section/Highway"
 SHAPE_PATH = "/v2/Road/Traffic/SectionShape/Highway"
-FETCH_S = 60.
-FETCH_RETRY_S = 60.          # every call counts against the member quota: no fast retries
-FEED_MAX_AGE_S = 300.
+FETCH_S = 1800.              # at most one events call per 30 min, failed ones included (owner's limit, 11/02)
+FEED_MAX_AGE_S = 2400.       # events older than this (two calls missed) are dropped
 EXPRESSWAY_CLASS = 1         # Section.RoadClass: 0 國道, 1 快速道路, 3 省道, ...
 
 OPP = {"N": "S", "S": "N", "E": "W", "W": "E"}
@@ -152,7 +154,7 @@ def lanes_text(s: str) -> str:
 class ThbFeed:
   """Background fetcher; get() / age() like hwyalertd.Feed. on_sections(rows) is called once the sections are loaded."""
   def __init__(self, iso_to_epoch, long_term_h, on_sections, locate):
-    self.events, self.t = [], -1e9
+    self.events, self.t = [], -1e9   # t: wall time (time.time()) of the call that produced the events
     self.inc: dict = {}
     self.lock = threading.Lock()
     self.token, self.token_exp = None, 0.
@@ -201,6 +203,23 @@ class ThbFeed:
       os.replace(tmp, SECTIONS_CACHE)
     return rows, inc
 
+  def _last_call(self):
+    """(wall time of the last events call, its raw response or None) from EVENTS_CACHE."""
+    try:
+      c = json.load(open(EVENTS_CACHE))
+      return float(c["t"]), c.get("data")
+    except Exception:
+      return -1e9, None
+
+  def _save_call(self, t, data):
+    try:
+      tmp = EVENTS_CACHE + ".tmp"
+      with open(tmp, "w") as f:
+        json.dump(dict(t=t, data=data), f, ensure_ascii=False)
+      os.replace(tmp, EVENTS_CACHE)
+    except Exception:
+      pass
+
   def fetch_loop(self, stop):
     from openpilot.common.swaglog import cloudlog
     warned = False
@@ -217,18 +236,32 @@ class ThbFeed:
           self._on_sections(rows)
           self.inc = inc
           cloudlog.info(f"hwyalert thb: {len(rows)} expressway sections, roads {sorted(inc)}")
-        evs = parse_events(self._get(EVENTS_PATH), time.time(), self.inc, self._iso, self._lt, self._locate)
-        with self.lock:
-          self.events, self.t = evs, time.monotonic()
-        stop.wait(FETCH_S)
+        t_last, data = self._last_call()
+        if data is not None and self.t < t_last:   # the previous call (this or an earlier drive) is still recent enough
+          self._publish(data, t_last)
+        wait = t_last + FETCH_S - time.time()
+        if wait > 0:
+          stop.wait(min(wait, FETCH_S))
+          continue
+        t_call = time.time()
+        self._save_call(t_call, None)   # counts as a call even if it fails
+        data = self._get(EVENTS_PATH)
+        self._save_call(t_call, data)
+        self._publish(data, t_call)
+        cloudlog.info(f"hwyalert thb: {len(self.events)} expressway events")
       except Exception as e:
         cloudlog.warning(f"hwyalert thb fetch failed: {e}")
-        stop.wait(FETCH_RETRY_S)
+        stop.wait(60.)   # the next events call still waits for FETCH_S since the last one (EVENTS_CACHE)
+
+  def _publish(self, data, t):
+    evs = parse_events(data, time.time(), self.inc, self._iso, self._lt, self._locate)
+    with self.lock:
+      self.events, self.t = evs, t
 
   def get(self):
     with self.lock:
-      return self.events if time.monotonic() - self.t < FEED_MAX_AGE_S else []
+      return self.events if time.time() - self.t < FEED_MAX_AGE_S else []
 
   def age(self):
     with self.lock:
-      return time.monotonic() - self.t
+      return time.time() - self.t

@@ -416,7 +416,7 @@ class Tracker:
     if t - self.last_say_t >= SAY_GAP_S:
       new = [(d, e) for d, e in found if e["id"] not in self.spoken and e["name"] not in NO_VOICE]
       remind = [(d, e) for d, e in found if e["id"] in self.spoken and e["id"] not in self.reminded and d <= REMIND_KM
-                and self.spoken[e["id"]] >= REMIND_FROM_KM and feed_age < REMIND_FRESH_S]
+                and self.spoken[e["id"]] >= REMIND_FROM_KM and feed_age < REMIND_FRESH_S and e.get("src") != "thb"]
       if new:
         d, e = new[0]
         self.spoken[e["id"]] = d
@@ -473,9 +473,8 @@ def main():
         lm = sm["liveMapDataSP"]
         road_name = str(lm.roadName) if sm.recv_frame["liveMapDataSP"] > 0 else ""
         map_fw = any(w in road_name for w in MAP_FREEWAY_WORDS) or (lm.speedLimitValid and lm.speedLimit >= MAP_FREEWAY_LIMIT)
-        fw_ev, thb_ev = feed.get(), thb_feed.get()
-        age = max([a for a, e in ((feed.age(), fw_ev), (thb_feed.age(), thb_ev)) if e] or [feed.age()])
-        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, fw_ev + thb_ev, age, map_fw)
+        # feed_age only gates the 1 km reminder, which expressway events (30-min-old data) never get
+        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get() + thb_feed.get(), feed.age(), map_fw)
         if road_name != last_road_name:
           cloudlog.info(f"hwyalert map road: {road_name!r} limit={lm.speedLimit * 3.6:.0f} freeway={map_fw} matched={state['road']!r}")
           last_road_name = road_name

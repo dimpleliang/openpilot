@@ -603,7 +603,8 @@ panda `toyota.h` 的 0x750 門鎖白名單保留（改它需重建韌體，且�
 
 ### 快速公路（公路局 台61～台88，11/02）
 
-- 資料：TDX 道路事件 `GET /v1/Traffic/RoadEvent/LiveEvent/Highway`（全台省道一次呼叫，每 60 秒；失敗 60 秒後才重試，TDX 依次數計），
+- 資料：TDX 道路事件 `GET /v1/Traffic/RoadEvent/LiveEvent/Highway`（全台省道一次呼叫；TDX 依次數計，駕駛要求**最多每 30 分鐘一次**，失敗也算一次。上次結果存 `/data/hwyalert_thb_events.json`，
+  重開機或下一趟出門不會提早再抓，資料超過 40 分鐘不用；快速公路事件因此不做 1 km 再提醒（資料可能已 30 分鐘舊）），
   只留快速公路（公路局 `Section/Highway` 的 RoadClass 1）。程式 `selfdrive/hwyalert/thb.py`，事件併入 `hwyalertd` 同一套比對、畫面、語音。
   11/02 21:18 實測：省道事件 84 筆，快速公路上 台61／64／66／72／74／76；路段 6836 段，快速公路 1147 段（台61 913 段）。
 - 金鑰：TDX 需會員金鑰，車機直接呼叫回 401「Valid API Key Required」；匿名在瀏覽器測幾次就回 429。駕駛自行申請後寫 `/data/tdx_credentials.json`
