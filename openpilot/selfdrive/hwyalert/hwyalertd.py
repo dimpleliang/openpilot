@@ -6,7 +6,9 @@ freeway section from GPS position + heading (direction-specific section polyline
 from MOTC Section.xml + SectionShape.xml), and keep the events on the same road and direction within ALERT_KM ahead.
 The result goes to STATE_FILE (json, tmpfs) for the UI banner, and every change is logged with cloudlog.
 
-Off switch: touch /data/hwyalert_off.   Offline check: tools/ars510/hwyalert_replay.py.
+Expressways (公路局 台61-台88) come from TDX in thb.py, when the owner has put a TDX key in thb.CRED_FILE.
+
+Off switch: touch /data/hwyalert_off (/data/hwyalert_thb_off: expressways only).   Offline check: tools/ars510/hwyalert_replay.py.
 """
 import calendar
 import gzip
@@ -19,6 +21,8 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+
+from openpilot.selfdrive.hwyalert import thb
 
 URL = "https://tisvcloud.freeway.gov.tw/history/motc20/LiveEvents.xml"
 STATE_FILE = "/dev/shm/hwyalert.json"
@@ -49,7 +53,7 @@ CONFIRM_V = 60 / 3.6       # m/s: alerts start only once the car has driven this
                            # road right under an elevated freeway matches by position and heading; it rarely reaches 60 km/h)
 # ... or sunnypilot's map data (OSM, liveMapDataSP) says the current road is a freeway: name contains one of
 # MAP_FREEWAY_WORDS, or the mapped speed limit is >= MAP_FREEWAY_LIMIT. Jammed from the on-ramp on, this is what confirms.
-MAP_FREEWAY_WORDS = ("高速公路", "國道", "高架道路", "聯絡道", "聯絡線", "支線", "環線")
+MAP_FREEWAY_WORDS = ("高速公路", "國道", "高架道路", "聯絡道", "聯絡線", "支線", "環線", "快速")
 MAP_FREEWAY_LIMIT = 80 / 3.6
 MATCH_FRAMES = 3           # consecutive matches before the car counts as on the freeway
 LONG_TERM_H = 24.          # 施工維護 older than this is long-term construction: not shown
@@ -77,7 +81,8 @@ SAY_OFF_FILE = "/data/hwyalert_voice_off"
 
 # every character an alert text can contain (the UI loads only these glyphs)
 DISPLAY_CHARS = ("前方約附近本路段 km（）[]、.–K0123456789第車道內外路肩全線匝封閉平面高架其他火災國北南東西向無事件甲台｜　" +
-                 "".join(TARGET) + "".join(SHORT.values()) + "".join(VOICE))
+                 "".join(TARGET) + "".join(SHORT.values()) + "".join(VOICE) + "".join(thb.NAMES))
+NO_VOICE = set(thb.NAMES)   # expressway-only names without a voice clip: banner and status strip only
 DIR_TEXT = {"N": "北向", "S": "南向", "E": "東向", "W": "西向"}
 
 
@@ -152,7 +157,11 @@ class Sections:
   def __init__(self, path=SECTIONS):
     self.segs = []   # (road, dir, km0, km1, x0, y0, x1, y1, hdg, frac0, frac1)
     self.grid = defaultdict(list)
-    for sid, road, d, ks, ke, pts in json.loads(gzip.open(path).read()):
+    self.add_rows(json.loads(gzip.open(path).read()))
+
+  def add_rows(self, rows):
+    """[(section id, road, dir, km start, km end, [(lon, lat), ...])], points in the direction of travel."""
+    for sid, road, d, ks, ke, pts in rows:
       p = [xy(*q) for q in pts]
       ln = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(p, p[1:])]
       tot = sum(ln) or 1.
@@ -168,12 +177,12 @@ class Sections:
           for gy in range(int(min(a[1], b[1]) // 1000) - 1, int(max(a[1], b[1]) // 1000) + 2):
             self.grid[(gx, gy)].append(i)
 
-  def match(self, lon, lat, bearing=None, only=None):
+  def match(self, lon, lat, bearing=None, only=None, max_m=MATCH_M):
     """[(dist m, road, dir, km, km increases along travel)] best per road/dir, nearest first.
     bearing None = no heading check (slow traffic); only = set of (road, dir) to consider."""
     x, y = xy(lon, lat)
     best = {}
-    for i in self.grid.get((int(x // 1000), int(y // 1000)), ()):
+    for i in list(self.grid.get((int(x // 1000), int(y // 1000)), ())):
       road, d, ks, ke, x0, y0, x1, y1, hdg, f0, f1 = self.segs[i]
       if only is not None and (road, d) not in only:
         continue
@@ -182,13 +191,18 @@ class Sections:
       vx, vy = x1 - x0, y1 - y0
       t = max(0., min(1., ((x - x0) * vx + (y - y0) * vy) / (vx * vx + vy * vy)))
       dist = math.hypot(x - x0 - t * vx, y - y0 - t * vy)
-      if dist > MATCH_M:
+      if dist > max_m:
         continue
       km = ks + (ke - ks) * (f0 + t * (f1 - f0))
       k = (road, d)
       if k not in best or dist < best[k][0]:
         best[k] = (dist, road, d, km, ke >= ks)
     return sorted(best.values())
+
+  def locate_km(self, road, d, lon, lat, max_m=300.):
+    """km post of a reported event position on road / dir (the grid reaches 1 km around a cell), or None."""
+    m = self.match(lon, lat, None, only={(road, d)}, max_m=max_m)
+    return m[0][3] if m else None
 
 
 def parse_feed(xml_bytes: bytes, now_s: float):
@@ -400,7 +414,7 @@ class Tracker:
                  alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found])
     say = None
     if t - self.last_say_t >= SAY_GAP_S:
-      new = [(d, e) for d, e in found if e["id"] not in self.spoken]
+      new = [(d, e) for d, e in found if e["id"] not in self.spoken and e["name"] not in NO_VOICE]
       remind = [(d, e) for d, e in found if e["id"] in self.spoken and e["id"] not in self.reminded and d <= REMIND_KM
                 and self.spoken[e["id"]] >= REMIND_FROM_KM and feed_age < REMIND_FRESH_S]
       if new:
@@ -430,6 +444,8 @@ def main():
   last_mapd_pos_t = 0.
   stop = threading.Event()
   threading.Thread(target=feed.fetch_loop, args=(stop,), daemon=True).start()
+  thb_feed = thb.ThbFeed(_iso_to_epoch, LONG_TERM_H, tracker.S.add_rows, tracker.S.locate_km)
+  threading.Thread(target=thb_feed.fetch_loop, args=(stop,), daemon=True).start()
   sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState", "liveMapDataSP"],
                            ignore_alive=["liveMapDataSP"], ignore_avg_freq=["liveMapDataSP"], ignore_valid=["liveMapDataSP"])
   rk = Ratekeeper(1.0, print_delay_threshold=None)
@@ -457,7 +473,9 @@ def main():
         lm = sm["liveMapDataSP"]
         road_name = str(lm.roadName) if sm.recv_frame["liveMapDataSP"] > 0 else ""
         map_fw = any(w in road_name for w in MAP_FREEWAY_WORDS) or (lm.speedLimitValid and lm.speedLimit >= MAP_FREEWAY_LIMIT)
-        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get(), feed.age(), map_fw)
+        fw_ev, thb_ev = feed.get(), thb_feed.get()
+        age = max([a for a, e in ((feed.age(), fw_ev), (thb_feed.age(), thb_ev)) if e] or [feed.age()])
+        state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, fw_ev + thb_ev, age, map_fw)
         if road_name != last_road_name:
           cloudlog.info(f"hwyalert map road: {road_name!r} limit={lm.speedLimit * 3.6:.0f} freeway={map_fw} matched={state['road']!r}")
           last_road_name = road_name

@@ -601,6 +601,23 @@ panda `toyota.h` 的 0x750 門鎖白名單保留（改它需重建韌體，且�
 - 關閉：`/data/hwyalert_off`（全部）、`/data/hwyalert_voice_off`（只關語音）。
 - 驗證：`tools/ars510/hwyalert_replay.py <route>` 用行程 GPS＋高公局歷史檔重播（與車上共用 `Tracker`）。10/31 13:18 國1北上：圓山 24.1K 故障車在 1.7 km 前出現並倒數。
 
+### 快速公路（公路局 台61～台88，11/02）
+
+- 資料：TDX 道路事件 `GET /v1/Traffic/RoadEvent/LiveEvent/Highway`（全台省道一次呼叫，每 60 秒；失敗 60 秒後才重試，TDX 依次數計），
+  只留快速公路（公路局 `Section/Highway` 的 RoadClass 1）。程式 `selfdrive/hwyalert/thb.py`，事件併入 `hwyalertd` 同一套比對、畫面、語音。
+  11/02 21:18 實測：省道事件 84 筆，快速公路上 台61／64／66／72／74／76；路段 6836 段，快速公路 1147 段（台61 913 段）。
+- 金鑰：TDX 需會員金鑰，車機直接呼叫回 401「Valid API Key Required」；匿名在瀏覽器測幾次就回 429。駕駛自行申請後寫 `/data/tdx_credentials.json`
+  （`client_id`、`client_secret`），不經過 Claude。沒有檔案時這部分不跑，國道照舊。
+- 路段：`Section/Highway`＋`SectionShape/Highway`（WKT）建成與國道相同格式的分方向線型，快取 `/data/hwyalert_thb_sections.json.gz`，7 天更新
+  （約每週 2 次呼叫）。公路局路段的 RoadDirection 是各段的局部方位（N、NE、SW…，同一條路會變），所以每條路以「里程遞增那側多數的方位字母」
+  定方向（台61 里程往南增加 → 南向），事件的「北向／南向／東向／西向」照此對應，「雙向」拆成兩筆。
+- 事件類別（EventType 1 事故、2 施工、3 壅塞、4 管制、5 天候、6 災變、8 其他）對應到國道既有名稱：標題／說明含火、散落、拋錨、故障、動物、行人、
+  機車、逆向、坑洞、路樹、落石／坍、積水、霧者照關鍵字；1→事故、2→施工維護（>24 h 除外）、3→壅塞、4 只有完全阻斷（Severity 2 或 111111）才算道路封閉；
+  其他「交通障礙」。壅塞、交通障礙只顯示、不播語音（沒有語音檔）。匝道事件（LocationType 1、2）不取。
+- 里程為 0K+000 而有座標的事件（實測壅塞常見）以座標投影到該路該方向的線型求里程（300 m 內）。
+- 待驗證：公路局的 BlockedLanes 編號是否與高公局相同（0 = 最內側）；地圖路名判斷國道另加「快速」。
+- 關閉：`/data/hwyalert_thb_off`。重播工具不含快速公路（TDX 沒有歷史檔）。
+
 ## 切入標示加車道線條件（11/01，參考 herizon1054/openpilot radard_ext）
 
 herizon1054/openpilot（dragonpilot，TSS2 原廠雷達）的 radard_ext v9.6.6 起，切入預測要雷達點壓到模型車道線才採用為前車。
@@ -748,6 +765,7 @@ openpilot 自己轉時：EPS 最高 2263，2000–2300 共 2.5 s（約 70 km/h�
 - [ ] A4 底部狀態列：國道上常駐、15 km 內事件顯示、3 km 內紅／橘橫幅；非國道不顯示。
 - [ ] A5 匯入標示只在接管時顯示；時速 0 不標。
 - [ ] A6 OSM 路名確認（cloudlog「hwyalert map road」）在塞車上國道時能啟動提示。
+- [ ] A9 快速公路事件（放好 TDX 金鑰後）：cloudlog「hwyalert thb」路段數；台61／64 上底部狀態列是否顯示位置與里程、事件距離是否合理、車道編號是否正確。
 - [ ] A8 側向 3.4（40–70 km/h，只看車速）：匝道 60–70 km/h 是否不再往外飄、EPS 是否 ≥ 2400、有無鬆緊循環；方向盤落後命令是否 >3°（是則再放寬 54–72 km/h 轉角速度，需重建 panda 韌體；本次先不動，避免兩項同時改分不出原因）；關閉檔 `/data/ars510_no_ramp_lat_accel` 可對照。
 - [ ] A7 延遲補償（只影響切入／危險物／VRU 通道與畫面，不影響 acc_summaries 的跟車）：切入標示是否提早約 0.2 s、危險物觸發距離、無異常跳動；關閉檔 `/data/ars510_no_latency_comp`（需重啟）可對照。
 
