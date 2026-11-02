@@ -53,7 +53,7 @@
 
 | 檔案 | 作用 |
 |---|---|
-| `/data/ars510_no_ramp_lat_accel` | 匝道側向加速度上限維持 3.0（不放寬到 3.4） |
+| `/data/ars510_no_ramp_lat_accel` | 40–70 km/h 側向加速度上限維持 3.0（不放寬到 3.4） |
 | `/data/ars510_no_latency_comp` | 關閉雷達物件 0.2 s 延遲補償 |
 | `/data/ars510_no_cutin_marks` | 關閉畫面上的匯入／切入標示（預設只在接管時顯示） |
 | `/data/hwyalert_off` | 關閉國道事件提醒 |

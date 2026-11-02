@@ -11,21 +11,19 @@ MIN_STABLE_DELAY = 0.3
 # EU guidelines
 MAX_LATERAL_JERK = 5.0  # m/s^3
 MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
-# dimpleliang/ars510 11/02: freeway ramps only (map road name, see controlsd), 40-70 km/h. Route 37 ramps: where the driver had
-# to help, the model asked 3.2-3.4 and the driver used 3.5-3.6 m/s^2 against the 3.0 cap ("drifts wide at 60-70, makes it
-# when slower"). 3.4 covers every model request seen there; EPS torque at 2.7-3.0 was already 1990-2260 (our own LTA
-# wind-down threshold is 2500 below 70 km/h), so 3.5 was not taken. Off with RAMP_LAT_ACCEL_OFF_FILE.
+# dimpleliang/ars510 11/02: 40-70 km/h on any road (speed only; the map road name is not used). Route 37 ramps: where the
+# driver had to help, the model asked 3.2-3.4 and the driver used 3.5-3.6 m/s^2 against the 3.0 cap ("drifts wide at 60-70,
+# makes it when slower"). 3.4 covers every model request seen there; EPS torque at 2.7-3.0 was already 1990-2260 (our own LTA
+# wind-down threshold is 2500 below 70 km/h), so 3.5 was not taken. The cap only bites when the model asks for more than
+# 3.0, so ordinary bends are unchanged. Off with RAMP_LAT_ACCEL_OFF_FILE.
 RAMP_MAX_LATERAL_ACCEL_NO_ROLL = 3.4  # m/s^2
 RAMP_LAT_ACCEL_V = (40 / 3.6, 70 / 3.6)  # m/s, full value inside, back to 3.0 over 5 km/h on either side
 RAMP_LAT_ACCEL_FADE = 5 / 3.6
-RAMP_ROAD_WORDS = ("交流道", "匝道", "系統", "聯絡道")
 RAMP_LAT_ACCEL_OFF_FILE = "/data/ars510_no_ramp_lat_accel"
 
 
-def ramp_lat_accel(v_ego: float, road_name: str) -> float:
-  """The lateral acceleration cap (no roll) for this road and speed."""
-  if not road_name or not any(w in road_name for w in RAMP_ROAD_WORDS):
-    return MAX_LATERAL_ACCEL_NO_ROLL
+def ramp_lat_accel(v_ego: float) -> float:
+  """The lateral acceleration cap (no roll) for this speed."""
   lo, hi = RAMP_LAT_ACCEL_V
   w = float(np.interp(v_ego, [lo - RAMP_LAT_ACCEL_FADE, lo, hi, hi + RAMP_LAT_ACCEL_FADE], [0., 1., 1., 0.]))
   return MAX_LATERAL_ACCEL_NO_ROLL + w * (RAMP_MAX_LATERAL_ACCEL_NO_ROLL - MAX_LATERAL_ACCEL_NO_ROLL)

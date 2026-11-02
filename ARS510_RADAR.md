@@ -724,12 +724,13 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 修法：`hwyalertd` 每秒把 gpsLocation 寫進 `LastGPSPosition`（即使 `/data/hwyalert_off` 關閉提醒也照寫），`MAPD_AVAILABLE = True`。
 注意：台灣 OSM 很多路段沒有 maxspeed 標籤，那些路段仍會顯示「---」；國道、快速道路大多有。
 
-## 國道匝道側向加速度上限 3.0 → 3.4（11/02）
+## 40–70 km/h 側向加速度上限 3.0 → 3.4（11/02，針對國道匝道）
 
 駕駛回饋：匝道 60–70 km/h 進彎轉不夠、往外飄，放慢就過得去。route 37 匝道段（地圖路名含交流道）：openpilot 自己轉時模型要求的側向加速度
 最大剛好 3.00（`drive_helpers.MAX_LATERAL_ACCEL_NO_ROLL`）；駕駛出手幫轉的時刻（約 15 %），模型要 3.2–3.4、駕駛實際用到 3.5–3.6。
-上限 3.0 時模型要求只有 79 % 在上限內，3.5 時 100 %。改法：`drive_helpers.ramp_lat_accel`——路名含「交流道／匝道／系統／聯絡道」且
-40–70 km/h 時上限 3.4（兩端各 5 km/h 漸變），其他維持 3.0；路名取自 `liveMapDataSP`（mapd 位置 11/02 才修好，讀不到就維持 3.0）。
+上限 3.0 時模型要求只有 79 % 在上限內，3.5 時 100 %。改法：`drive_helpers.ramp_lat_accel`——**只看車速**，任何路段 40–70 km/h
+上限 3.4（兩端各 5 km/h 漸變），其他車速維持 3.0；不用地圖路名（駕駛要求）。上限只在模型要求超過 3.0 時才起作用，一般彎道不變；
+市區 40–70 km/h 的急彎也會套用。
 關閉：`/data/ars510_no_ramp_lat_accel`。
 EPS 扭力：**2500 是我們自己 carcontroller 的 LTA 收力門檻**（`LTA_MAX_MEAS_TORQUE`，70 km/h 以下；原廠 1500，10/21 放寬到 2000，
 10/23 再到 2500），不是 Toyota EPS 的上限；EPS 在 LTA 模式下自身上限仍無數據。全部 437 段 rlog（Mac `analysis/eps/eps_scan.py`）
@@ -747,7 +748,7 @@ openpilot 自己轉時：EPS 最高 2263，2000–2300 共 2.5 s（約 70 km/h�
 - [ ] A4 底部狀態列：國道上常駐、15 km 內事件顯示、3 km 內紅／橘橫幅；非國道不顯示。
 - [ ] A5 匯入標示只在接管時顯示；時速 0 不標。
 - [ ] A6 OSM 路名確認（cloudlog「hwyalert map road」）在塞車上國道時能啟動提示。
-- [ ] A8 匝道側向 3.4：匝道 60–70 km/h 是否不再往外飄、EPS 是否 ≥ 2400、有無鬆緊循環；關閉檔 `/data/ars510_no_ramp_lat_accel` 可對照。
+- [ ] A8 側向 3.4（40–70 km/h，只看車速）：匝道 60–70 km/h 是否不再往外飄、EPS 是否 ≥ 2400、有無鬆緊循環；關閉檔 `/data/ars510_no_ramp_lat_accel` 可對照。
 - [ ] A7 延遲補償（只影響切入／危險物／VRU 通道與畫面，不影響 acc_summaries 的跟車）：切入標示是否提早約 0.2 s、危險物觸發距離、無異常跳動；關閉檔 `/data/ars510_no_latency_comp`（需重啟）可對照。
 
 ### B. 離線先評估、再決定上車

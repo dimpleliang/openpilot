@@ -46,9 +46,8 @@ class Controls(ControlsExt):
 
     self.sm = messaging.SubMaster(['lateralDelay', 'vehicleParameters', 'lateralTorqueParameters', 'modelV2', 'selfdriveState',
                                    'extrinsicsCalibration', 'deviceMotion', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataSP'] + self.sm_services_ext,
-                                  poll='selfdriveState', ignore_alive=['liveMapDataSP'], ignore_avg_freq=['liveMapDataSP'],
-                                  ignore_valid=['liveMapDataSP'])
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'] + self.sm_services_ext,
+                                  poll='selfdriveState')
     self.ramp_lat_off = os.path.exists(RAMP_LAT_ACCEL_OFF_FILE)
     self.lat_accel_cap = 3.0
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
@@ -153,9 +152,8 @@ class Controls(ControlsExt):
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
-    # dimpleliang/ars510: a higher lateral-acceleration cap on freeway ramps (drive_helpers.ramp_lat_accel)
-    road = str(self.sm['liveMapDataSP'].roadName) if (not self.ramp_lat_off and self.sm.recv_frame['liveMapDataSP'] > 0) else ""
-    self.lat_accel_cap = ramp_lat_accel(CS.vEgo, road)
+    # dimpleliang/ars510: a higher lateral-acceleration cap at 40-70 km/h (drive_helpers.ramp_lat_accel, speed only)
+    self.lat_accel_cap = 3.0 if self.ramp_lat_off else ramp_lat_accel(CS.vEgo)
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
                                                                self.lat_accel_cap)
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
