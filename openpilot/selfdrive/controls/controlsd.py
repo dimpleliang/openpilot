@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import os
 from numbers import Number
 
 from openpilot.cereal import log
@@ -12,7 +13,7 @@ from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, ramp_lat_accel, RAMP_LAT_ACCEL_OFF_FILE
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -45,8 +46,11 @@ class Controls(ControlsExt):
 
     self.sm = messaging.SubMaster(['lateralDelay', 'vehicleParameters', 'lateralTorqueParameters', 'modelV2', 'selfdriveState',
                                    'extrinsicsCalibration', 'deviceMotion', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'] + self.sm_services_ext,
-                                  poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataSP'] + self.sm_services_ext,
+                                  poll='selfdriveState', ignore_alive=['liveMapDataSP'], ignore_avg_freq=['liveMapDataSP'],
+                                  ignore_valid=['liveMapDataSP'])
+    self.ramp_lat_off = os.path.exists(RAMP_LAT_ACCEL_OFF_FILE)
+    self.lat_accel_cap = 3.0
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
     self.steer_limited_by_safety = False
@@ -149,7 +153,11 @@ class Controls(ControlsExt):
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+    # dimpleliang/ars510: a higher lateral-acceleration cap on freeway ramps (drive_helpers.ramp_lat_accel)
+    road = str(self.sm['liveMapDataSP'].roadName) if (not self.ramp_lat_off and self.sm.recv_frame['liveMapDataSP'] > 0) else ""
+    self.lat_accel_cap = ramp_lat_accel(CS.vEgo, road)
+    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
+                                                               self.lat_accel_cap)
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
