@@ -714,6 +714,16 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 - **時速 0 不做匯入標示**（駕駛要求）：`CUTIN_MIN_V_EGO = 1.0 m/s`。
 - **匯入標示只在接管時顯示**（駕駛：自己開時是干擾、沒有實質作用）：未接管時不畫；`/data/ars510_no_cutin_marks` 可完全關閉。規則本身與 planner 的收油／跟車不受影響。
 
+## 地圖速限為何一直是空紅圈（11/02）
+
+駕駛下載了 OSM 台灣圖資，畫面上的速限標誌卻是空紅圈（「---」）。rlog 裡 `liveMapDataSP` 每秒都有，但 roadName 永遠空字串、speedLimit 0，
+連國1上也是。原因：這版 sunnypilot 的 mapd（pfeiferj）從**記憶體參數** `/dev/shm/params/d/LastGPSPosition` 讀車子位置，而 comma 3X
+上沒有程序寫它（原本由 ubloxd 寫；3X 用高通 GNSS，沒有 ubloxd），`sunnypilot/mapd/__init__.py` 的註解也寫明「mapd 沒有位置來源，
+地圖功能先關」（`MAPD_AVAILABLE = False`）。持久參數 `LastGPSPositionLLK` 由 locationd_llk 每分鐘寫一次，但 mapd 不是用它。
+驗證：手動寫入一次位置到該記憶體參數，mapd 一秒內回「民權東路出口匝道」與曲率資料。
+修法：`hwyalertd` 每秒把 gpsLocation 寫進 `LastGPSPosition`（即使 `/data/hwyalert_off` 關閉提醒也照寫），`MAPD_AVAILABLE = True`。
+注意：台灣 OSM 很多路段沒有 maxspeed 標籤，那些路段仍會顯示「---」；國道、快速道路大多有。
+
 ## 測試計劃與待辦（11/02 整理，依優先順序；完成後在此勾銷並寫結果）
 
 ### A. 下次路測要驗證（182f349 → f62c963 已上車）

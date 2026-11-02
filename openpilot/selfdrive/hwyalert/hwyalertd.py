@@ -69,6 +69,9 @@ VOICE = {"散落物": "debris", "事故": "accident", "故障車": "breakdown", 
          "路樹": "tree", "坍方": "landslide", "路面積水": "water", "道路封閉": "closed", "逆行車輛": "wrongway", "濃霧連動": "fog",
          "濃霧": "fog", "車輛火災": "carfire", "邊坡起火": "slopefire", "路面毀損": "damage", "遺留物": "leftover"}
 SAY_FILE = "/dev/shm/hwyalert_say.json"
+MAPD_POS_PARAMS_DIR = "/dev/shm/params"   # sunnypilot mapd reads its position from this memory param (see main)
+MAPD_POS_KEY = "LastGPSPosition"
+MAPD_POS_PERIOD_S = 1.0
 SAY_OFF_FILE = "/data/hwyalert_voice_off"
 
 
@@ -417,8 +420,14 @@ def main():
   from openpilot.common.swaglog import cloudlog
   from openpilot.common.realtime import Ratekeeper
 
+  from openpilot.common.params import Params
   tracker = Tracker(Sections())
   feed = Feed()
+  # dimpleliang/ars510 11/02: sunnypilot's mapd (pfeiferj) takes the car's position from the memory param LastGPSPosition, which
+  # nothing writes on a comma 3X (ubloxd would; the 3X has the Qualcomm GNSS), so the OSM road name / speed limit never resolved
+  # (liveMapDataSP empty on every drive; the speed-limit sign showed "---"). This daemon already has the 1 Hz fix: hand it over.
+  mem_params = Params(MAPD_POS_PARAMS_DIR)
+  last_mapd_pos_t = 0.
   stop = threading.Event()
   threading.Thread(target=feed.fetch_loop, args=(stop,), daemon=True).start()
   sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState", "liveMapDataSP"],
@@ -430,13 +439,21 @@ def main():
     while True:
       sm.update(0)
       state = dict(road="", alerts=[])
+      fix = None
+      for s in ("gpsLocationExternal", "gpsLocation"):
+        g = sm[s]
+        if sm.recv_frame[s] > 0 and sm.alive[s] and g.hasFix and abs(g.latitude) > 1:
+          fix = (g.longitude, g.latitude, g.bearingDeg)
+          # mapd's position feed runs even with the freeway alerts switched off (OFF_FILE): the speed-limit sign needs it
+          if time.monotonic() - last_mapd_pos_t >= MAPD_POS_PERIOD_S:
+            try:
+              mem_params.put(MAPD_POS_KEY, json.dumps({"latitude": g.latitude, "longitude": g.longitude, "altitude": g.altitude,
+                                                       "bearing": g.bearingDeg, "speed": g.speed}))
+              last_mapd_pos_t = time.monotonic()
+            except Exception:
+              pass
+          break
       if not os.path.exists(OFF_FILE):
-        fix = None
-        for s in ("gpsLocationExternal", "gpsLocation"):
-          g = sm[s]
-          if sm.recv_frame[s] > 0 and sm.alive[s] and g.hasFix and abs(g.latitude) > 1:
-            fix = (g.longitude, g.latitude, g.bearingDeg)
-            break
         lm = sm["liveMapDataSP"]
         road_name = str(lm.roadName) if sm.recv_frame["liveMapDataSP"] > 0 else ""
         map_fw = any(w in road_name for w in MAP_FREEWAY_WORDS) or (lm.speedLimitValid and lm.speedLimit >= MAP_FREEWAY_LIMIT)
