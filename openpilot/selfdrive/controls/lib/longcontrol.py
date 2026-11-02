@@ -312,9 +312,14 @@ class LongControl:
     elif self.long_control_state == LongCtrlState.stopping:
       output_accel = min(self.last_output_accel, 0.0)
       self.update_still(CS, pose_accel)
-      if a_target < output_accel - SOFT_STOP_URGENT_MARGIN:
+      urgent = a_target < output_accel - SOFT_STOP_URGENT_MARGIN
+      if urgent:
         output_accel = a_target
         self.brake_added = True
+        # 11/02 review (Codex, round 2): the pre-release ran last and its max() overrode an urgent plan (a -2.0 request came
+        # out as -0.37). An urgent plan cancels the release for this stop.
+        self.pre_release = False
+        self.pre_release_failed = True
       rolling = SOFT_STOP_V < CS.vEgo < SOFT_STOP_MAX_V and not CS.standstill
       if rolling:
         # the pose acceleration shows the brake engaging ~0.3 s before the wheel-speed aEgo does
@@ -352,9 +357,14 @@ class LongControl:
         # linear release from the request at the trigger to PRE_RELEASE_ACCEL over PRE_RELEASE_LEAD
         frac = min(1.0, (self.pre_release_frames + 1) * DT_CTRL / PRE_RELEASE_LEAD)
         output_accel = max(output_accel, self.pre_release_start + (PRE_RELEASE_ACCEL - self.pre_release_start) * frac)
-      elif self.pre_release_failed and not self.true_stopped:
-        # released too early: back to the request that was braking (at standstill this does nothing)
-        output_accel = min(output_accel, self.pre_release_start)
+      elif self.pre_release_failed and not self.true_stopped and not urgent:
+        # released too early: back to the request that was braking, at the gentle add rate (not in one frame: the review
+        # found -0.05 -> -0.5 in a single step)
+        if output_accel > self.pre_release_start:
+          output_accel = max(self.pre_release_start, self.last_output_accel - SOFT_STOP_ADD_RATE * DT_CTRL * 5)
+      # the plan always has the last word on braking more: no comfort shaping above may brake less than an urgent plan
+      if urgent:
+        output_accel = min(output_accel, a_target)
       self.reset()
 
     else:  # LongCtrlState.pid

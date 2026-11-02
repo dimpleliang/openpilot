@@ -772,6 +772,21 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
   以 A3 量測為準；Codex 建議的「只讀已封存段」已符合（跳過最新段）。
 - Codex 另提醒：測試計畫缺明確退版條件與影片真值；B5「距離已短就不補煞」不可直接採用；C1 不可刻意製造 PCS 事件。已採納為原則。
 
+### F. 11/02 Codex 第二輪（覆核＋longcontrol 整體設計；原文 Mac `~/ars510_rlogs/review/codex_review2.md`）
+- **已修（安全）**：pre-release 的 `max()` 排在最後，會把緊急規劃蓋掉（隔離測試 −2.0 → −0.37）。現在緊急規劃取消本次 pre-release，
+  且最後一律 `min(output, a_target)`；release 失敗不再一幀從 −0.05 跳回 −0.5。驗證：同案例輸出維持 −2.0。
+- **已修（資料）**：同步清單用字串排序，段號沒補零（`--10` 排在 `--9` 前），「去掉最後一筆」可能傳到／刪到 loggerd 正在寫的段。
+  改為依路程、段號數字排序，且任何 90 s 內有變動的段一律跳過；刪除前再確認車機上大小未變。
+- 已修：mismatch 分桶把 range_unc 0 誤算成 u<20；`_proj_on` 加清理；匯入標示清歷史移到資料檢查之前。
+- **待做 G1（重構）**：longcontrol 停車邏輯改為明確狀態機 OFF／DRIVE／APPROACH／RELEASE／CAPTURE／HOLD，估速器獨立（pose 中斷擴大不確定度，
+  不可把未知速度當 0），安全需求最後裁決；先做「行為等價重構＋逐幀重播驗證」，再分項改行為。Codex 判定：still 真停判定仍會鎖定等速蠕行、
+  undo 不完整、`brake_added` latch 被 release 繞過、brake-hold 清除晚一步——都在這次重構一併處理。
+- 待做：B4 三項（0.9 m/s hold、release 0.6 s、坡度）**分項**量測，不可同改；坡度保持只放在 HOLD/CAPTURE，`a_hold = a_flat − g·max(0, −sinθ)`，
+  注意 Toyota carcontroller 已有 pitch 項不可重疊。B5 改在 planner 做：低速接管時舒適距離參考從現距平順恢復，安全需求
+  `a_safe = aL − c²/2(d − d_floor − c·τ)` 保留（c = 接近速度），`d_floor` 另校、不可用 4.5 m 停距。
+- 未修、記錄：鎖的 120 分鐘搶鎖可能誤搶活任務（改 PID 鎖）；傳輸中無 watchdog（每段前檢查）；15 km 展望可能混入 8 m 內的其他候選道路，
+  狀態列未標示「高架／平面」。
+
 ### D. 基礎設施
 - [x] D1 Mac 原生自動建庫＋每日摘要（11/02）：`~/ars510_rlogs/venv`（python3.11，pycapnp 等 wheel）、程式碼 sparse clone `~/ars510_rlogs/op`
   （每次先 `git pull --ff-only`）、`post_pull.sh` 由 `ts_pull.sh` 結尾呼叫 → `db/build_db.py`（增量，`ARS510_OP_ROOT`）→ `db/daily_summary.py`

@@ -37,9 +37,14 @@ if ! ssh $O $HOST "test -f $CAT"; then
   ssh $O $HOST "test -f $CAT" || scp -q -o BatchMode=yes ~/ars510_rlogs/cat_nocache.py "$HOST:$CAT"
 fi
 # one listing: segment and the size of each file (0 = missing), oldest first
-list=$(ssh $O $HOST "cd /data/media/0/realdata && for d in \$(ls -d */ | tr -d / | grep -v boot | sort); do
+# (11/02 review round 2: segment numbers are not zero-padded, so a plain sort put --10 before --9 and "drop the last line" did
+#  not skip the segment loggerd is writing. Sort route, then segment number; and skip any segment whose files changed in the
+#  last SETTLE_S seconds, whatever its position.)
+SETTLE_S=90
+list=$(ssh $O $HOST "cd /data/media/0/realdata && now=\$(date +%s) && for d in \$(ls -d */ | tr -d / | grep -v boot | sort -t- -k1,1 -k5,5n); do
+  m=\$(stat -c %Y \$d/rlog.zst \$d/qlog.zst \$d/qcamera.ts 2>/dev/null | sort -n | tail -1); [ -n \"\$m\" ] && [ \$((now - m)) -lt $SETTLE_S ] && continue
   echo \"\$d \$(stat -c %s \$d/rlog.zst 2>/dev/null || echo 0) \$(stat -c %s \$d/qlog.zst 2>/dev/null || echo 0) \$(stat -c %s \$d/qcamera.ts 2>/dev/null || echo 0)\"; done")
-if offroad; then mode=offroad; else mode=onroad; list=$(echo "$list" | sed '$d'); fi   # newest segment is still being written
+if offroad; then mode=offroad; else mode=onroad; fi
 echo "mode $mode"
 IONICE=$(ssh $O $HOST 'command -v ionice >/dev/null && echo "ionice -c3" || echo ""')
 n=0; freed=0
@@ -73,7 +78,8 @@ while read -r s r_sz q_sz c_sz; do
   n=$((n + 1))
   if [ "${KEEP:-0}" != "1" ] && [ "$r_sz" -gt 0 ]; then
     local_=$(stat -f %z "$DEST/$s/rlog.zst" 2>/dev/null || echo -1)
-    if [ "$r_sz" = "$local_" ]; then
+    now_sz=$(ssh $O $HOST "stat -c %s /data/media/0/realdata/$s/rlog.zst 2>/dev/null || echo 0")
+    if [ "$r_sz" = "$local_" ] && [ "$now_sz" = "$r_sz" ]; then   # unchanged since the listing and fully here
       ssh $O $HOST "rm -f /data/media/0/realdata/$s/rlog.zst" && freed=$((freed + 1))
     else
       echo "size mismatch $s remote=$r_sz local=$local_ (kept on device)"

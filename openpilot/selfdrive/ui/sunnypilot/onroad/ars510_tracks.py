@@ -195,12 +195,12 @@ class Ars510Tracks:
         return
       if sm.updated[SERVICE]:
         self._points = parse(bytes(sm[SERVICE]))
-      if not self._points or sm.frame - sm.recv_frame[SERVICE] > STALE_FRAMES:
-        return
       # 11/02 driver: while I drive myself the merge marks are a distraction with no effect; draw them only while
       # openpilot is engaged (its own coast / follow actions are what they explain). MARKS_OFF_FILE hides them altogether.
-      if self._marks_off or not ("selfdriveState" in sm.data and sm["selfdriveState"].enabled):
-        # not drawing: also forget the rule state, so a re-engage starts clean instead of from stale histories
+      # Not drawing (or no fresh data): forget the rule state, so a re-engage starts clean (checked before the data gate,
+      # 11/02 review round 2)
+      if self._marks_off or not ("selfdriveState" in sm.data and sm["selfdriveState"].enabled) or not self._points \
+         or sm.frame - sm.recv_frame[SERVICE] > STALE_FRAMES:
         for store in (self._hist, self._hold, self._release, self._fast, self._close, self._slow, self._out_t, self._confirm_t,
                       self._side, self._qual_t):
           store.clear()

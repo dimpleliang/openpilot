@@ -441,7 +441,8 @@ class Ars510NativeRadarInterface:
             vrel_raw = obj.v_long_ground * self.config.vground_scale - v_ego
             bad = abs(rate - vrel_raw) > self.MISMATCH_MPS and abs(vrel_raw) > 3.0
             # every object counts toward the once-a-minute summary (records checked / mismatching, by range_unc bucket)
-            bucket = "u<12" if (obj.range_unc_code or 127) < 12 else "u<20" if obj.range_unc_code < 20 else "u>=20"
+            ru = 127 if obj.range_unc_code is None else obj.range_unc_code
+            bucket = "u<12" if ru < 12 else "u<20" if ru < 20 else "u>=20"
             c = self._mm_sum.setdefault(bucket, [0, 0]); c[0] += 1; c[1] += int(bad)
             if time_s - self._mm_sum_t >= self.MISMATCH_SUMMARY_S:
                 if self._mm_sum_t > 0:
@@ -670,6 +671,8 @@ class Ars510NativeRadarInterface:
             for k in [k for k, v in self._last.items() if v[0] < horizon]:
                 self._last.pop(k, None)
                 self._first.pop(k, None)
+        if len(self._proj_on) > 400:
+            self._proj_on.clear()
         for store in (self._mm_hist, self._mm_cnt):
             if len(store) > 400:
                 store.clear()
