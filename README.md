@@ -53,6 +53,7 @@
 
 | 檔案 | 作用 |
 |---|---|
+| `/data/ars510_no_latency_comp` | 關閉雷達物件 0.2 s 延遲補償 |
 | `/data/ars510_no_cutin_marks` | 關閉畫面上的匯入／切入標示（預設只在接管時顯示） |
 | `/data/hwyalert_off` | 關閉國道事件提醒 |
 | `/data/hwyalert_voice_off` | 只關國道語音 |
