@@ -200,6 +200,10 @@ class Ars510Tracks:
       # 11/02 driver: while I drive myself the merge marks are a distraction with no effect; draw them only while
       # openpilot is engaged (its own coast / follow actions are what they explain). MARKS_OFF_FILE hides them altogether.
       if self._marks_off or not ("selfdriveState" in sm.data and sm["selfdriveState"].enabled):
+        # not drawing: also forget the rule state, so a re-engage starts clean instead of from stale histories
+        for store in (self._hist, self._hold, self._release, self._fast, self._close, self._slow, self._out_t, self._confirm_t,
+                      self._side, self._qual_t):
+          store.clear()
         return
 
       leads = []

@@ -185,13 +185,14 @@ FUSED_CONFIG = replace(BASE_CONFIG, range_fusion_gain=0.1, relink_max_gap_s=0.0,
 
 
 # latency compensation limits (see NativeInterfaceConfig.latency_comp)
-LATENCY_MIN_S, LATENCY_MAX_S = 0.10, 0.35   # header byte 13 outside this = not trusted, use LATENCY_DEFAULT_S
-LATENCY_DEFAULT_S = 0.22                    # median total age of a record on this unit
+LATENCY_MIN_S, LATENCY_MAX_S = 0.10, 0.25   # header byte 13 outside this = not trusted, use LATENCY_DEFAULT_S
+LATENCY_DEFAULT_S = 0.185                   # median header age on this unit (the transfer time is added separately)
 LATENCY_MAX_VREL = 40.0                     # m/s, beyond this the speed is a sentinel / glitch
-LATENCY_MAX_VEL_UNC = 50                    # 240|7 code, beyond this the projection adds more error than it removes
+LATENCY_VEL_UNC_OFF, LATENCY_VEL_UNC_ON = 60, 45  # 240|7 code: stop projecting a track above OFF, resume below ON (hysteresis,
+                                                  # 11/02 review: a 50 <-> 51 flicker would step the range by vRel x L)
 LATENCY_MAX_DD_M, LATENCY_MAX_DY_M = 6.0, 0.5
 LATENCY_OFF_FILE = "/data/ars510_no_latency_comp"
-GHOST_CLASSES = (1, 4)  # 163|3 unclassified, pedestrian (cars 2/3 and two-wheelers 5/6 pass; 5/6 feed the VRU channel)
+GHOST_CLASSES = (1,)  # 163|3 unclassified (cars 2/3, pedestrians 4 and two-wheelers 5/6 pass; 5/6 feed the VRU channel)
 NATIVE_VREL_STATUS = "native_over_ground_minus_ego"
 UNRESOLVED_NAN = "unresolved_nan"
 
@@ -243,6 +244,9 @@ class Ars510NativeRadarInterface:
         self.path_gated = 0
         self.ghost_gated = 0  # dimpleliang/ars510: objects withheld by the ghost gate (class / camera association)
         self._latency_on = not os.path.exists(LATENCY_OFF_FILE)
+        self._proj_on: dict[int, bool] = {}  # per track: projection currently applied (speed-quality hysteresis)
+        self._mm_sum: dict[str, list[int]] = {}  # mismatch summary counters by range_unc bucket
+        self._mm_sum_t = 0.0
         self.oncoming_suppressed = 0
         # ARS510 display: every object of the last record from DISPLAY_MIN_AGE on, before the path gates:
         # [dRel, yRel, vRel, published, settling (younger than min_publish_age), radar object class 163|3]
@@ -419,6 +423,8 @@ class Ars510NativeRadarInterface:
     MISMATCH_MAX_Y_M = 2.5        # 11/02: 63 % of the remaining mismatches were a lane over with no camera match; log the in-path ones
                                   # 80 m+ mismatches (range_unc ~ 8-11 m, the radar says so itself); with this gate ~75 / 100 km
 
+    MISMATCH_SUMMARY_S = 60.0     # 11/02 review: the stricter per-track log must not hide the overall rate -> counts by bucket
+
     def _mismatch_log(self, tid: int, time_s: float, obj: NativeObject, v_ego: float, v_fused: float, d_fused: float) -> None:
         """carlog "ARS510 speed/range mismatch" once per track: raw range rate vs raw object speed (see __init__)."""
         try:
@@ -426,16 +432,25 @@ class Ars510NativeRadarInterface:
             h.append((time_s, float(obj.d_rel)))
             while h and time_s - h[0][0] > self.MISMATCH_S:
                 h.pop(0)
-            if tid in self._mm_logged or obj.age < 8 or len(h) < 15 or h[-1][0] - h[0][0] < self.MISMATCH_S - 0.2:
-                return
-            if obj.range_unc_code is None or obj.range_unc_code >= self.MISMATCH_MAX_RANGE_UNC or abs(obj.y_rel) > self.MISMATCH_MAX_Y_M:
+            if obj.age < 8 or len(h) < 15 or h[-1][0] - h[0][0] < self.MISMATCH_S - 0.2:
                 return
             step = max(abs(b[1] - a[1]) for a, b in zip(h, h[1:]))   # largest one-record range jump (slot / id relink?)
             tm = sum(x[0] for x in h) / len(h); dm = sum(x[1] for x in h) / len(h)
             den = sum((x[0] - tm) ** 2 for x in h)
             rate = sum((x[0] - tm) * (x[1] - dm) for x in h) / den if den > 0 else 0.0
             vrel_raw = obj.v_long_ground * self.config.vground_scale - v_ego
-            if abs(rate - vrel_raw) > self.MISMATCH_MPS and abs(vrel_raw) > 3.0:
+            bad = abs(rate - vrel_raw) > self.MISMATCH_MPS and abs(vrel_raw) > 3.0
+            # every object counts toward the once-a-minute summary (records checked / mismatching, by range_unc bucket)
+            bucket = "u<12" if (obj.range_unc_code or 127) < 12 else "u<20" if obj.range_unc_code < 20 else "u>=20"
+            c = self._mm_sum.setdefault(bucket, [0, 0]); c[0] += 1; c[1] += int(bad)
+            if time_s - self._mm_sum_t >= self.MISMATCH_SUMMARY_S:
+                if self._mm_sum_t > 0:
+                    carlog.warning("ARS510 mismatch summary: " + " ".join(f"{k} {v[1]}/{v[0]}" for k, v in sorted(self._mm_sum.items())))
+                self._mm_sum_t = time_s; self._mm_sum.clear()
+            if tid in self._mm_logged or obj.range_unc_code is None or obj.range_unc_code >= self.MISMATCH_MAX_RANGE_UNC \
+                    or abs(obj.y_rel) > self.MISMATCH_MAX_Y_M:
+                return
+            if bad:
                 self._mm_cnt[tid] = self._mm_cnt.get(tid, 0) + 1
                 if self._mm_cnt[tid] >= self.MISMATCH_N:
                     self._mm_logged.add(tid)
@@ -519,10 +534,15 @@ class Ars510NativeRadarInterface:
             lat += t_last - time_s
         return lat
 
-    def _project(self, obj: NativeObject, d_rel: float, vrel: float, yv: float, lat: float) -> tuple[float, float]:
+    def _project(self, tid: int, obj: NativeObject, d_rel: float, vrel: float, yv: float, lat: float) -> tuple[float, float]:
         """(dRel, yRel) projected forward by lat seconds; the raw values when the object is not trustworthy enough."""
-        if obj.predicted or obj.slot_status == 2 or obj.vel_code in (0, 1023) or not isfinite(vrel) or abs(vrel) > LATENCY_MAX_VREL \
-                or obj.vel_unc_code > LATENCY_MAX_VEL_UNC:
+        on = self._proj_on.get(tid, True)
+        if obj.vel_unc_code > LATENCY_VEL_UNC_OFF:
+            on = False
+        elif obj.vel_unc_code < LATENCY_VEL_UNC_ON:
+            on = True
+        self._proj_on[tid] = on
+        if not on or obj.predicted or obj.slot_status == 2 or obj.vel_code in (0, 1023) or not isfinite(vrel) or abs(vrel) > LATENCY_MAX_VREL:
             return d_rel, float(obj.y_rel)
         d = d_rel + max(-LATENCY_MAX_DD_M, min(LATENCY_MAX_DD_M, vrel * lat))
         y = float(obj.y_rel)
@@ -571,7 +591,7 @@ class Ars510NativeRadarInterface:
             yv = self._yv_rel(obj, time_s)
             # everything downstream (radard, display, the coasts) gets the object projected to "now"; the track books,
             # range fusion, ACC pairing and the mismatch log above stay on the raw measurement
-            d_out, y_out = self._project(obj, d_rel, vrel, yv, lat) if lat > 0.0 else (d_rel, float(obj.y_rel))
+            d_out, y_out = self._project(tid, obj, d_rel, vrel, yv, lat) if lat > 0.0 else (d_rel, float(obj.y_rel))
             far_rows.append((float(d_out), float(y_out), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0),
                              int(tid), yv, float(v_ground) if cfg.fused_speed_filter and v_ego is not None else float(obj.v_long_ground),
                              int(obj.range_unc_code if obj.range_unc_code is not None else 127), int(obj.vel_unc_code),
@@ -584,8 +604,10 @@ class Ars510NativeRadarInterface:
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
                 continue
-            if (cfg.ghost_gate_min_d_m > 0 and tid != acc_tid and d_rel > cfg.ghost_gate_min_d_m
+            if (cfg.ghost_gate_min_d_m > 0 and tid != acc_tid and tid not in self._out_id and d_rel > cfg.ghost_gate_min_d_m
                     and (obj.object_class or 0) in GHOST_CLASSES and not obj.camera_assoc):
+                # (11/02 review: only tracks radard has never seen are held back, so a car that is briefly unclassified keeps its
+                # continuity; pedestrians are not gated, the camera lead is not a ground truth for them)
                 # dimpleliang/ars510 11/02 (109 km offline, analysis/calib): existence / class confidence do not separate ghosts from
                 # real cars (AUC 0.55); object class and camera association do (real cars: class 2/3 90 %, camera 78 %; ghosts: 36 % /
                 # 25 %). Ghosts concentrate in unclassified / pedestrian objects without a camera match, low height codes and

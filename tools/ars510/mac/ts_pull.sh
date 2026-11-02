@@ -23,6 +23,12 @@ FILES="rlog.zst qlog.zst qcamera.ts"
 mkdir -p "$DEST"
 exec >> "$LOG" 2>&1
 echo "== $(date '+%F %T')"
+# single instance (11/02 review): two overlapping runs would append to the same .part files
+LOCK=~/ars510_rlogs/.ts_pull.lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+  if [ -n "$(find "$LOCK" -mmin +120 2>/dev/null)" ]; then rmdir "$LOCK" && mkdir "$LOCK" || exit 0; else echo "another run is active"; exit 0; fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 if ! ssh $O $HOST true 2>/dev/null; then echo "comma offline"; exit 0; fi
 offroad() { [ "$(ssh $O $HOST 'cat /data/params/d/IsOffroad 2>/dev/null')" = "1" ]; }
 # the streamer must exist on the device (it ships with the fork; until the device is updated, copy it over)
@@ -35,12 +41,15 @@ list=$(ssh $O $HOST "cd /data/media/0/realdata && for d in \$(ls -d */ | tr -d /
   echo \"\$d \$(stat -c %s \$d/rlog.zst 2>/dev/null || echo 0) \$(stat -c %s \$d/qlog.zst 2>/dev/null || echo 0) \$(stat -c %s \$d/qcamera.ts 2>/dev/null || echo 0)\"; done")
 if offroad; then mode=offroad; else mode=onroad; list=$(echo "$list" | sed '$d'); fi   # newest segment is still being written
 echo "mode $mode"
+IONICE=$(ssh $O $HOST 'command -v ionice >/dev/null && echo "ionice -c3" || echo ""')
 n=0; freed=0
 while read -r s r_sz q_sz c_sz; do
   [ -n "$s" ] || continue
   [ "$r_sz" = "0" ] && [ -s "$DEST/$s/rlog.zst" ] && [ -s "$DEST/$s/qcamera.ts" ] && continue   # already pulled and freed
   mkdir -p "$DEST/$s"
   if [ "$mode" = offroad ]; then
+    # the car may be driven off during a long offroad run: stop the full-speed rsync, the next run streams gently
+    if ! offroad; then echo "car went onroad after $n segments: stopping rsync"; break; fi
     rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" \
           --include='rlog*' --include='qlog*' --include='qcamera.ts' --exclude='*' \
           "$HOST:/data/media/0/realdata/$s/" "$DEST/$s/" < /dev/null || { echo "rsync failed $s"; continue; }
@@ -53,7 +62,8 @@ while read -r s r_sz q_sz c_sz; do
       [ "$have" = "$want" ] && continue
       part="$DEST/$s/$f.part"; off=$(stat -f %z "$part" 2>/dev/null || echo 0)
       [ "$off" -gt "$want" ] && { rm -f "$part"; off=0; }
-      ssh $O $HOST "ionice -c3 python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD 2>/dev/null || python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD" >> "$part"
+      # one streamer only (11/02 review: a retry after a partial first attempt would append from a stale offset)
+      ssh $O $HOST "$IONICE python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD" >> "$part"
       got=$(stat -f %z "$part" 2>/dev/null || echo 0)
       if [ "$got" = "$want" ]; then mv -f "$part" "$DEST/$s/$f"; else echo "partial $s/$f $got/$want (resumes)"; ok=0; break; fi
       offroad && { echo "car stopped: switching to rsync next run"; break 2; }

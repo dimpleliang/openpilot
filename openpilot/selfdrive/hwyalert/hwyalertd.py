@@ -389,7 +389,8 @@ class Tracker:
     pos, brg = (fix[:2], fix[2]) if fix else (None, 0.)
     found = ahead(m, events, pos, brg)[:MAX_ALERTS]
     # bottom status strip: where we are, and the nearest event further ahead (so a jam's cause shows before 3 km)
-    far = [(d, e) for d, e in ahead(m, events, pos, brg, LOOKAHEAD_KM) if e["id"] not in {x["id"] for _, x in found}]
+    # km posts only (pos=None): over 15 km the straight-line / heading test would drop events beyond a bend (11/02 review)
+    far = [(d, e) for d, e in ahead(m, events, None, 0., LOOKAHEAD_KM) if e["id"] not in {x["id"] for _, x in found}]
     nxt = f"前方 {far[0][0]:.0f} km {SHORT.get(far[0][1]['name'], far[0][1]['name'])}" if far and far[0][0] >= 1.0 else ""
     state.update(road=f"{key[0]}{key[1]}", km=round(m[0][3], 2), dr=fix is None,
                  where=f"{road_text(key)} {m[0][3]:.1f}K", next=nxt,
