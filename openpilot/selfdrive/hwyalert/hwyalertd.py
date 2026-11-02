@@ -28,6 +28,7 @@ SECTIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "freeway_sec
 FETCH_S = 60.
 FEED_MAX_AGE_S = 300.      # drop the feed when it could not be refreshed for 5 min
 ALERT_KM = 3.0             # show events up to 3 km ahead (straight line to the event point)
+LOOKAHEAD_KM = 15.0        # the status strip at the bottom of the screen also names the nearest event this far ahead
 BEHIND_KM = 0.15           # ... and just passed (GPS / km-post noise)
 MATCH_M = 40.              # GPS to section polyline
 MATCH_HDG = 45.            # heading vs polyline direction (deg)
@@ -72,8 +73,15 @@ SAY_OFF_FILE = "/data/hwyalert_voice_off"
 
 
 # every character an alert text can contain (the UI loads only these glyphs)
-DISPLAY_CHARS = ("前方約附近本路段 km（）[]、.–K0123456789第車道內外路肩全線匝封閉平面高架其他火災" + "".join(TARGET) + "".join(SHORT.values()) +
-                 "".join(VOICE))
+DISPLAY_CHARS = ("前方約附近本路段 km（）[]、.–K0123456789第車道內外路肩全線匝封閉平面高架其他火災國北南東西向無事件甲台｜　" +
+                 "".join(TARGET) + "".join(SHORT.values()) + "".join(VOICE))
+DIR_TEXT = {"N": "北向", "S": "南向", "E": "東向", "W": "西向"}
+
+
+def road_text(key) -> str:
+  """("1高架", "N") -> 國1高架 北向; ("台76", "E") -> 台76 東向"""
+  r, d = key
+  return f"{'' if r.startswith('台') else '國'}{r} {DIR_TEXT.get(d, d)}"
 
 
 def voice_clips(d_km: float, name: str) -> list[str]:
@@ -220,7 +228,7 @@ def _iso_to_epoch(s: str) -> float:
   return calendar.timegm((y, mo, d, h, mi, se, 0, 0, 0)) - off
 
 
-def ahead(matches, events, pos=None, bearing=0.):
+def ahead(matches, events, pos=None, bearing=0., alert_km=ALERT_KM):
   """Events on the matched road/dir, ALERT_KM ahead, nearest first: [(dist km, event)].
   pos = (lon, lat) for the straight-line check to the event point; None (no GPS) = km posts only."""
   if not matches:
@@ -245,16 +253,16 @@ def ahead(matches, events, pos=None, bearing=0.):
     inside = (hi - km) * sgn >= -behind and d_km <= 0  # inside an event range (moving construction, closures)
     if inside:
       d_km = 0.
-    if not (-behind <= d_km <= ALERT_KM + 1.0):
+    if not (-behind <= d_km <= alert_km + 1.0):
       continue
     if pos is not None and ev["lon"] is not None and d_km > 0:
       ex, ey = xy(ev["lon"], ev["lat"])
       dx, dy = ex - x, ey - y
       dist = math.hypot(dx, dy) / 1000.
-      if (dx * hx + dy * hy) < -behind * 1000 or dist > ALERT_KM:
+      if (dx * hx + dy * hy) < -behind * 1000 or dist > alert_km:
         continue
       d_km = dist if (dx * hx + dy * hy) > 0 else 0.
-    elif d_km > ALERT_KM:
+    elif d_km > alert_km:
       continue
     e = dict(ev)
     if both:
@@ -378,8 +386,13 @@ class Tracker:
     state = dict(road="", alerts=[])
     if not m or self.streak < MATCH_FRAMES or not self.fast_ok:
       return state, None
-    found = ahead(m, events, fix[:2] if fix else None, fix[2] if fix else 0.)[:MAX_ALERTS]
+    pos, brg = (fix[:2], fix[2]) if fix else (None, 0.)
+    found = ahead(m, events, pos, brg)[:MAX_ALERTS]
+    # bottom status strip: where we are, and the nearest event further ahead (so a jam's cause shows before 3 km)
+    far = [(d, e) for d, e in ahead(m, events, pos, brg, LOOKAHEAD_KM) if e["id"] not in {x["id"] for _, x in found}]
+    nxt = f"前方 {far[0][0]:.0f} km {SHORT.get(far[0][1]['name'], far[0][1]['name'])}" if far and far[0][0] >= 1.0 else ""
     state.update(road=f"{key[0]}{key[1]}", km=round(m[0][3], 2), dr=fix is None,
+                 where=f"{road_text(key)} {m[0][3]:.1f}K", next=nxt,
                  alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found])
     say = None
     if t - self.last_say_t >= SAY_GAP_S:
