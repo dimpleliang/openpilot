@@ -697,3 +697,4 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
   處置：`ts_pull.sh` 行車中改用車機端 `tools/ars510/cat_nocache.py` 串流（每讀 1 MiB 就 `posix_fadvise(DONTNEED)` 丟出 page cache、nice 19、ionice idle、限速 400 KB/s，可續傳），停車後才用 rsync 全速；行車中的效果待下次路測以 kswapd 統計確認。曾加過 selfdrived 0.5 s 去抖，駕駛要求改回原本（警報照原廠
   立即發出，掉幀就該知道）。分析腳本 `~/moddrop.py`（Mac VM）。
 - **時速 0 不做匯入標示**（駕駛要求）：`CUTIN_MIN_V_EGO = 1.0 m/s`。
+- **匯入標示只在接管時顯示**（駕駛：自己開時是干擾、沒有實質作用）：未接管時不畫；`/data/ars510_no_cutin_marks` 可完全關閉。規則本身與 planner 的收油／跟車不受影響。

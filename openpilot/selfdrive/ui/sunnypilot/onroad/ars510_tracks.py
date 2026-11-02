@@ -7,6 +7,7 @@ model's predicted path at that distance (my lane); red: outside it (next lanes).
 lead choice does not depend on it. A track still settling (younger than the decoder's publish age, ~1.2 s in fused; its
 range and speed have not converged) is drawn faint with its distance only. Pedestrians and two-wheelers (radar class) get a label. Display only: nothing here feeds the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
 """
+import os
 import struct
 
 import numpy as np
@@ -45,6 +46,7 @@ CUTIN_D = (25.0, 90.0)
 CUTIN_VREL = -1.5
 CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
 CUTIN_MIN_V_GROUND = 2.0  # m/s over the ground, forward: excludes oncoming cars
+MARKS_OFF_FILE = "/data/ars510_no_cutin_marks"  # touch to hide the merge marks even while engaged
 CUTIN_MIN_V_EGO = 1.0     # m/s: no cut-in marks while I am (nearly) stopped (11/02 driver: cars moving across a stopped
                           # car are not merges; at a light / in a jam every lateral mover got an amber circle)
 # Wide merge (10/31 11:39, on-ramp car): a clearly slower car 2.6-5 m out, drifting in fast, is marked too. That car spent
@@ -171,6 +173,7 @@ def parse(payload: bytes) -> list[tuple]:
 
 class Ars510Tracks:
   def __init__(self):
+    self._marks_off = os.path.exists(MARKS_OFF_FILE)
     self._font = gui_app.font(FontWeight.SEMI_BOLD)
     self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
     self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
@@ -193,6 +196,10 @@ class Ars510Tracks:
       if sm.updated[SERVICE]:
         self._points = parse(bytes(sm[SERVICE]))
       if not self._points or sm.frame - sm.recv_frame[SERVICE] > STALE_FRAMES:
+        return
+      # 11/02 driver: while I drive myself the merge marks are a distraction with no effect; draw them only while
+      # openpilot is engaged (its own coast / follow actions are what they explain). MARKS_OFF_FILE hides them altogether.
+      if self._marks_off or not ("selfdriveState" in sm.data and sm["selfdriveState"].enabled):
         return
 
       leads = []
