@@ -781,6 +781,44 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 - **待做 G1（重構）**：longcontrol 停車邏輯改為明確狀態機 OFF／DRIVE／APPROACH／RELEASE／CAPTURE／HOLD，估速器獨立（pose 中斷擴大不確定度，
   不可把未知速度當 0），安全需求最後裁決；先做「行為等價重構＋逐幀重播驗證」，再分項改行為。Codex 判定：still 真停判定仍會鎖定等速蠕行、
   undo 不完整、`brake_added` latch 被 release 繞過、brake-hold 清除晚一步——都在這次重構一併處理。
+  - **第一步完成（11/02，純重構，行為逐幀等同 462845c）**：
+    - 結構：外部仍是 `LongCtrlState`（off/pid/stopping，`long_control_state_trans` 與 `update/reset/__init__` 介面、所有常數名稱不變）。
+      內部加 `StopPhase` 子狀態：OFF／DRIVE／BRAKE_HOLD（pid）、APPROACH（輪速在動）／CAPTURE（輪速掉 0、pose 有效，等真停）／
+      HOLD（pose 路徑判定真停）／SETTLE（無 pose 或停著進入：計時 hold 後 ramp）／RELEASE（pre-release 疊加，顯示時取代底層相位）。
+      停車相位只在 `_select_stop_phase()` 決定（if/elif 優先序原封保留），每個相位一個方法（`_approach/_capture/_hold/_settle/_release`，
+      另有 `_rebrake_after_release`）；每次相位改變記在 `self.stop_phase`、`self.last_transition = (from, to, reason)`
+      （例：`release ended (no decel for PRE_RELEASE_FAIL_T); wheel speed standstill, pose valid`、`should_stop; wheels rolling`）。
+      估速獨立為 `SpeedEstimator`（v_est、coast_frames、pose_a_f；LongControl 保留同名唯讀屬性）。安全裁決集中在 `_update_stopping`
+      開頭（urgent 取代請求、取消 release）與結尾（`min(output, a_target)`）。
+    - 驗證：`tools/ars510/longcontrol_equiv.py`，舊版取 `git show 462845c`（與 GitHub 上的檔案 md5 相同），兩版共用同一套依賴
+      （容器用真模組；Mac VM 用 stub：LongCtrlState、PIDController 複本），逐幀比 output（容差 1e-9）、long_control_state，
+      並比 20 個共有內部變數。
+      - 合成（閉迴路簡易 plant：PCM 延遲、低速煞車死區、蠕行、坡度、輪速 0.22 以下掉 0、pose 雜訊／中斷）：43 情境 × (1+50 隨機擾動)
+        ＝ 2193 次、3,962,700 幀，**差異 0**；八種相位、43 種轉移都有出現。變異測試（故意改 1 行，12 種）中 11 種被抓到，
+        唯一抓不到的是拿掉最後的 `min(output, a_target)`——證明見下方 Q12，屬冗餘保險。
+      - 真實 rlog（Mac VM 抽出每次 carControl＝每次 LoC.update 的輸入：longActive、carState、最近的 longitudinalPlan、
+        deviceMotion 經 extrinsicsCalibration 校正的縱向加速度，>150 ms 或未校正給 None；accel 上下限 (−3.5, 2.0)）：
+        route 36／37／38 共 157 段、930,867 幀（接管中 279,613 幀）、接管中停住 38 次（15+7+16；全部靜止事件 119 次），**差異 0**。
+        另跑三種變體：pose 全拿掉（全部走 SETTLE）、隨機 20% pose 中斷、pre-release 關閉，皆差異 0。
+      - `test_longcontrol.py` 通過（容器缺 libparams，用 OpenpilotTestCase stub 直接跑兩個測試）；ruff 乾淨。
+    - 照原樣保留、程式內標 `# BEHAVIOUR KEPT (G1)` 的怪行為（第二步逐項改，每項單獨驗證）：
+      - Q1 still 判定：輪速 0 且 |pose| < 0.06 持續 0.12 s 即判真停，等速蠕行也符合（Codex）。
+      - Q2 undo 不完整：只在 vEgoRaw > 0.2 才撤銷，且只清 true_stopped/still_set/coast_active；v_est 仍夾在 0.02，
+        brake_added／pre_release_failed／settle_used／no_decel_frames 都不還原。
+      - Q3 選相位時不看 true_stopped：vEgo 0.05–0.2（未達 undo 門檻）時以 true_stopped=True 跑 APPROACH。
+      - Q4 `brake_added` latch 被 pre-release 繞過：加過煞（蠕行／下坡）後 release 照樣觸發，`max()` 把加上的煞車也放掉。
+      - Q5 brake hold 清除晚一步：latch 先設、清除條件在 update 結尾才判，所以踩油門／plan > 0.1／v > 0.8 那一幀仍套 −0.5；
+        且 v < 0.6、plan < −0.1 時每幀重新設定，踩油門也擋不住 hold。
+      - Q6 pose 失效時 v_est 直接用輪速（掉 0 以下就是 0）＝未知速度當 0；coast 計時歸零；pose_a_f 跳成 aEgo。
+      - Q7 CAPTURE/HOLD 中 pose 中斷 → 落到 SETTLE，但 was_rolling 已是 False，不啟動 settle，且 settle_used=False → 立刻用原廠 1.0 m/s³ ramp。
+      - Q8 停車狀態中 vEgo ≥ 1.0（快速進 stopping 或下坡加速）不算 rolling：走 CAPTURE（之前在滾）或 SETTLE 原廠 ramp。
+      - Q9 `no_decel_frames` 由 APPROACH（min(aEgo, pose_a_f)）與 CAPTURE（pose_a_f）共用，APPROACH 每幀都累計（即使沒用到）。
+      - Q10 release 失敗後的回煞：步長實為 5×ADD_RATE＝1.5 m/s³（註解寫 gentle），由 last_output 起算，可能比底層相位這幀算的煞得少；
+        urgent 設的 pre_release_failed 也會觸發它，pre_release_start／frames／slow 跨停車不重置，可能用到上一次停車的值。
+      - Q11 still 判真停但本次沒有 roll-in（停著進 stopping）→ 走 SETTLE 原廠 ramp，不走 HOLD 的 2.5 m/s³ 到 −0.5。
+      - Q12（非怪行為，記錄）最後的 `min(output, a_target)` 目前不可能生效：urgent 後 brake_added=True、release 被取消、回煞被擋，
+        各相位只會維持或加煞；保留作保險，第二步改相位時它才有作用。
+      - Q13 `update_stall` 用的是上一幀的 LongCtrlState。
 - 待做：B4 三項（0.9 m/s hold、release 0.6 s、坡度）**分項**量測，不可同改；坡度保持只放在 HOLD/CAPTURE，`a_hold = a_flat − g·max(0, −sinθ)`，
   注意 Toyota carcontroller 已有 pitch 項不可重疊。B5 改在 planner 做：低速接管時舒適距離參考從現距平順恢復，安全需求
   `a_safe = aL − c²/2(d − d_floor − c·τ)` 保留（c = 接近速度），`d_floor` 另校、不可用 4.5 m 停距。

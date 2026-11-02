@@ -1,5 +1,6 @@
 import os
 from collections import deque
+from enum import IntEnum
 
 import numpy as np
 from opendbc.car.structs import car
@@ -126,6 +127,36 @@ PRE_RELEASE_OFF_FILE = "/data/ars510_no_pre_release"
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Structure (G1 refactor, behaviour-identical to 462845c, verified frame by frame by tools/ars510/longcontrol_equiv.py)
+#
+# The external state is still LongCtrlState (off / pid / stopping), produced by long_control_state_trans(). Inside it,
+# LongControl runs an explicit sub-state, StopPhase, chosen once per frame in one place (_select_stop_phase for the
+# stopping state, _update_drive for pid) and recorded with a reason in self.stop_phase / self.last_transition:
+#
+#   OFF ──engage──> DRIVE <──> BRAKE_HOLD                              (LongCtrlState.pid)
+#     └──engage──> stopping:  APPROACH ──wheel speed drops out──> CAPTURE ──true stop──> HOLD
+#                                │   (no pose path)                  │ (pose lost)
+#                                └──────────────> SETTLE <───────────┘
+#                  RELEASE = pre-release overlay on top of APPROACH / CAPTURE (reported instead of the base phase)
+#
+# Speed / acceleration estimation is a separate component (SpeedEstimator). The safety arbitration (urgent plan) is
+# applied first (to the starting request) and last (min with the plan) in _update_stopping.
+# Lines marked "BEHAVIOUR KEPT (G1)" are known oddities kept on purpose for this step; see ARS510_RADAR.md › F › G1.
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+class StopPhase(IntEnum):
+  OFF = 0         # long control not active                                                  (LongCtrlState.off)
+  DRIVE = 1       # PID on the plan                                                          (LongCtrlState.pid)
+  BRAKE_HOLD = 2  # PID with the request floored at BRAKE_HOLD_ACCEL (latched, see BRAKE_HOLD_*) (LongCtrlState.pid)
+  APPROACH = 3    # stopping, wheels report rolling: soft-stop closed loop on aEgo / pose     (LongCtrlState.stopping)
+  CAPTURE = 4     # stopping, wheel speed reads standstill, pose valid: hold until the pose says stopped
+  HOLD = 5        # stopping, true stop recognised on the pose path: brake to BRAKE_HOLD_ACCEL, then stopAccel
+  SETTLE = 6      # stopping, no pose path (pose invalid, or entered at standstill): timed settle hold, then ramp
+  RELEASE = 7     # stopping, pre-release overlay easing the request just before the predicted true stop
+
+
 def long_control_state_trans(CP_SP, active, long_control_state,
                              should_stop, brake_pressed, cruise_standstill):
   # Gas Interceptor
@@ -155,6 +186,47 @@ def long_control_state_trans(CP_SP, active, long_control_state,
 
   return long_control_state
 
+
+class SpeedEstimator:
+  """True speed and filtered pose acceleration for the soft stop.
+
+  v_est: wheel speed (minus the drop-out over-read) while the wheel speed is valid or the pose is not; below
+         SOFT_STOP_WHEEL_VALID_V with a valid pose, the pose acceleration integrated from the last value.
+  coast_frames: frames v_est has been integrated from the pose (0 while it follows the wheel speed).
+  pose_a_f: pose acceleration low-passed with SOFT_STOP_POSE_TAU; equals aEgo while the pose is invalid.
+  """
+  def __init__(self):
+    self.v_est = 0.0
+    self.coast_frames = 0
+    self.pose_a_f = 0.0
+
+  @property
+  def coast_t(self):
+    return self.coast_frames * DT_CTRL
+
+  def update(self, v_ego_raw, a_ego, pose_accel):
+    """True speed: wheel speed while it is valid, below that integrate the pose acceleration."""
+    if pose_accel is None or v_ego_raw >= SOFT_STOP_WHEEL_VALID_V:
+      # BEHAVIOUR KEPT (G1): with the pose invalid the speed is taken as the wheel reading, so below the Toyota drop-out
+      # an unknown speed counts as 0 (no uncertainty grows while the pose is missing), and the coast time restarts.
+      # the Toyota wheel speed over-reads just before it drops out (10/28 route 62: it read 0.22-0.23 m/s when the car,
+      # by the IMU, had 0.15-0.25 s left at -0.47 m/s^2, i.e. ~0.1 m/s); take that off below WHEEL_OVERREAD_V
+      over = WHEEL_OVERREAD * float(np.clip((WHEEL_OVERREAD_V - v_ego_raw) / (WHEEL_OVERREAD_V - SOFT_STOP_WHEEL_VALID_V), 0.0, 1.0))
+      self.v_est = max(0.0, v_ego_raw - over)
+      self.coast_frames = 0
+    else:
+      self.v_est = max(0.0, self.v_est + pose_accel * DT_CTRL)
+      self.coast_frames += 1
+    if pose_accel is not None:
+      self.pose_a_f += (pose_accel - self.pose_a_f) * DT_CTRL / SOFT_STOP_POSE_TAU
+    else:
+      # BEHAVIOUR KEPT (G1): the filter state jumps to the wheel-speed aEgo while the pose is invalid
+      self.pose_a_f = a_ego
+
+  def mark_stopped(self):
+    self.v_est = min(self.v_est, SOFT_STOP_TRUE_STOP_V)
+
+
 class LongControl:
   def __init__(self, CP, CP_SP):
     self.CP = CP
@@ -164,75 +236,70 @@ class LongControl:
                              rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
     self.prev_v_ego = 0.0
-    self.settle_frames = 0       # frames left to hold the soft request after the speed reading drops to standstill
-    self.settle_used = False     # the settle hold runs once per stop
-    self.was_rolling = False
+    # pose-based soft stop
+    self.est = SpeedEstimator()
     self.stall_v_hist = deque(maxlen=int(round(STALL_WINDOW / DT_CTRL)) + 1)
     self.stall_stop = False
-    # pose-based soft stop
-    self.v_est = 0.0
-    self.coast_frames = 0
-    self.pose_a_f = 0.0
-    self.coast_active = False
-    self.true_stopped = False
-    self.no_decel_frames = 0
-    self.brake_added = False
     self.brake_hold = False
     self.pre_release_enabled = not os.path.exists(PRE_RELEASE_OFF_FILE)
-    self.pre_release = False
-    self.pre_release_failed = False
+    # BEHAVIOUR KEPT (G1): these three are only set when a pre-release triggers and are never reset between stops;
+    # pre_release_start is read by the release-failed recovery (also after an urgent plan cancelled a stop that never
+    # released, i.e. with the value of an earlier stop)
     self.pre_release_frames = 0
     self.pre_release_slow = 0
     self.pre_release_start = 0.0
+    # sub-state bookkeeping (diagnostics only, never read by the control law)
+    self.stop_phase = StopPhase.OFF
+    self.last_transition = (StopPhase.OFF, StopPhase.OFF, "init")
+    self._release_end_reason = ""
+    self._brake_hold_clear_reason = ""
+    self._entry_reason = ""      # why LongCtrlState changed this frame ("" if it did not)
+    self._reset_stop_latches()
+
+  # --- compatibility views of the estimator --------------------------------------------------------------------------
+  @property
+  def v_est(self):
+    return self.est.v_est
+
+  @v_est.setter
+  def v_est(self, v):
+    self.est.v_est = v
+
+  @property
+  def coast_frames(self):
+    return self.est.coast_frames
+
+  @property
+  def pose_a_f(self):
+    return self.est.pose_a_f
+
+  # --- per-stop latches -----------------------------------------------------------------------------------------------
+  def _reset_stop_latches(self):
+    """Everything that lives for one stop (cleared every frame outside LongCtrlState.stopping)."""
+    self.was_rolling = False
+    self.settle_frames = 0       # frames left to hold the soft request after the speed reading drops to standstill
+    self.settle_used = False     # the settle hold runs once per stop
+    self.coast_active = False    # CAPTURE/HOLD path entered in this stop (pose based true-stop wait)
+    self.true_stopped = False
+    self.no_decel_frames = 0
+    self.brake_added = False
+    self.pre_release = False
+    self.pre_release_failed = False
     self.still_frames = 0
     self.still_set = False       # true_stopped was set by update_still (undo-able while the wheels still read 0)
 
-  def update_still(self, CS, pose_accel):
-    """True stop from the raw pose: wheels read 0 and no longitudinal acceleration for SOFT_STOP_STILL_T of valid samples."""
-    if self.true_stopped and CS.vEgoRaw > SOFT_STOP_STILL_UNDO_V:
-      self.true_stopped = False   # the wheels say we were not stopped after all (whichever rule said so)
-      self.still_set = False
-      self.coast_active = False
-    if pose_accel is None:
-      self.still_frames = 0
-      return
-    if self.true_stopped:
-      return
-    if CS.vEgoRaw < SOFT_STOP_STILL_WHEEL_V and abs(pose_accel) < SOFT_STOP_STILL_A:
-      self.still_frames += 1
-    else:
-      self.still_frames = 0
-    if self.still_frames * DT_CTRL >= SOFT_STOP_STILL_T:
-      self.true_stopped = True
-      self.still_set = True
-      self.v_est = min(self.v_est, SOFT_STOP_TRUE_STOP_V)
-
-  def update_pre_release(self, pose_accel):
-    """Ease the request just before the predicted true stop (see PRE_RELEASE_*). Returns True while releasing."""
-    if pose_accel is None or not self.pre_release_enabled or self.true_stopped or self.pre_release_failed:
-      self.pre_release = False
-      return False
-    decel = -self.pose_a_f
-    if not self.pre_release:
-      if 0.0 < self.v_est <= PRE_RELEASE_MAX_V and decel >= PRE_RELEASE_MIN_DECEL and self.v_est / decel <= PRE_RELEASE_TRIGGER:
-        self.pre_release = True
-        self.pre_release_frames = 0
-        self.pre_release_slow = 0
-        self.pre_release_start = min(self.last_output_accel, 0.0)
-      return self.pre_release
-    self.pre_release_frames += 1
-    self.pre_release_slow = self.pre_release_slow + 1 if decel < SOFT_STOP_COAST_MIN_DECEL else 0
-    if self.pre_release_slow * DT_CTRL >= PRE_RELEASE_FAIL_T or self.pre_release_frames * DT_CTRL >= PRE_RELEASE_MAX_T:
-      # stopped (fine: brake is now added at standstill) or still creeping (brake is added again): either way, once
-      self.pre_release = False
-      self.pre_release_failed = True
-      self.no_decel_frames = 0
-      return False
-    return True
+  def _set_phase(self, phase, reason):
+    """The one place the sub-state changes; every change is recorded with its reason."""
+    if phase != self.stop_phase:
+      if self._entry_reason:
+        reason = f"{self._entry_reason}; {reason}"
+      self.last_transition = (self.stop_phase, phase, reason)
+      self.stop_phase = phase
 
   def reset(self):
     self.pid.reset()
 
+  # --- helpers --------------------------------------------------------------------------------------------------------
   def ramp_to_stop(self, output_accel, rate=STOPPING_DECEL_RATE):
     # stopping ramp: m/s^2/s toward stopAccel, never releasing a harder request
     # TODO: can we just go straight to stopAccel?
@@ -243,6 +310,9 @@ class LongControl:
   def add_brake_rate(self, decel_signal, output_accel):
     """Rate for adding brake before the true stop: gentle, slower still inside the brake engagement band, and the stock
     rate only if the car has not slowed down at all for a long while."""
+    # BEHAVIOUR KEPT (G1): one counter shared by APPROACH (signal min(aEgo, pose_a_f)) and CAPTURE (pose_a_f); it is
+    # updated every APPROACH frame even when the rate is not used (slowing branch), and only reset outside stopping or
+    # by a failed pre-release
     self.no_decel_frames = self.no_decel_frames + 1 if decel_signal > SOFT_STOP_NO_DECEL_A else 0
     if self.no_decel_frames * DT_CTRL >= SOFT_STOP_NO_DECEL_T:
       return STOPPING_DECEL_RATE
@@ -252,6 +322,7 @@ class LongControl:
     """Latch a stop request when the car hangs at crawl speed although the planner keeps asking to slow down."""
     if not active or CS.brakePressed or CS.gasPressed or a_target >= STALL_CLEAR_A_TARGET:
       self.stall_stop = False
+    # BEHAVIOUR KEPT (G1): uses the LongCtrlState of the previous frame
     crawling = (active and self.long_control_state == LongCtrlState.pid and not CS.standstill and
                 SOFT_STOP_V < CS.vEgo < STALL_MAX_V and a_target < STALL_A_TARGET)
     if not crawling:
@@ -262,32 +333,227 @@ class LongControl:
       self.stall_stop = True
       self.stall_v_hist.clear()
 
-  def update_v_est(self, CS, pose_accel):
-    """True speed: wheel speed while it is valid, below that integrate the pose acceleration."""
-    if pose_accel is None or CS.vEgoRaw >= SOFT_STOP_WHEEL_VALID_V:
-      # the Toyota wheel speed over-reads just before it drops out (10/28 route 62: it read 0.22-0.23 m/s when the car,
-      # by the IMU, had 0.15-0.25 s left at -0.47 m/s^2, i.e. ~0.1 m/s); take that off below WHEEL_OVERREAD_V
-      over = WHEEL_OVERREAD * float(np.clip((WHEEL_OVERREAD_V - CS.vEgoRaw) / (WHEEL_OVERREAD_V - SOFT_STOP_WHEEL_VALID_V), 0.0, 1.0))
-      self.v_est = max(0.0, CS.vEgoRaw - over)
-      self.coast_frames = 0
+  def update_still(self, CS, pose_accel):
+    """True stop from the raw pose: wheels read 0 and no longitudinal acceleration for SOFT_STOP_STILL_T of valid samples."""
+    if self.true_stopped and CS.vEgoRaw > SOFT_STOP_STILL_UNDO_V:
+      # BEHAVIOUR KEPT (G1): the undo is partial: v_est stays clamped to SOFT_STOP_TRUE_STOP_V, brake_added /
+      # pre_release_failed / settle_used / no_decel_frames keep their values, and it only fires above 0.2 m/s raw
+      self.true_stopped = False   # the wheels say we were not stopped after all (whichever rule said so)
+      self.still_set = False
+      self.coast_active = False
+    if pose_accel is None:
+      self.still_frames = 0
+      return
+    if self.true_stopped:
+      return
+    # BEHAVIOUR KEPT (G1): zero acceleration with the wheel speed already reading 0 also matches a steady creep
+    if CS.vEgoRaw < SOFT_STOP_STILL_WHEEL_V and abs(pose_accel) < SOFT_STOP_STILL_A:
+      self.still_frames += 1
     else:
-      self.v_est = max(0.0, self.v_est + pose_accel * DT_CTRL)
-      self.coast_frames += 1
-
-  def coast_to_true_stop(self, output_accel, pose_accel):
-    """Wheel speed reads standstill: hold the request until the pose says the car has really stopped."""
-    self.coast_active = True
-    if self.true_stopped or self.v_est <= SOFT_STOP_TRUE_STOP_V or self.coast_frames * DT_CTRL >= SOFT_STOP_MAX_COAST:
+      self.still_frames = 0
+    if self.still_frames * DT_CTRL >= SOFT_STOP_STILL_T:
       self.true_stopped = True
-      # stopped: engage the brake against the creep torque quickly (SOFT_STOP_STILL_RATE down to BRAKE_HOLD_ACCEL), then ramp
-      # to stopAccel as before
-      if output_accel > BRAKE_HOLD_ACCEL:
-        return max(self.ramp_to_stop(output_accel, SOFT_STOP_STILL_RATE), BRAKE_HOLD_ACCEL)
-      return self.ramp_to_stop(output_accel)
-    rate = self.add_brake_rate(self.pose_a_f, output_accel)
-    if -self.pose_a_f < SOFT_STOP_COAST_MIN_DECEL:
+      self.still_set = True
+      self.est.mark_stopped()
+
+  def update_pre_release(self, pose_accel):
+    """Ease the request just before the predicted true stop (see PRE_RELEASE_*). Returns True while releasing."""
+    if pose_accel is None or not self.pre_release_enabled or self.true_stopped or self.pre_release_failed:
+      if self.pre_release:
+        self._release_end_reason = ("pose invalid" if pose_accel is None else "true stop" if self.true_stopped else
+                                    "disabled" if not self.pre_release_enabled else "cancelled")
+      self.pre_release = False
+      return False
+    decel = -self.est.pose_a_f
+    if not self.pre_release:
+      # BEHAVIOUR KEPT (G1): may trigger with brake_added set (creep / downhill brake latch), the release's max() then
+      # eases that added brake too
+      if 0.0 < self.est.v_est <= PRE_RELEASE_MAX_V and decel >= PRE_RELEASE_MIN_DECEL and self.est.v_est / decel <= PRE_RELEASE_TRIGGER:
+        self.pre_release = True
+        self.pre_release_frames = 0
+        self.pre_release_slow = 0
+        self.pre_release_start = min(self.last_output_accel, 0.0)
+      return self.pre_release
+    self.pre_release_frames += 1
+    self.pre_release_slow = self.pre_release_slow + 1 if decel < SOFT_STOP_COAST_MIN_DECEL else 0
+    if self.pre_release_slow * DT_CTRL >= PRE_RELEASE_FAIL_T or self.pre_release_frames * DT_CTRL >= PRE_RELEASE_MAX_T:
+      # stopped (fine: brake is now added at standstill) or still creeping (brake is added again): either way, once
+      self._release_end_reason = "no decel for PRE_RELEASE_FAIL_T" if self.pre_release_slow * DT_CTRL >= PRE_RELEASE_FAIL_T \
+                                 else "PRE_RELEASE_MAX_T"
+      self.pre_release = False
+      self.pre_release_failed = True
+      self.no_decel_frames = 0
+      return False
+    return True
+
+  # --- stopping: sub-state selection (all stopping transitions happen here) ----------------------------------------------
+  def _select_stop_phase(self, CS, pose_accel):
+    """Pick APPROACH / CAPTURE / HOLD / SETTLE for this frame and apply the latches that go with the transition.
+    The order of the tests is the priority of the original if/elif chain and must not change."""
+    if SOFT_STOP_V < CS.vEgo < SOFT_STOP_MAX_V and not CS.standstill:
+      # BEHAVIOUR KEPT (G1): true_stopped (e.g. from the still detector) is not consulted here: wheels reading
+      # 0.05-0.2 m/s run the rolling branch with true_stopped still set (undo only above SOFT_STOP_STILL_UNDO_V)
+      self.was_rolling = True
+      return StopPhase.APPROACH, "wheels rolling"
+    # BEHAVIOUR KEPT (G1): at vEgo >= SOFT_STOP_MAX_V (stopping requested fast, or speeding up downhill) the car is not
+    # "rolling" either and lands in CAPTURE (if it was rolling / capturing, pose valid) or in SETTLE (stock-rate ramp)
+    if pose_accel is not None and (self.was_rolling or self.coast_active):
+      # wheel speed reads standstill but the car may still be rolling: wait for the true stop (pose based)
+      reason = "wheel speed standstill, pose valid" if self.was_rolling else "capturing"
+      self.was_rolling = False
+      self.coast_active = True
+      if self.true_stopped:
+        return StopPhase.HOLD, ("still detector" if self.still_set else "true stop")
+      if self.est.v_est <= SOFT_STOP_TRUE_STOP_V:
+        self.true_stopped = True
+        return StopPhase.HOLD, "v_est <= SOFT_STOP_TRUE_STOP_V"
+      if self.est.coast_t >= SOFT_STOP_MAX_COAST:
+        self.true_stopped = True
+        return StopPhase.HOLD, "SOFT_STOP_MAX_COAST"
+      return StopPhase.CAPTURE, reason
+    # BEHAVIOUR KEPT (G1): losing the pose in CAPTURE/HOLD drops to SETTLE: was_rolling is already False there, so no
+    # settle hold is armed and (settle_used False) the stock-rate ramp starts at once, i.e. an unknown speed is
+    # treated as stopped. A true stop from the still detector with no prior roll-in also runs here (stock ramp).
+    reason = "no pose" if pose_accel is None else "entered at standstill"
+    if self.was_rolling and not self.settle_used:
+      # the speed reading just dropped to standstill but the car is still creeping: keep the request until
+      # it has really stopped, so the stop does not come with the ramp to stopAccel already under way
+      settle_s = float(np.clip(self.prev_v_ego / abs(SOFT_STOP_ACCEL) + SOFT_STOP_SETTLE_MARGIN, *SOFT_STOP_SETTLE_RANGE))
+      self.settle_frames = int(settle_s / DT_CTRL)
+      self.settle_used = True
+      reason = "wheel speed standstill, no pose: settle timer"
+    self.was_rolling = False
+    return StopPhase.SETTLE, reason
+
+  # --- stopping: one method per sub-state (output only; no phase changes) ------------------------------------------------
+  def _approach(self, CS, pose_accel, output_accel):
+    # the pose acceleration shows the brake engaging ~0.3 s before the wheel-speed aEgo does
+    decel = min(CS.aEgo, self.est.pose_a_f) if pose_accel is not None else CS.aEgo
+    rate = self.add_brake_rate(decel, output_accel)
+    if CS.aEgo < SOFT_STOP_SLOWING_A or (pose_accel is not None and self.est.pose_a_f < SOFT_STOP_ONSET_A):
+      if not self.brake_added:
+        # slowing down: ease the request toward SOFT_STOP_ACCEL (or brake gently toward it if coming from above)
+        output_accel += float(np.clip(SOFT_STOP_ACCEL - output_accel, -SOFT_STOP_ADD_RATE * DT_CTRL, SOFT_STOP_RELEASE_RATE * DT_CTRL))
+      # else: brake had to be added in this stop (creep / downhill): keep it, releasing it again would let the car
+      # roll on and add it back, without ever stopping (simulated downhill + creep)
+    else:
+      # not slowing enough (idle creep / PCM not braking yet): add brake until it does
+      output_accel = self.ramp_to_stop(output_accel, rate)
+      self.brake_added = True
+    return output_accel
+
+  def _capture(self, output_accel):
+    """Wheel speed reads standstill: hold the request until the pose says the car has really stopped."""
+    rate = self.add_brake_rate(self.est.pose_a_f, output_accel)
+    if -self.est.pose_a_f < SOFT_STOP_COAST_MIN_DECEL:
       # not slowing (idle creep): add brake (gently, at the stock rate if it keeps creeping) until it does
       return self.ramp_to_stop(output_accel, rate)
+    return output_accel
+
+  def _hold(self, output_accel):
+    # stopped: engage the brake against the creep torque quickly (SOFT_STOP_STILL_RATE down to BRAKE_HOLD_ACCEL), then ramp
+    # to stopAccel as before
+    if output_accel > BRAKE_HOLD_ACCEL:
+      return max(self.ramp_to_stop(output_accel, SOFT_STOP_STILL_RATE), BRAKE_HOLD_ACCEL)
+    return self.ramp_to_stop(output_accel)
+
+  def _settle(self, output_accel):
+    if self.settle_frames > 0:
+      self.settle_frames -= 1
+      return output_accel
+    # after a roll-in (no pose) the car may still be creeping: gentle ramp; entering at standstill: stock rate
+    return self.ramp_to_stop(output_accel, SOFT_STOP_ADD_RATE if self.settle_used else STOPPING_DECEL_RATE)
+
+  def _release(self, output_accel):
+    # linear release from the request at the trigger to PRE_RELEASE_ACCEL over PRE_RELEASE_LEAD
+    frac = min(1.0, (self.pre_release_frames + 1) * DT_CTRL / PRE_RELEASE_LEAD)
+    return max(output_accel, self.pre_release_start + (PRE_RELEASE_ACCEL - self.pre_release_start) * frac)
+
+  def _rebrake_after_release(self, output_accel):
+    # released too early: back to the request that was braking, at the gentle add rate (not in one frame: the review
+    # found -0.05 -> -0.5 in a single step)
+    # BEHAVIOUR KEPT (G1): the step is SOFT_STOP_ADD_RATE * 5 (1.5 m/s^3), measured from last_output_accel, so it can
+    # brake less than the base phase computed this frame; it also runs after an urgent plan set pre_release_failed in
+    # a stop that never released (pre_release_start from an earlier stop)
+    if output_accel > self.pre_release_start:
+      output_accel = max(self.pre_release_start, self.last_output_accel - SOFT_STOP_ADD_RATE * DT_CTRL * 5)
+    return output_accel
+
+  def _update_stopping(self, CS, a_target, pose_accel):
+    output_accel = min(self.last_output_accel, 0.0)
+    self.update_still(CS, pose_accel)
+
+    # safety arbitration, part 1: an urgent plan replaces the request before any comfort shaping
+    urgent = a_target < output_accel - SOFT_STOP_URGENT_MARGIN
+    if urgent:
+      output_accel = a_target
+      self.brake_added = True
+      # 11/02 review (Codex, round 2): the pre-release ran last and its max() overrode an urgent plan (a -2.0 request came
+      # out as -0.37). An urgent plan cancels the release for this stop.
+      if self.pre_release:
+        self._release_end_reason = "urgent plan"
+      self.pre_release = False
+      self.pre_release_failed = True
+
+    phase, reason = self._select_stop_phase(CS, pose_accel)
+    if phase == StopPhase.APPROACH:
+      output_accel = self._approach(CS, pose_accel, output_accel)
+    elif phase == StopPhase.CAPTURE:
+      output_accel = self._capture(output_accel)
+    elif phase == StopPhase.HOLD:
+      output_accel = self._hold(output_accel)
+    else:
+      output_accel = self._settle(output_accel)
+
+    # RELEASE overlay (after the base phase, whose latches and counters have already run this frame)
+    if self.update_pre_release(pose_accel):
+      if self.stop_phase != StopPhase.RELEASE:
+        reason = "predicted stop within PRE_RELEASE_TRIGGER"
+      phase = StopPhase.RELEASE
+      output_accel = self._release(output_accel)
+    elif self.pre_release_failed and not self.true_stopped and not urgent:
+      output_accel = self._rebrake_after_release(output_accel)
+    if self.stop_phase == StopPhase.RELEASE and phase != StopPhase.RELEASE:
+      reason = f"release ended ({self._release_end_reason}); {reason}"
+
+    # safety arbitration, part 2:
+    # the plan always has the last word on braking more: no comfort shaping above may brake less than an urgent plan
+    if urgent:
+      output_accel = min(output_accel, a_target)
+    self.reset()
+    self._set_phase(phase, reason)
+    return output_accel
+
+  def _state_change_reason(self, active, should_stop, CS):
+    if not active:
+      return "not active"
+    if self.long_control_state == LongCtrlState.pid:
+      return "starting condition"
+    return ("should_stop" if should_stop else "creep stall" if self.stall_stop else "brake pressed" if CS.brakePressed
+            else "cruise standstill")
+
+  # --- pid / off ------------------------------------------------------------------------------------------------------
+  def _update_drive(self, CS, a_target):
+    error = a_target - CS.aEgo
+    output_accel = self.pid.update(error, speed=CS.vEgo,
+                                   feedforward=a_target)
+    # ars510: the planner's positive-acceleration ceiling (longitudinal_planner A_POS_MAX) is meant to be felt; the PID
+    # may add at most POS_PID_MARGIN on top of a positive target (uphill correction), never a second step of throttle.
+    if a_target > 0.:
+      output_accel = min(output_accel, a_target + POS_PID_MARGIN)
+    # keep the friction brake engaged through the stop (see BRAKE_HOLD_*); latched, so a planner request that
+    # hovers around the threshold while closing on a stopped lead does not release and re-grab the brake
+    # BEHAVIOUR KEPT (G1): the latch is set before the clear conditions are checked (end of update()), so the hold is
+    # applied for the frame in which gas / a positive plan / speed would clear it, and is re-set every frame while
+    # vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET even with the gas pressed
+    if CS.vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET:
+      self.brake_hold = True
+    if self.brake_hold:
+      output_accel = min(output_accel, BRAKE_HOLD_ACCEL)
+      self._set_phase(StopPhase.BRAKE_HOLD, "v < BRAKE_HOLD_V and plan < BRAKE_HOLD_A_TARGET"
+                      if self.stop_phase == StopPhase.DRIVE else "pid")
+    else:
+      self._set_phase(StopPhase.DRIVE, self._brake_hold_clear_reason if self.stop_phase == StopPhase.BRAKE_HOLD else "pid")
     return output_accel
 
   def update(self, active, CS, a_target, should_stop, accel_limits, pose_accel=None):
@@ -295,107 +561,33 @@ class LongControl:
     pose_accel: calibrated longitudinal acceleration from locationd (m/s^2), None if not valid."""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
-    self.update_v_est(CS, pose_accel)
-    if pose_accel is not None:
-      self.pose_a_f += (pose_accel - self.pose_a_f) * DT_CTRL / SOFT_STOP_POSE_TAU
-    else:
-      self.pose_a_f = CS.aEgo
+    self.est.update(CS.vEgoRaw, CS.aEgo, pose_accel)
 
     self.update_stall(active, CS, a_target)
+    prev_state = self.long_control_state
     self.long_control_state = long_control_state_trans(self.CP_SP, active, self.long_control_state,
                                                        should_stop or self.stall_stop, CS.brakePressed,
                                                        CS.cruiseState.standstill)
+    self._entry_reason = "" if self.long_control_state == prev_state else \
+      self._state_change_reason(active, should_stop, CS)
     if self.long_control_state == LongCtrlState.off:
       self.reset()
       output_accel = 0.
-
+      self._set_phase(StopPhase.OFF, "not active")
     elif self.long_control_state == LongCtrlState.stopping:
-      output_accel = min(self.last_output_accel, 0.0)
-      self.update_still(CS, pose_accel)
-      urgent = a_target < output_accel - SOFT_STOP_URGENT_MARGIN
-      if urgent:
-        output_accel = a_target
-        self.brake_added = True
-        # 11/02 review (Codex, round 2): the pre-release ran last and its max() overrode an urgent plan (a -2.0 request came
-        # out as -0.37). An urgent plan cancels the release for this stop.
-        self.pre_release = False
-        self.pre_release_failed = True
-      rolling = SOFT_STOP_V < CS.vEgo < SOFT_STOP_MAX_V and not CS.standstill
-      if rolling:
-        # the pose acceleration shows the brake engaging ~0.3 s before the wheel-speed aEgo does
-        decel = min(CS.aEgo, self.pose_a_f) if pose_accel is not None else CS.aEgo
-        rate = self.add_brake_rate(decel, output_accel)
-        if CS.aEgo < SOFT_STOP_SLOWING_A or (pose_accel is not None and self.pose_a_f < SOFT_STOP_ONSET_A):
-          if not self.brake_added:
-            # slowing down: ease the request toward SOFT_STOP_ACCEL (or brake gently toward it if coming from above)
-            output_accel += float(np.clip(SOFT_STOP_ACCEL - output_accel, -SOFT_STOP_ADD_RATE * DT_CTRL, SOFT_STOP_RELEASE_RATE * DT_CTRL))
-          # else: brake had to be added in this stop (creep / downhill): keep it, releasing it again would let the car
-          # roll on and add it back, without ever stopping (simulated downhill + creep)
-        else:
-          # not slowing enough (idle creep / PCM not braking yet): add brake until it does
-          output_accel = self.ramp_to_stop(output_accel, rate)
-          self.brake_added = True
-        self.was_rolling = True
-      elif pose_accel is not None and (self.was_rolling or self.coast_active):
-        # wheel speed reads standstill but the car may still be rolling: wait for the true stop (pose based)
-        self.was_rolling = False
-        output_accel = self.coast_to_true_stop(output_accel, pose_accel)
-      else:
-        if self.was_rolling and not self.settle_used:
-          # the speed reading just dropped to standstill but the car is still creeping: keep the request until
-          # it has really stopped, so the stop does not come with the ramp to stopAccel already under way
-          settle_s = float(np.clip(self.prev_v_ego / abs(SOFT_STOP_ACCEL) + SOFT_STOP_SETTLE_MARGIN, *SOFT_STOP_SETTLE_RANGE))
-          self.settle_frames = int(settle_s / DT_CTRL)
-          self.settle_used = True
-        self.was_rolling = False
-        if self.settle_frames > 0:
-          self.settle_frames -= 1
-        else:
-          # after a roll-in (no pose) the car may still be creeping: gentle ramp; entering at standstill: stock rate
-          output_accel = self.ramp_to_stop(output_accel, SOFT_STOP_ADD_RATE if self.settle_used else STOPPING_DECEL_RATE)
-      if self.update_pre_release(pose_accel):
-        # linear release from the request at the trigger to PRE_RELEASE_ACCEL over PRE_RELEASE_LEAD
-        frac = min(1.0, (self.pre_release_frames + 1) * DT_CTRL / PRE_RELEASE_LEAD)
-        output_accel = max(output_accel, self.pre_release_start + (PRE_RELEASE_ACCEL - self.pre_release_start) * frac)
-      elif self.pre_release_failed and not self.true_stopped and not urgent:
-        # released too early: back to the request that was braking, at the gentle add rate (not in one frame: the review
-        # found -0.05 -> -0.5 in a single step)
-        if output_accel > self.pre_release_start:
-          output_accel = max(self.pre_release_start, self.last_output_accel - SOFT_STOP_ADD_RATE * DT_CTRL * 5)
-      # the plan always has the last word on braking more: no comfort shaping above may brake less than an urgent plan
-      if urgent:
-        output_accel = min(output_accel, a_target)
-      self.reset()
-
+      output_accel = self._update_stopping(CS, a_target, pose_accel)
     else:  # LongCtrlState.pid
-      error = a_target - CS.aEgo
-      output_accel = self.pid.update(error, speed=CS.vEgo,
-                                     feedforward=a_target)
-      # ars510: the planner's positive-acceleration ceiling (longitudinal_planner A_POS_MAX) is meant to be felt; the PID
-      # may add at most POS_PID_MARGIN on top of a positive target (uphill correction), never a second step of throttle.
-      if a_target > 0.:
-        output_accel = min(output_accel, a_target + POS_PID_MARGIN)
-      # keep the friction brake engaged through the stop (see BRAKE_HOLD_*); latched, so a planner request that
-      # hovers around the threshold while closing on a stopped lead does not release and re-grab the brake
-      if CS.vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET:
-        self.brake_hold = True
-      if self.brake_hold:
-        output_accel = min(output_accel, BRAKE_HOLD_ACCEL)
+      output_accel = self._update_drive(CS, a_target)
 
+    # end-of-frame latch maintenance (order kept from 462845c)
     if self.long_control_state != LongCtrlState.pid or CS.gasPressed or a_target > BRAKE_HOLD_CLEAR_A_TARGET or CS.vEgo > BRAKE_HOLD_V + 0.2:
+      if self.brake_hold:
+        self._brake_hold_clear_reason = ("not pid" if self.long_control_state != LongCtrlState.pid else "gas" if CS.gasPressed
+                                         else "plan > BRAKE_HOLD_CLEAR_A_TARGET" if a_target > BRAKE_HOLD_CLEAR_A_TARGET
+                                         else "v > BRAKE_HOLD_V + 0.2")
       self.brake_hold = False
     if self.long_control_state != LongCtrlState.stopping:
-      self.was_rolling = False
-      self.settle_frames = 0
-      self.settle_used = False
-      self.coast_active = False
-      self.true_stopped = False
-      self.no_decel_frames = 0
-      self.brake_added = False
-      self.pre_release = False
-      self.pre_release_failed = False
-      self.still_frames = 0
-      self.still_set = False
+      self._reset_stop_latches()
     self.prev_v_ego = CS.vEgo
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
