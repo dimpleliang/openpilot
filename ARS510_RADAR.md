@@ -180,7 +180,7 @@ comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表�
   首次需在裝置上 `sudo /data/tailscale/tailscale --socket=/data/tailscale/tailscaled.sock up --hostname=comma` 並開連結登入。
   11/01 啟用：車機節點 `comma-1`（100.102.239.55）、Mac `liangmac-mini`。Mac 端 `~/ars510_rlogs/ts_pull.sh`（repo 備份
   `tools/ars510/mac/ts_pull.sh`）由 launchd `com.ars510.tspull` 每 15 分鐘跑：只拉 rlog／qlog 到 `~/ars510_rlogs/raw/<segment>/`，
-  核對大小後刪車機上的 rlog（影片留給車機自己清），行車中跳過正在寫的最新片段。ssh 別名 `comma-ts`（走 tailnet，不經 ssh.comma.ai）。
+  核對大小後刪車機上的 rlog（影片留給車機自己清）；**只在車機 offroad 時同步**（11/02：行車中同步造成記憶體回收風暴與模型掉幀，見「11/02 行車回饋」）。ssh 別名 `comma-ts`（走 tailnet，不經 ssh.comma.ai）。
   同時抓 qcamera.ts（低畫質路況影像，3–5 MB/分）；高畫質影片用 `~/ars510_rlogs/pull_video.sh <片段或路程>`（`ALL=1` 含廣角與駕駛鏡頭）按需抓，影片本身留在車機等它自己清。紀錄：`~/ars510_rlogs/ts_pull.log`。首次同步約 13 GB，經 DERP 中繼約 1.3 MB/s。這取代「每趟都傳到 comma」的需求，不需 comma token。
   兩者都要 comma 開著（車子發動或熄火後尚未自動關機）。
 
@@ -689,7 +689,11 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 - **11:06 煞車不舒服、多次抖動**（route 38 seg 6–8）：塞車跟停時前車 3.6–4.3 m，駕駛踩油門蠕行 → 放開 → openpilot 立即以 −0.7～−0.9 煞
   （e2e 要求），再踩再煞，4 次循環；11:07:55 在前車 4.3 m、9.6 km/h 接管，前車逼近 −1.1 m/s，直接 −2.0（實測 −2.26）煞停。原因是
   openpilot 的最小跟車距離（約 4.5–6 m）大於駕駛蠕行時的 3–4 m，每次接管都先補煞車。不是控制振盪。
-- **11:17:22「TAKE CONTROL IMMEDIATELY / locationd Temporary Error」**（有聲）：一筆 cameraOdometry 無效（模型掉一幀，間隔 117 ms）→
-  locationd `inputsOK` 只有一幀（50 ms）為 False → 原廠程式立刻發大警報。locationd 本身容忍這種輸入（INPUT_INVALID_LIMIT），
-  `selfdrived` 改為持續 0.5 s 才報（`LOCATIOND_ERROR_DEBOUNCE_S`）。
+- **11:17:22 與 11:28:44「TAKE CONTROL IMMEDIATELY / locationd Temporary Error」**（有聲）：鏈條是 modeld 漏掉一幀相機影像
+  （frameId 21537→21539，兩次模型間隔 120 ms，模型本身只花 35 ms）→ `cameraOdometry.valid = False` 一幀 → locationd `inputsOK`
+  50 ms 為 False → 原廠程式立刻發大警報。**真正原因是記憶體回收風暴**：兩次事件當下 free 從 50–60 MB 跳到 270–340 MB、page cache
+  掉 200–280 MB、`kswapd0` 吃 15–22% CPU（平時 0）。今天多了 Tailscale 行車中同步 rlog：rsync 讀 GB 級檔案把 cache 灌滿、
+  tailscaled 最高 27% CPU；整趟 kswapd 爆發 23 次／810 個 2 s 視窗，昨天（無同步）只有 1／479，掉幀也只在開機載模型那一次。
+  處置：(1) `ts_pull.sh` 改為車機 offroad 才同步（`ONROAD_OK=1` 可強制）；(2) `selfdrived` 的 locationdTemporaryError 改為持續
+  0.5 s 才報（`LOCATIOND_ERROR_DEBOUNCE_S`），locationd 本身本就容忍單幀無效輸入（INPUT_INVALID_LIMIT）。分析腳本 `~/moddrop.py`（Mac VM）。
 - **時速 0 不做匯入標示**（駕駛要求）：`CUTIN_MIN_V_EGO = 1.0 m/s`。

@@ -1,8 +1,8 @@
 #!/bin/bash
 # ars510: pull every finished segment's rlog/qlog/qcamera (low-res road video) from the comma over Tailscale, then free
 # the rlog's space on the device. Full-resolution video on demand: pull_video.sh.
-# Runs from launchd every 15 min (see ts_pull.plist). Safe to run while driving: rsync is niced on the device and
-# the segment currently being written (newest) is skipped. The rlog is deleted on the device only after it arrived
+# Runs from launchd every 15 min (see ts_pull.plist). Only while the device is offroad (pulling while driving starved
+# modeld of memory, see below); the newest segment is skipped anyway. The rlog is deleted on the device only after it arrived
 # here with the same size; the video stays there for the device's own cleanup / comma connect, so the camera can
 # still be reviewed for a few days.
 #
@@ -18,6 +18,9 @@ exec >> "$LOG" 2>&1
 echo "== $(date '+%F %T')"
 if ! ssh $O $HOST true 2>/dev/null; then echo "comma offline"; exit 0; fi
 off=$(ssh $O $HOST 'cat /data/params/d/IsOffroad 2>/dev/null')
+# 11/02: pulling while driving caused page-cache reclaim storms on the device (kswapd0 up to 32 %, tailscaled 27 %), two
+# modeld frame drops and two "locationd Temporary Error" alerts (route 38, 11:17 / 11:28). Offroad only.
+if [ "$off" != "1" ] && [ "${ONROAD_OK:-0}" != "1" ]; then echo "onroad: skipped"; exit 0; fi
 # one listing: segment and rlog size (0 = rlog already removed), oldest first
 list=$(ssh $O $HOST 'cd /data/media/0/realdata && for d in $(ls -d */ | tr -d / | grep -v boot | sort); do echo "$d $(stat -c %s $d/rlog.zst 2>/dev/null || echo 0)"; done')
 [ "$off" = "1" ] || list=$(echo "$list" | sed '$d')   # newest segment is still being written while onroad
