@@ -23,6 +23,7 @@ decode and its filtered variants:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, replace
 from math import exp, isfinite, nan, pi
 from collections.abc import Iterable
@@ -115,6 +116,13 @@ class NativeInterfaceConfig:
     # dimpleliang/ars510: beyond this range, unclassified / pedestrian objects (GHOST_CLASSES) without a camera association are
     # not published (ghost filter, 11/02). 0 = off (fused: 25)
     ghost_gate_min_d_m: float = 0.0
+    # dimpleliang/ars510: project each published object forward by the age of the object list (record header byte 13, the
+    # radar's own output latency of 146-241 ms, plus the 30-40 ms the 106 frames take): d += vRel x L, y += yvRel x L.
+    # 11/02 offline (435 segments, analysis/latency): against the camera lead the range bias moved with the closing speed at
+    # -0.16..-0.20 s before (pure delay would be -1 s/s... i.e. 0.19 s of delay) and +0.03..+0.06 s after; |vRel| > 6 m/s
+    # median bias 1.59 -> 0.02 m; lateral bias slope -0.14/-0.20 -> +0.02/-0.02 s; static objects while braking confirm a
+    # physical delay of 0.26-0.28 s independent of the camera. Speed is not projected (aRel trails by 0.3 s). Off: False.
+    latency_comp: bool = False
     # Stationary tracks (|over-ground speed| < path_gate_stationary_mps) within path_gate_min_range_m are path-gated to
     # path_gate_stationary_m of the path curved with max(v_ego, 2 m/s): parked cars and roadside objects close in stay out
     # of the lane, where radard's low-speed rule would otherwise stop for them as the path curves away. 0 = off (fused: 0.5 m/s, 1.5 m)
@@ -172,9 +180,17 @@ FUSED_CONFIG = replace(BASE_CONFIG, range_fusion_gain=0.1, relink_max_gap_s=0.0,
                        oncoming_min_mps=2.0,
                        # dimpleliang/ars510: stopped cars in the path keep publishing beyond 60 m (see far_slow_keep_mps).
                        far_slow_keep_mps=3.0,
-                       ghost_gate_min_d_m=25.0)
+                       ghost_gate_min_d_m=25.0,
+                       latency_comp=True)
 
 
+# latency compensation limits (see NativeInterfaceConfig.latency_comp)
+LATENCY_MIN_S, LATENCY_MAX_S = 0.10, 0.35   # header byte 13 outside this = not trusted, use LATENCY_DEFAULT_S
+LATENCY_DEFAULT_S = 0.22                    # median total age of a record on this unit
+LATENCY_MAX_VREL = 40.0                     # m/s, beyond this the speed is a sentinel / glitch
+LATENCY_MAX_VEL_UNC = 50                    # 240|7 code, beyond this the projection adds more error than it removes
+LATENCY_MAX_DD_M, LATENCY_MAX_DY_M = 6.0, 0.5
+LATENCY_OFF_FILE = "/data/ars510_no_latency_comp"
 GHOST_CLASSES = (1, 4)  # 163|3 unclassified, pedestrian (cars 2/3 and two-wheelers 5/6 pass; 5/6 feed the VRU channel)
 NATIVE_VREL_STATUS = "native_over_ground_minus_ego"
 UNRESOLVED_NAN = "unresolved_nan"
@@ -226,6 +242,7 @@ class Ars510NativeRadarInterface:
         self._acc_assoc: tuple[int, float, float] | None = None  # (tid, last x, last y)
         self.path_gated = 0
         self.ghost_gated = 0  # dimpleliang/ars510: objects withheld by the ghost gate (class / camera association)
+        self._latency_on = not os.path.exists(LATENCY_OFF_FILE)
         self.oncoming_suppressed = 0
         # ARS510 display: every object of the last record from DISPLAY_MIN_AGE on, before the path gates:
         # [dRel, yRel, vRel, published, settling (younger than min_publish_age), radar object class 163|3]
@@ -295,7 +312,7 @@ class Ars510NativeRadarInterface:
             self.crc_failures += 1
             return None
         self.records += 1
-        return self._payload(complete.time_s, complete.payload)
+        return self._payload(complete.time_s, complete.payload, t_last=time_s)
 
     def update_many(self, frames: Iterable[tuple[float, int, int, bytes]]) -> list[dict]:
         out = []
@@ -493,9 +510,30 @@ class Ars510NativeRadarInterface:
             return nan
         return float((obj.accel_like_code + ACCEL_LIKE.zero_code - ACCEL_ZERO) * ACCEL_SCALE - self._a_ego)
 
-    def _payload(self, time_s: float, record: bytes) -> dict:
+    def _latency_s(self, record: bytes, time_s: float, t_last: float | None) -> float:
+        """Age of this object list when its last frame arrived: radar output latency (header byte 13, ms) + transfer time."""
+        lat = record[13] * 1e-3
+        if not LATENCY_MIN_S <= lat <= LATENCY_MAX_S:
+            lat = LATENCY_DEFAULT_S
+        if t_last is not None and 0.0 <= t_last - time_s < 0.2:
+            lat += t_last - time_s
+        return lat
+
+    def _project(self, obj: NativeObject, d_rel: float, vrel: float, yv: float, lat: float) -> tuple[float, float]:
+        """(dRel, yRel) projected forward by lat seconds; the raw values when the object is not trustworthy enough."""
+        if obj.predicted or obj.slot_status == 2 or obj.vel_code in (0, 1023) or not isfinite(vrel) or abs(vrel) > LATENCY_MAX_VREL \
+                or obj.vel_unc_code > LATENCY_MAX_VEL_UNC:
+            return d_rel, float(obj.y_rel)
+        d = d_rel + max(-LATENCY_MAX_DD_M, min(LATENCY_MAX_DD_M, vrel * lat))
+        y = float(obj.y_rel)
+        if isfinite(yv):
+            y += max(-LATENCY_MAX_DY_M, min(LATENCY_MAX_DY_M, yv * lat))
+        return max(d, 0.0), y
+
+    def _payload(self, time_s: float, record: bytes, t_last: float | None = None) -> dict:
         cfg = self.config
         v_ego = self._fresh_ego_speed(time_s)
+        lat = self._latency_s(record, time_s, t_last) if (cfg.latency_comp and self._latency_on) else 0.0
         decoded = []
         for slot, seg in occupied_slots(record):
             obj = decode_native_slot(slot, seg)
@@ -530,14 +568,18 @@ class Ars510NativeRadarInterface:
             if obj.age >= 2:
                 self._first.setdefault(tid, (time_s, obj.d_rel, obj.y_rel))
                 self._last[tid] = (time_s, obj.d_rel, obj.y_rel, vrel, obj.age)
-            far_rows.append((float(d_rel), float(obj.y_rel), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0),
-                             int(tid), self._yv_rel(obj, time_s), float(v_ground) if cfg.fused_speed_filter and v_ego is not None else float(obj.v_long_ground),
+            yv = self._yv_rel(obj, time_s)
+            # everything downstream (radard, display, the coasts) gets the object projected to "now"; the track books,
+            # range fusion, ACC pairing and the mismatch log above stay on the raw measurement
+            d_out, y_out = self._project(obj, d_rel, vrel, yv, lat) if lat > 0.0 else (d_rel, float(obj.y_rel))
+            far_rows.append((float(d_out), float(y_out), vrel, int(obj.age), int(obj.existence_pct or 0), int(obj.object_class or 0),
+                             int(tid), yv, float(v_ground) if cfg.fused_speed_filter and v_ego is not None else float(obj.v_long_ground),
                              int(obj.range_unc_code if obj.range_unc_code is not None else 127), int(obj.vel_unc_code),
                              int(obj.camera_assoc or 0)))
             shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
-                shown = [float(d_rel), float(obj.y_rel), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0, int(tid) & 0xFFFF,
-                         self._yv_rel(obj, time_s), int(obj.lane_crossing_code or 0)]  # ego-frame lateral speed (yaw x range removed)
+                shown = [float(d_out), float(y_out), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0, int(tid) & 0xFFFF,
+                         yv, int(obj.lane_crossing_code or 0)]  # ego-frame lateral speed (yaw x range removed)
                 display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
@@ -580,11 +622,11 @@ class Ars510NativeRadarInterface:
                 self._out_id[tid] = self._relink(tid, time_s, seen)
             point = {
                 "trackId": int(self._out_id[tid]) + GUARD_ID_STRIDE * self._guard_gen.get(tid, 0),
-                "dRel": float(d_rel),
-                "yRel": float(obj.y_rel),
+                "dRel": float(d_out),
+                "yRel": float(y_out),
                 "vRel": vrel,
                 "aRel": self._a_rel(obj, v_ego),
-                "yvRel": self._yv_rel(obj, time_s),
+                "yvRel": yv,
                 "measured": not obj.predicted,  # 107|1, like Tesla's Meas; older radard versions store it with the track
             }
             if cfg.include_metadata:
