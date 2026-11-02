@@ -29,9 +29,21 @@ while read -r s remote; do
   [ -n "$s" ] || continue
   [ "$remote" = "0" ] && [ -s "$DEST/$s/rlog.zst" ] && [ -s "$DEST/$s/qcamera.ts" ] && continue   # already pulled and freed
   mkdir -p "$DEST/$s"
+  # stop as soon as the car is driven again: check before every segment, and a watchdog kills a running transfer
+  if [ "${ONROAD_OK:-0}" != "1" ] && [ "$(ssh $O $HOST 'cat /data/params/d/IsOffroad 2>/dev/null')" != "1" ]; then
+    echo "car went onroad: stopped after $n segments"; break
+  fi
   rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" \
         --include='rlog*' --include='qlog*' --include='qcamera.ts' --exclude='*' \
-        "$HOST:/data/media/0/realdata/$s/" "$DEST/$s/" < /dev/null || { echo "rsync failed $s"; continue; }
+        "$HOST:/data/media/0/realdata/$s/" "$DEST/$s/" < /dev/null &
+  rpid=$!
+  while kill -0 $rpid 2>/dev/null; do
+    sleep 5
+    if kill -0 $rpid 2>/dev/null && [ "${ONROAD_OK:-0}" != "1" ] && [ "$(ssh $O $HOST 'cat /data/params/d/IsOffroad 2>/dev/null')" != "1" ]; then
+      kill $rpid 2>/dev/null; wait $rpid 2>/dev/null; echo "car went onroad during $s: transfer aborted (resumes next time)"; break 2
+    fi
+  done
+  wait $rpid || { echo "rsync failed $s"; continue; }
   n=$((n + 1))
   if [ "${KEEP:-0}" != "1" ] && [ "$remote" -gt 0 ]; then
     local_=$(stat -f %z "$DEST/$s/rlog.zst" 2>/dev/null || echo -1)
