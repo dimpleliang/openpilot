@@ -677,8 +677,17 @@ ARS510 的 y 接近車身中心，所以 −1.5 m 約等於車身邊緣離線 0.
 - **未解析位元**（`analysis/bits`）：表頭 bytes 1–4 是 32-bit 時間戳（100 µs；byte4 是它的 bit 24，不是旗標）、bytes 5–6 15-bit 計數器、
   byte8 高 nibble 滾動計數；slot 0|2 狀態（1 實測／2 外推：existence 從不 ≥ 99%、不確定度 2–3×、下週期消失 12.7% vs 1.1%）、140|3 尺寸排序
   類別碼（與 163|3 一對一）、131|4 車道歸屬信心、136|4 雷達／鏡頭融合權重、96|10 第二組橫向速度（車道對齊座標）、182|1 橫越 VRU 旗標；
-  accel_like_code 是對地縱向加速度約 0.125 m/s²/碼；0x202／0x23B 校驗碼 = CRC-8 J1850（0x1D，init/xorout FF）。未解：表頭 byte13
-  （與物件數、車速相關）、slot 168–177、0x196 事件 bytes。herizon1054 fork 無 ARS510 專用解析。
+  accel_like_code 是對地縱向加速度約 0.125 m/s²/碼；0x202／0x23B 校驗碼 = CRC-8 J1850（0x1D，init/xorout FF）。herizon1054 fork 無 ARS510 專用解析。
+- **第二輪（`analysis/bits2`，435 段／42 萬 record）解開的三組**：
+  - **表頭 byte13 = 物件清單輸出延遲（ms）**：record 第一幀離開雷達的時刻 − 表頭量測時間戳，146–241 ms，排程在雷達 10 ms tick 上所以 ±10 跳階。
+    段內與主機端延遲相關 0.93、斜率 0.96 ms/碼，扣掉後主機延遲 std 6.3 → 1.9 ms；物件多就晚一個 tick（這就是與物件數 0.60 相關的來源）。
+    否定：溫度、偵測數、更寬欄位。**意義：收到的物件表描述的是 150–240 ms 前的場景**（`record.header_latency_ms`、`header_timestamp_s`）；
+    融合與切入判斷若要精確，d_rel 應以 vRel × 延遲外推（待評估）。
+  - **slot 168–177 = 內部週期重驗狀態**（0／0x3FF／0x300 過渡）：以軌跡 age 為相位每 5 週期（≈300 ms）在 age≡1 (mod 5) 重設為 0x3FF，量測品質好就回 0；
+    遠距／predicted／速度不確定度高者停在 0x3FF（lag-5 自相關 0.96）。不是鏡頭旗標、不是 ACC 目標旗標、不是量測值。結構確定、語意中等。
+  - **0x196 bytes 4–7**：事件 = **TTC < 4.0 s 閘門**（181 次，起始 TTC 中位 3.88 s，中位長 0.42 s）；b4、b5 是兩個 0–50 飽和的危急度分數
+    （b4 在 TTC < 1 s／需求減速 > 6 m/s² 飽和；b5 偏向路徑內近距前車，常互斥）；b6 = b4 + q、b7 = b5 + (21 − q)，q 在事件內平滑轉移；
+    不是校驗碼（CRC-8／SUM／XOR 全部 < 1.4%）。與 Toyota PCS 警報等級不符（唯一真警報時 b4 = 0）。需要真實 PCS／AEB 事件才能再確認語意。
 - **改動**（同日）：`objects.py` 新增 slot_status／lane_confidence／camera_weight／class_size_code；`interface.py` 發布加鬼影門
   （25 m 外、類別 1／4、無鏡頭關聯不發布；`ghost_gate_min_d_m`，二輪仍走 VRU 通道），far_rows 多帶 camera_assoc，mismatch logger 改
   range_unc < 12 且 |y| < 2.5；`HAZARD_MAX_RANGE_UNC` 20 → 12、`CUTIN_MAX_RANGE_UNC` 30 → 20（有鏡頭關聯可放行）。slot_status 不當門檻

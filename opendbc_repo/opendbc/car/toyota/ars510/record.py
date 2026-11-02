@@ -49,3 +49,20 @@ def live_object_count(record: bytes) -> int:
     Exact on every record of the bundled samples (header_allocation_count.json); an integrity cross-check (docs/02).
     """
     return (int.from_bytes(record[14:16], "little") >> 3) & 0x1F
+
+
+# dimpleliang/ars510, 11/02 offline analysis of 420k records (tools/ars510/mac, analysis/bits2):
+def header_timestamp_s(record: bytes) -> float:
+    """Radar measurement timestamp of this object list: record bytes 1..4 little-endian in 100 us (wraps every ~5 days).
+    Advances 60.28 ms per record on this unit, independent of the host's USB batching jitter."""
+    return int.from_bytes(record[1:5], "little") * 1e-4
+
+
+def header_latency_ms(record: bytes) -> int:
+    """Record byte 13: age of the object list when the radar started sending it, in ms (146-241 on this unit).
+    = time the first 0x80 frame left the radar minus header_timestamp_s, quantised to the radar's 10 ms tick: within a
+    segment corr 0.93 and slope 0.96 ms/count against the host-side delay, which drops from 6.3 to 1.9 ms std once this is
+    subtracted. More objects -> one tick later (the 0.60 correlation with the object count). Not temperature, not a detection
+    count, not part of a wider field (byte 12 and the low bits of byte 14 are constant). So the objects in a record describe
+    the scene at about (host time of the first frame) - header_latency_ms(record) / 1000."""
+    return record[13]
