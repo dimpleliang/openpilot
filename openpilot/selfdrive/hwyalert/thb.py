@@ -6,7 +6,11 @@ does not call again early); only the expressways
 (快速公路, RoadClass 1 in the 公路局 section list) are kept. Section polylines with km posts come from `Section/Highway` +
 `SectionShape/Highway`, cached in SECTIONS_CACHE and refreshed every SECTIONS_MAX_AGE_D days.
 
-TDX needs a member key: the owner writes CRED_FILE himself ({"client_id": "...", "client_secret": "..."}); without it this
+Preferred: a Cloudflare Worker in front of TDX (tools/ars510/tdx_worker): it holds the key, calls TDX on its own 30-min
+schedule and serves the stored response, so any number of drives / cars cost TDX nothing extra and no key sits on the car.
+PROXY_FILE ({"url": "https://....workers.dev", "token": "..."}) selects it; the car then polls the Worker every PROXY_POLL_S.
+
+Direct (no Worker): TDX needs a member key: the owner writes CRED_FILE himself ({"client_id": "...", "client_secret": "..."}); without it this
 feed stays empty and the freeway alerts work as before. Off: OFF_FILE.
 """
 import gzip
@@ -16,10 +20,13 @@ import re
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from collections import Counter
 
 CRED_FILE = "/data/tdx_credentials.json"
+PROXY_FILE = "/data/tdx_proxy.json"
+PROXY_POLL_S = 120.          # Worker requests are free up to 100k / day per Cloudflare account; it answers 304 when nothing is new
 OFF_FILE = "/data/hwyalert_thb_off"
 SECTIONS_CACHE = "/data/hwyalert_thb_sections.json.gz"
 SECTIONS_MAX_AGE_D = 7.
@@ -185,12 +192,41 @@ class ThbFeed:
   def _items(d: dict) -> list:
     return next((v for v in d.values() if isinstance(v, list)), [])
 
+  @staticmethod
+  def _proxy():
+    try:
+      c = json.load(open(PROXY_FILE))
+      return c["url"].rstrip("/"), c["token"]
+    except Exception:
+      return None
+
+  def _proxy_get(self, name, since=None):
+    """Worker resource -> (json or None when unchanged since `since`, wall time TDX was called)."""
+    url, token = self._proxy()
+    q = f"?since={since:.3f}" if since is not None else ""
+    req = urllib.request.Request(f"{url}/v1/{name}{q}", headers={"X-Access-Token": token, "Accept-Encoding": "gzip",
+                                                                 "User-Agent": "openpilot-hwyalert"})
+    try:
+      r = urllib.request.urlopen(req, timeout=30)
+    except urllib.error.HTTPError as e:
+      if e.code == 304:
+        return None, float(e.headers.get("X-Fetched-At", since or 0))
+      raise
+    data = r.read()
+    if r.headers.get("Content-Encoding") == "gzip":
+      data = gzip.decompress(data)
+    return json.loads(data), float(r.headers.get("X-Fetched-At", 0))
+
   def _load_sections(self):
     if os.path.exists(SECTIONS_CACHE) and time.time() - os.path.getmtime(SECTIONS_CACHE) < SECTIONS_MAX_AGE_D * 86400:
       c = json.loads(gzip.open(SECTIONS_CACHE).read())
       return c["rows"], c["inc"]
     try:
-      rows, inc = build_sections(self._items(self._get(SECTION_PATH)), self._items(self._get(SHAPE_PATH)))
+      if self._proxy():
+        sec, shp = self._proxy_get("section")[0], self._proxy_get("shape")[0]
+      else:
+        sec, shp = self._get(SECTION_PATH), self._get(SHAPE_PATH)
+      rows, inc = build_sections(self._items(sec), self._items(shp))
     except Exception:
       if os.path.exists(SECTIONS_CACHE):   # stale cache beats nothing
         c = json.loads(gzip.open(SECTIONS_CACHE).read())
@@ -224,9 +260,10 @@ class ThbFeed:
     from openpilot.common.swaglog import cloudlog
     warned = False
     while not stop.is_set():
-      if os.path.exists(OFF_FILE) or not os.path.exists(CRED_FILE):
+      proxy = self._proxy() is not None
+      if os.path.exists(OFF_FILE) or not (proxy or os.path.exists(CRED_FILE)):
         if not warned:
-          cloudlog.info(f"hwyalert thb: off ({OFF_FILE} or no {CRED_FILE})")
+          cloudlog.info(f"hwyalert thb: off ({OFF_FILE}, or neither {PROXY_FILE} nor {CRED_FILE})")
           warned = True
         stop.wait(FETCH_S)
         continue
@@ -235,7 +272,14 @@ class ThbFeed:
           rows, inc = self._load_sections()
           self._on_sections(rows)
           self.inc = inc
-          cloudlog.info(f"hwyalert thb: {len(rows)} expressway sections, roads {sorted(inc)}")
+          cloudlog.info(f"hwyalert thb: {len(rows)} expressway sections, roads {sorted(inc)}, via {'Worker' if proxy else 'TDX'}")
+        if proxy:
+          data, t_tdx = self._proxy_get("events", self.t if self.t > 0 else None)
+          if data is not None and t_tdx > 0:
+            self._publish(data, t_tdx)
+            cloudlog.info(f"hwyalert thb: {len(self.events)} expressway events (TDX call {time.time() - t_tdx:.0f} s ago)")
+          stop.wait(PROXY_POLL_S)
+          continue
         t_last, data = self._last_call()
         if data is not None and self.t < t_last:   # the previous call (this or an earlier drive) is still recent enough
           self._publish(data, t_last)

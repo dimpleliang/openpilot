@@ -626,6 +626,10 @@ panda `toyota.h` 的 0x750 門鎖白名單保留（改它需重建韌體，且�
   其他「交通障礙」。壅塞、交通障礙只顯示、不播語音（沒有語音檔）。匝道事件（LocationType 1、2）不取。
 - 里程為 0K+000 而有座標的事件（實測壅塞常見）以座標投影到該路該方向的線型求里程（300 m 內）。
 - 待驗證：公路局的 BlockedLanes 編號是否與高公局相同（0 = 最內側）；地圖路名判斷國道另加「快速」。
+- Cloudflare Worker 中繼（11/03，`tools/ars510/tdx_worker/`，免費方案）：Worker 持有 TDX 金鑰，排程每 30 分鐘抓一次省道事件（路段資料 7 天一次），
+  原樣串流存進 KV（不解析，免費方案每次 CPU 只有 10 ms）；車機有 `/data/tdx_proxy.json`（url＋token）時每 2 分鐘問 Worker，沒有新資料回 304。
+  TDX 一天固定 48 次，不論幾趟、幾台車；車上不放金鑰。沒有這個檔才改直連 TDX（`/data/tdx_credentials.json`，每 30 分鐘最多 1 次）。
+  本機以 Node 模擬 KV／TDX 測過：兩次排程 TDX 4 次呼叫（事件 2、路段 2）、無 token 403、since 未更新 304、車機端解析與路段載入正常。
 - 關閉：`/data/hwyalert_thb_off`。重播工具不含快速公路（TDX 沒有歷史檔）。
 
 ## 切入標示加車道線條件（11/01，參考 herizon1054/openpilot radard_ext）

@@ -1,0 +1,11 @@
+# ars510 TDX relay — see README.md in this folder
+name = "ars510-tdx"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+[[kv_namespaces]]
+binding = "TDX"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"   # npx wrangler kv namespace create TDX
