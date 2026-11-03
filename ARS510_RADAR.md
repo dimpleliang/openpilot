@@ -164,6 +164,17 @@ comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表�
 儀表在閘道器另一側，插入的訊框可能根本到不了。停車實驗 `tools/ars510/meter_dim_test.py`（P 檔、夜間開燈、先停 openpilot、
 panda allOutput 透傳模式）：複製最新的真實 0x620、只清除 METER_DIMMED（byte 4 0x40），送 15 s，看儀表是否變亮、閃爍或跳警告。待執行。
 
+### 儀表亮度實驗結果（11/03 晚，停車 P 檔）
+
+- `meter_dim_test.py`：送 151 則清除 METER_DIMMED 的 0x620 複製版（車身電腦本身約 3.4 Hz），儀表回報 0x610 全程 17 %、dimmed=1，
+  亮度無變化。實驗中停 openpilot／panda 切 allOutput 後跳「LTA 故障」，重開機後消失（carState 轉向故障 False）。
+- 駕駛在儀表選單用方向鍵調亮度時錄 CAN：0x610 亮度即時跟著變（16 段：12 17 21 24 29 32 39 44 49 54 60 67 75 84 95 100 %，
+  每段約 0.25 s），但方向鍵本身在 comma 這條匯流排上看不到（每 4 s 按一鍵，沒有任何訊息照這個節奏變），按鍵直接進儀表。
+- 儀表 UDS（0x7C0）有回應。唯讀掃描預設 session 的 DID 0x0000–02FF、1000–12FF、2000–22FF、A000–A3FF、B000–B3FF、F100–F1FF：
+  39 個有回應（其餘 NRC 0x31），亮度 100 → 12 → 100 % 三次讀取，只有 0102、1021、1022（計數器）和 1241（70→6E→6D，單調遞減，
+  不隨亮度）改變——這些範圍內沒有亮度設定。下一步：其餘 DID 範圍、extended session、Toyota 自訂設定服務。
+- 雨刷：錄 80 s，0x2F9 byte 0 在 0x10／0x40／0x50／0x60 間變化 20 次（像雨刷開關／噴水），對不上預期的檔位順序，待駕駛說明實際操作。
+
 ## 自動上傳完整 rlog
 
 `openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），
