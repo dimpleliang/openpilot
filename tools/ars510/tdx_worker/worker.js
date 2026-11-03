@@ -1,5 +1,5 @@
 // ars510 TDX relay (Cloudflare Worker, free plan), on demand: TDX is called only when a car asks and the stored copy is
-// older than the source's max age (events 30 min, sections 7 days); every other request within that window gets the stored
+// older than the source's max age (events 30 min, sections 180 days); every other request within that window gets the stored
 // copy. No cron: nobody driving = no TDX calls. Data: MOTC TDX (政府資料開放授權條款 1.0).
 //
 //   GET /v1/events|section|shape   header X-Access-Token: <ACCESS_TOKEN>   optional ?since=<epoch s> -> 304 when not newer
@@ -11,8 +11,8 @@ const API = "https://tdx.transportdata.tw/api/basic";
 const TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const SOURCES = {
   events: { path: "/v1/Traffic/RoadEvent/LiveEvent/Highway", maxAgeS: 30 * 60 },
-  section: { path: "/v2/Road/Traffic/Section/Highway", maxAgeS: 7 * 86400 },
-  shape: { path: "/v2/Road/Traffic/SectionShape/Highway", maxAgeS: 7 * 86400 },
+  section: { path: "/v2/Road/Traffic/Section/Highway", maxAgeS: 180 * 86400 },   // owner: road sections at most twice a year
+  shape: { path: "/v2/Road/Traffic/SectionShape/Highway", maxAgeS: 180 * 86400 },
 };
 const LOCK_S = 60;   // one TDX call at a time per source: a second car arriving during a call gets the old copy
 

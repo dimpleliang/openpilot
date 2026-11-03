@@ -1,6 +1,6 @@
 # ars510 TDX relay (Cloudflare Worker)
 
-Calls TDX (公路局 expressway events) only when a car asks and the stored copy is older than 30 min (sections: 7 days); any
+Calls TDX (公路局 expressway events) only when a car asks and the stored copy is older than 30 min (sections: 180 days); any
 other request in that window gets the stored copy. No schedule: nobody driving means no TDX calls. The car never holds the
 TDX key, and TDX sees at most 48 event calls a day however many cars there are. Free plan: 100,000 requests a day for
 the whole Cloudflare account; going over only returns errors (no charge) unless the account is upgraded.
@@ -23,7 +23,7 @@ Write `/data/tdx_proxy.json` on the comma (the token is the ACCESS_TOKEN above):
 
     {"url": "https://ars510-tdx.<sub>.workers.dev", "token": "<ACCESS_TOKEN>"}
 
-hwyalertd then polls the Worker every 2 min (304 when nothing is new) and loads the expressway sections from it once a week.
+hwyalertd then polls the Worker every 2 min (304 when nothing is new) and loads the expressway sections from it at most every 180 days.
 With `/data/tdx_proxy.json` absent it falls back to calling TDX directly with `/data/tdx_credentials.json` (one call per 30 min).
 Other cars using this fork: give them the URL and the ACCESS_TOKEN; rotate the token with `wrangler secret put ACCESS_TOKEN`.
 
