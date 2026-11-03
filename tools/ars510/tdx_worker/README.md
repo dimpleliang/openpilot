@@ -1,7 +1,8 @@
 # ars510 TDX relay (Cloudflare Worker)
 
-Calls TDX (公路局 expressway events) every 30 min with your key and serves the result to the car(s). The car never holds the
-TDX key, and TDX sees 48 event calls a day however many cars or drives there are. Free plan: 100,000 requests a day for
+Calls TDX (公路局 expressway events) only when a car asks and the stored copy is older than 30 min (sections: 7 days); any
+other request in that window gets the stored copy. No schedule: nobody driving means no TDX calls. The car never holds the
+TDX key, and TDX sees at most 48 event calls a day however many cars there are. Free plan: 100,000 requests a day for
 the whole Cloudflare account; going over only returns errors (no charge) unless the account is upgraded.
 
 ## Deploy (on your Mac, once)
@@ -14,7 +15,7 @@ the whole Cloudflare account; going over only returns errors (no charge) unless 
     npx wrangler secret put ACCESS_TOKEN     # any long random string, e.g. from: openssl rand -hex 24
     npx wrangler deploy                      # prints https://ars510-tdx.<your-subdomain>.workers.dev
 
-Wait for the first :00 / :30, then check `https://ars510-tdx.<sub>.workers.dev/health` (events "… s ago", no error).
+After the car's first request, check `https://ars510-tdx.<sub>.workers.dev/health` (events "… s ago", no error).
 
 ## Car
 

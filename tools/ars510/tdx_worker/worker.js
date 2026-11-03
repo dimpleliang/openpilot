@@ -1,20 +1,20 @@
-// ars510 TDX relay (Cloudflare Worker, free plan). Holds the TDX key, calls TDX on its own schedule and serves the stored
-// responses to the cars, so TDX sees 48 event calls a day however many cars poll. Data: MOTC TDX (政府資料開放授權條款 1.0).
+// ars510 TDX relay (Cloudflare Worker, free plan), on demand: TDX is called only when a car asks and the stored copy is
+// older than the source's max age (events 30 min, sections 7 days); every other request within that window gets the stored
+// copy. No cron: nobody driving = no TDX calls. Data: MOTC TDX (政府資料開放授權條款 1.0).
 //
-//   cron */30   -> LiveEvent/Highway (公路局 events, one nationwide call) into KV "events"
-//                  Section/Highway + SectionShape/Highway into KV "section" / "shape" when older than 7 days
 //   GET /v1/events|section|shape   header X-Access-Token: <ACCESS_TOKEN>   optional ?since=<epoch s> -> 304 when not newer
-//   GET /health                     (no token) last call times
+//   GET /health                     (no token) age of each stored copy and the last error
 // Secrets (wrangler secret put): TDX_CLIENT_ID, TDX_CLIENT_SECRET, ACCESS_TOKEN.  KV binding: TDX.
-// CPU: the free plan allows 10 ms per invocation; responses are stored as raw bytes (no JSON parsing), network waits are free.
+// CPU: the free plan allows 10 ms per invocation; TDX responses are streamed (tee) into KV and to the car, never parsed.
 
 const API = "https://tdx.transportdata.tw/api/basic";
 const TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const SOURCES = {
-  events: { path: "/v1/Traffic/RoadEvent/LiveEvent/Highway", maxAgeS: 0 },
+  events: { path: "/v1/Traffic/RoadEvent/LiveEvent/Highway", maxAgeS: 30 * 60 },
   section: { path: "/v2/Road/Traffic/Section/Highway", maxAgeS: 7 * 86400 },
   shape: { path: "/v2/Road/Traffic/SectionShape/Highway", maxAgeS: 7 * 86400 },
 };
+const LOCK_S = 60;   // one TDX call at a time per source: a second car arriving during a call gets the old copy
 
 async function tdxToken(env) {
   const cached = await env.TDX.getWithMetadata("token");
@@ -23,49 +23,42 @@ async function tdxToken(env) {
   const r = await fetch(TOKEN_URL, { method: "POST", body, headers: { "Content-Type": "application/x-www-form-urlencoded" } });
   if (!r.ok) throw new Error(`token ${r.status}`);
   const j = await r.json();
-  const exp = Date.now() / 1000 + Number(j.expires_in || 3600);
-  await env.TDX.put("token", j.access_token, { metadata: { exp } });   // one KV write a day
+  await env.TDX.put("token", j.access_token, { metadata: { exp: Date.now() / 1000 + Number(j.expires_in || 3600) } });
   return j.access_token;
 }
 
-async function refresh(env, name) {
-  const src = SOURCES[name];
-  if (src.maxAgeS) {
-    const last = Number(await env.TDX.get(`${name}_t`));
-    if (last && Date.now() / 1000 - last < src.maxAgeS) return "fresh";
-  }
+// -> { body: ReadableStream, t } fresh from TDX (also being written to KV), or null on failure
+async function callTdx(env, ctx, name) {
   const t = Date.now() / 1000;
-  const r = await fetch(`${API}${src.path}?%24format=JSON`, {
-    headers: { Authorization: `Bearer ${await tdxToken(env)}`, "Accept-Encoding": "gzip" },
-  });
-  if (!r.ok) {
-    await env.TDX.put(`${name}_error`, `${r.status} ${new Date().toISOString()}`);
-    return `error ${r.status}`;
+  await env.TDX.put(`${name}_lock`, String(t), { expirationTtl: LOCK_S });
+  try {
+    const r = await fetch(`${API}${SOURCES[name].path}?%24format=JSON`, {
+      headers: { Authorization: `Bearer ${await tdxToken(env)}`, "Accept-Encoding": "gzip" },
+    });
+    if (!r.ok) throw new Error(`TDX ${r.status}`);
+    const [toKv, toCar] = r.body.tee();
+    ctx.waitUntil((async () => {
+      await env.TDX.put(name, toKv, { metadata: { t } });
+      await env.TDX.put(`${name}_t`, String(t));
+      await env.TDX.delete(`${name}_error`);
+      await env.TDX.delete(`${name}_lock`);
+    })());
+    return { body: toCar, t };
+  } catch (e) {
+    ctx.waitUntil(env.TDX.put(`${name}_error`, `${e} ${new Date().toISOString()}`));
+    return null;
   }
-  // stream straight into KV: no buffering or parsing in the Worker (10 ms CPU on the free plan)
-  await env.TDX.put(name, r.body, { metadata: { t } });
-  await env.TDX.put(`${name}_t`, String(t));   // small key for /health and the weekly check (2 writes per refresh)
-  await env.TDX.delete(`${name}_error`);
-  return "ok";
 }
 
 export default {
-  async scheduled(event, env, ctx) {
-    // one call per source per run; events every run, the static sections weekly
-    ctx.waitUntil((async () => {
-      for (const name of ["events", "section", "shape"]) {
-        try { await refresh(env, name); } catch (e) { await env.TDX.put(`${name}_error`, `${e} ${new Date().toISOString()}`); }
-      }
-    })());
-  },
-
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    const now = Date.now() / 1000;
     if (url.pathname === "/health") {
       const out = {};
       for (const name of Object.keys(SOURCES)) {
         const last = Number(await env.TDX.get(`${name}_t`));
-        out[name] = last ? Math.round(Date.now() / 1000 - last) + " s ago" : "never";
+        out[name] = last ? Math.round(now - last) + " s ago" : "never";
         out[`${name}_error`] = await env.TDX.get(`${name}_error`);
       }
       return Response.json(out);
@@ -73,14 +66,20 @@ export default {
     const name = url.pathname.replace(/^\/v1\//, "");
     if (!(name in SOURCES)) return new Response("not found", { status: 404 });
     if (!env.ACCESS_TOKEN || req.headers.get("X-Access-Token") !== env.ACCESS_TOKEN) return new Response("forbidden", { status: 403 });
+
+    const since = Number(url.searchParams.get("since"));
+    const last = Number(await env.TDX.get(`${name}_t`)) || 0;
+    const stale = now - last >= SOURCES[name].maxAgeS;
+    const headers = (t, fresh) => ({ "X-Fetched-At": String(t), "X-From-Tdx-Now": fresh ? "1" : "0",
+                                     "Content-Type": "application/json", "X-Data-Source": "MOTC TDX" });
+    if (stale && !(await env.TDX.get(`${name}_lock`))) {
+      const got = await callTdx(env, ctx, name);
+      if (got) return new Response(got.body, { headers: headers(got.t, true) });
+    }
+    // within the window (or TDX failed / another call in flight): the stored copy
+    if (since && last && last <= since) return new Response(null, { status: 304, headers: headers(last, false) });
     const { value, metadata } = await env.TDX.getWithMetadata(name, { type: "stream" });
     if (!value) return new Response("no data yet", { status: 503 });
-    const headers = { "X-Fetched-At": String(metadata.t), "Content-Type": "application/json", "X-Data-Source": "MOTC TDX" };
-    const since = Number(url.searchParams.get("since"));
-    if (since && metadata.t <= since) {
-      value.cancel();
-      return new Response(null, { status: 304, headers });
-    }
-    return new Response(value, { headers });
+    return new Response(value, { headers: headers(metadata.t, false) });
   },
 };

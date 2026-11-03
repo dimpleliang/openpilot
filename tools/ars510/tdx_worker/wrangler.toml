@@ -4,7 +4,7 @@ main = "worker.js"
 compatibility_date = "2026-06-01"
 
 [triggers]
-crons = ["*/30 * * * *"]
+crons = []   # on demand only (no schedule): see worker.js
 
 [[kv_namespaces]]
 binding = "TDX"
