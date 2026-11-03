@@ -1,20 +1,49 @@
-// ars510 TDX relay (Cloudflare Worker, free plan), on demand: TDX is called only when a car asks and the stored copy is
-// older than the source's max age (events 30 min, sections 180 days); every other request within that window gets the stored
-// copy. No cron: nobody driving = no TDX calls. Data: MOTC TDX (政府資料開放授權條款 1.0).
+// ars510 TDX relay (Cloudflare Worker, free plan), on demand with a monthly point budget.
+// TDX is called only when a car asks and the stored copy is older than the current interval; every other request gets the
+// stored copy. No cron: nobody driving = no TDX calls. Data: MOTC TDX (政府資料開放授權條款 1.0).
+//
+// Interval for events: MIN_INTERVAL_S while this month's TDX points are on or below a straight-line pace to BUDGET_POINTS,
+// longer the further ahead of pace (up to MAX_INTERVAL_S), MAX_INTERVAL_S from 90 % of the budget, and no TDX
+// calls at all once it is spent (the stored copy is served until the month ends). TDX basic
+// services cost 1 point per 1,500 calls plus 1 point per 150 MB; the free member gets 3 points a month (service stops at 105 %).
+// Sections / shapes: every 180 days (owner).
 //
 //   GET /v1/events|section|shape   header X-Access-Token: <ACCESS_TOKEN>   optional ?since=<epoch s> -> 304 when not newer
-//   GET /health                     (no token) age of each stored copy and the last error
+//   GET /health                     (no token) ages, errors, this month's calls / MB / points, current events interval
 // Secrets (wrangler secret put): TDX_CLIENT_ID, TDX_CLIENT_SECRET, ACCESS_TOKEN.  KV binding: TDX.
 // CPU: the free plan allows 10 ms per invocation; TDX responses are streamed (tee) into KV and to the car, never parsed.
+// KV writes (free 1,000 / day): 3 per TDX call (data, its time, usage).
 
 const API = "https://tdx.transportdata.tw/api/basic";
 const TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const SOURCES = {
-  events: { path: "/v1/Traffic/RoadEvent/LiveEvent/Highway", maxAgeS: 30 * 60 },
-  section: { path: "/v2/Road/Traffic/Section/Highway", maxAgeS: 180 * 86400 },   // owner: road sections at most twice a year
-  shape: { path: "/v2/Road/Traffic/SectionShape/Highway", maxAgeS: 180 * 86400 },
+  events: { path: "/v1/Traffic/RoadEvent/LiveEvent/Highway", estMB: 0.1 },
+  section: { path: "/v2/Road/Traffic/Section/Highway", maxAgeS: 180 * 86400, estMB: 2.4 },   // owner: twice a year at most
+  shape: { path: "/v2/Road/Traffic/SectionShape/Highway", maxAgeS: 180 * 86400, estMB: 5.8 },
 };
-const LOCK_S = 60;   // one TDX call at a time per source: a second car arriving during a call gets the old copy
+const BUDGET_POINTS = 2.8;          // of the free 3, leaving room for the token calls and rounding
+const MIN_INTERVAL_S = 120;         // fastest events refresh (owner wants it dense)
+const MAX_INTERVAL_S = 3600;
+const CALLS_PER_POINT = 1500, MB_PER_POINT = 150;
+
+const month = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 7);   // Taiwan month, as TDX bills
+
+async function usage(env) {
+  return JSON.parse((await env.TDX.get(`usage_${month()}`)) || '{"calls":0,"mb":0}');
+}
+const points = u => u.calls / CALLS_PER_POINT + u.mb / MB_PER_POINT;
+
+function eventsInterval(u) {
+  const now = new Date(Date.now() + 8 * 3600e3);
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  const timeFrac = Math.max((now - start) / (end - start), 1 / 30);   // first day: as if a day had passed
+  const used = points(u) / BUDGET_POINTS;
+  if (used >= 1) return Infinity;                 // budget spent: serve the stored copy until next month
+  if (used >= 0.9) return MAX_INTERVAL_S;
+  const ahead = used / timeFrac;                                      // 1 = exactly on pace
+  return ahead <= 1 ? MIN_INTERVAL_S : Math.min(MAX_INTERVAL_S, MIN_INTERVAL_S * ahead * ahead);
+}
 
 async function tdxToken(env) {
   const cached = await env.TDX.getWithMetadata("token");
@@ -28,20 +57,21 @@ async function tdxToken(env) {
 }
 
 // -> { body: ReadableStream, t } fresh from TDX (also being written to KV), or null on failure
-async function callTdx(env, ctx, name) {
+async function callTdx(env, ctx, name, u) {
   const t = Date.now() / 1000;
-  await env.TDX.put(`${name}_lock`, String(t), { expirationTtl: LOCK_S });
   try {
     const r = await fetch(`${API}${SOURCES[name].path}?%24format=JSON`, {
       headers: { Authorization: `Bearer ${await tdxToken(env)}`, "Accept-Encoding": "gzip" },
     });
+    const mb = Number(r.headers.get("Content-Length")) / 1e6 || SOURCES[name].estMB;
+    ctx.waitUntil(env.TDX.put(`usage_${month()}`, JSON.stringify({ calls: u.calls + 1, mb: u.mb + mb }),
+                              { expirationTtl: 70 * 86400 }));
     if (!r.ok) throw new Error(`TDX ${r.status}`);
     const [toKv, toCar] = r.body.tee();
     ctx.waitUntil((async () => {
       await env.TDX.put(name, toKv, { metadata: { t } });
       await env.TDX.put(`${name}_t`, String(t));
-      await env.TDX.delete(`${name}_error`);
-      await env.TDX.delete(`${name}_lock`);
+      if (await env.TDX.get(`${name}_error`)) await env.TDX.delete(`${name}_error`);
     })());
     return { body: toCar, t };
   } catch (e) {
@@ -55,11 +85,15 @@ export default {
     const url = new URL(req.url);
     const now = Date.now() / 1000;
     if (url.pathname === "/health") {
-      const out = {};
+      const u = await usage(env);
+      const out = { month: month(), tdx_calls: u.calls, tdx_mb: Math.round(u.mb * 10) / 10,
+                    points: Math.round(points(u) * 1000) / 1000, budget: BUDGET_POINTS,
+                    events_interval_s: Number.isFinite(eventsInterval(u)) ? Math.round(eventsInterval(u)) : "budget spent" };
       for (const name of Object.keys(SOURCES)) {
         const last = Number(await env.TDX.get(`${name}_t`));
         out[name] = last ? Math.round(now - last) + " s ago" : "never";
-        out[`${name}_error`] = await env.TDX.get(`${name}_error`);
+        const err = await env.TDX.get(`${name}_error`);
+        if (err) out[`${name}_error`] = err;
       }
       return Response.json(out);
     }
@@ -69,14 +103,14 @@ export default {
 
     const since = Number(url.searchParams.get("since"));
     const last = Number(await env.TDX.get(`${name}_t`)) || 0;
-    const stale = now - last >= SOURCES[name].maxAgeS;
-    const headers = (t, fresh) => ({ "X-Fetched-At": String(t), "X-From-Tdx-Now": fresh ? "1" : "0",
+    const u = await usage(env);
+    const maxAge = SOURCES[name].maxAgeS || eventsInterval(u);
+    const headers = (t, fresh) => ({ "X-Fetched-At": String(t), "X-From-Tdx-Now": fresh ? "1" : "0", "X-Interval-S": String(Number.isFinite(maxAge) ? Math.round(maxAge) : -1),
                                      "Content-Type": "application/json", "X-Data-Source": "MOTC TDX" });
-    if (stale && !(await env.TDX.get(`${name}_lock`))) {
-      const got = await callTdx(env, ctx, name);
+    if (now - last >= maxAge) {
+      const got = await callTdx(env, ctx, name, u);
       if (got) return new Response(got.body, { headers: headers(got.t, true) });
     }
-    // within the window (or TDX failed / another call in flight): the stored copy
     if (since && last && last <= since) return new Response(null, { status: 304, headers: headers(last, false) });
     const { value, metadata } = await env.TDX.getWithMetadata(name, { type: "stream" });
     if (!value) return new Response("no data yet", { status: 503 });

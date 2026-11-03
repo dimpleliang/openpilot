@@ -1,9 +1,14 @@
 # ars510 TDX relay (Cloudflare Worker)
 
-Calls TDX (公路局 expressway events) only when a car asks and the stored copy is older than 30 min (sections: 180 days); any
-other request in that window gets the stored copy. No schedule: nobody driving means no TDX calls. The car never holds the
-TDX key, and TDX sees at most 48 event calls a day however many cars there are. Free plan: 100,000 requests a day for
-the whole Cloudflare account; going over only returns errors (no charge) unless the account is upgraded.
+Calls TDX (公路局 expressway events) only when a car asks and the stored copy is older than the current interval; every
+other request gets the stored copy. No schedule: nobody driving means no TDX calls. The car never holds the TDX key.
+
+The interval follows a monthly point budget (2.8 of the free member's 3 points; TDX: 1 point per 1,500 calls + 1 point per
+150 MB): 2 min while the month's usage is on or below a straight-line pace, longer when ahead of pace, 60 min from 90 %,
+and no TDX calls once the budget is spent (the stored copy is served until the month ends). Simulated month, car asking
+every minute while driving: 1 h/day -> every 2 min (1.2 points); 2 h/day -> 2 min (2.4); 4 h/day -> 3.8 min (2.55);
+24 h/day -> 21 min (2.8). Sections / shapes: every 180 days. `/health` shows this month's calls, MB, points and interval.
+Cloudflare free plan: 100,000 requests a day for the whole account; going over only returns errors (no charge).
 
 ## Deploy (on your Mac, once)
 

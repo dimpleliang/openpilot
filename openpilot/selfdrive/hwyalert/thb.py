@@ -26,7 +26,7 @@ from collections import Counter
 
 CRED_FILE = "/data/tdx_credentials.json"
 PROXY_FILE = "/data/tdx_proxy.json"
-PROXY_POLL_S = 120.          # Worker requests are free up to 100k / day per Cloudflare account; it answers 304 when nothing is new
+PROXY_POLL_S = 60.           # Worker requests are free up to 100k / day per Cloudflare account; 304 when nothing is new; the Worker paces TDX
 OFF_FILE = "/data/hwyalert_thb_off"
 SECTIONS_CACHE = "/data/hwyalert_thb_sections.json.gz"
 SECTIONS_MAX_AGE_D = 180.   # owner (11/03): road sections at most twice a year
