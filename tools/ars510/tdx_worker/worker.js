@@ -12,7 +12,10 @@
 //   GET /health                     (no token) ages, errors, this month's calls / MB / points, current events interval
 // Secrets (wrangler secret put): TDX_CLIENT_ID, TDX_CLIENT_SECRET, ACCESS_TOKEN.  KV binding: TDX.
 // CPU: the free plan allows 10 ms per invocation; TDX responses are streamed (tee) into KV and to the car, never parsed.
-// KV writes (free 1,000 / day): 3 per TDX call (data, its time, usage).
+// KV writes (free 1,000 / day): 3 per TDX call (data, its time, usage) + 2 per events call for the change log.
+// Change log (owner, 11/03): every events call compares the event list with the previous call (EventID + LastUpdateTime +
+// EventStep) and counts per Taiwan day: calls, calls that changed anything, events added / removed / updated. That is roughly
+// what an MQTT push would have sent (TDX has no MQTT for road events). Measured only while cars ask (no extra TDX calls).
 
 const API = "https://tdx.transportdata.tw/api/basic";
 const TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
@@ -67,7 +70,13 @@ async function callTdx(env, ctx, name, u) {
     ctx.waitUntil(env.TDX.put(`usage_${month()}`, JSON.stringify({ calls: u.calls + 1, mb: u.mb + mb }),
                               { expirationTtl: 70 * 86400 }));
     if (!r.ok) throw new Error(`TDX ${r.status}`);
-    const [toKv, toCar] = r.body.tee();
+    const [toKv, toRest] = r.body.tee();
+    let toCar = toRest;
+    if (name === "events") {
+      const [a, b] = toRest.tee();
+      toCar = a;
+      ctx.waitUntil(logChanges(env, b, t).catch(e => env.TDX.put("changes_error", `${e}`)));
+    }
     ctx.waitUntil((async () => {
       await env.TDX.put(name, toKv, { metadata: { t } });
       await env.TDX.put(`${name}_t`, String(t));
@@ -80,6 +89,29 @@ async function callTdx(env, ctx, name, u) {
   }
 }
 
+const day = t => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(0, 10);
+
+async function logChanges(env, stream, t) {
+  const d = JSON.parse(await new Response(stream).text());
+  const now = {};
+  for (const e of d.LiveEvents || []) now[e.EventID] = `${e.LastUpdateTime || ""}|${e.EventStep ?? ""}`;
+  const prev = JSON.parse((await env.TDX.get("events_sig")) || "null");
+  const key = `changes_${day(t)}`;
+  const c = JSON.parse((await env.TDX.get(key)) || '{"calls":0,"changed":0,"added":0,"removed":0,"updated":0,"gaps_s":[]}');
+  c.calls += 1;
+  if (prev) {
+    let added = 0, removed = 0, updated = 0;
+    for (const id in now) { if (!(id in prev.ev)) added++; else if (prev.ev[id] !== now[id]) updated++; }
+    for (const id in prev.ev) if (!(id in now)) removed++;
+    c.added += added; c.removed += removed; c.updated += updated;
+    if (added + removed + updated) c.changed += 1;
+    if (c.gaps_s.length < 200) c.gaps_s.push(Math.round(t - prev.t));   // seconds since the previous call (context)
+  }
+  c.events = Object.keys(now).length;
+  await env.TDX.put("events_sig", JSON.stringify({ t, ev: now }));
+  await env.TDX.put(key, JSON.stringify(c), { expirationTtl: 60 * 86400 });
+}
+
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
@@ -89,6 +121,11 @@ export default {
       const out = { month: month(), tdx_calls: u.calls, tdx_mb: Math.round(u.mb * 10) / 10,
                     points: Math.round(points(u) * 1000) / 1000, budget: BUDGET_POINTS,
                     events_interval_s: Number.isFinite(eventsInterval(u)) ? Math.round(eventsInterval(u)) : "budget spent" };
+      out.changes = {};
+      for (let i = 0; i < 7; i++) {
+        const k = day(now - i * 86400), v = await env.TDX.get(`changes_${k}`);
+        if (v) { const c = JSON.parse(v); delete c.gaps_s; out.changes[k] = c; }
+      }
       for (const name of Object.keys(SOURCES)) {
         const last = Number(await env.TDX.get(`${name}_t`));
         out[name] = last ? Math.round(now - last) + " s ago" : "never";

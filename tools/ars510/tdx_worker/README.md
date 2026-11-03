@@ -7,7 +7,8 @@ The interval follows a monthly point budget (2.8 of the free member's 3 points; 
 150 MB): 2 min while the month's usage is on or below a straight-line pace, longer when ahead of pace, 60 min from 90 %,
 and no TDX calls once the budget is spent (the stored copy is served until the month ends). Simulated month, car asking
 every minute while driving: 1 h/day -> every 2 min (1.2 points); 2 h/day -> 2 min (2.4); 4 h/day -> 3.8 min (2.55);
-24 h/day -> 21 min (2.8). Sections / shapes: every 180 days. `/health` shows this month's calls, MB, points and interval.
+24 h/day -> 21 min (2.8). Sections / shapes: every 180 days. `/health` shows this month's calls, MB, points and interval, and per day how often the event list actually changed
+(calls / changed / added / removed / updated) — roughly what an MQTT push would send; measured only while cars ask.
 Cloudflare free plan: 100,000 requests a day for the whole account; going over only returns errors (no charge).
 
 ## Deploy (on your Mac, once)
