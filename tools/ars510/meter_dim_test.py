@@ -11,7 +11,7 @@ That is what this test answers. Nothing else is sent; ~TEST_S seconds; then the 
 
 Run only parked: P, READY on, lights on, at night (0x620 METER_DIMMED = 1 before the test). openpilot must be stopped first
 (the panda has one owner):   sudo systemctl stop comma
-  PYTHONPATH=/data/openpilot:/data/openpilot/opendbc_repo /usr/local/venv/bin/python3 tools/ars510/meter_dim_test.py
+  PYTHONPATH=/data/openpilot:/data/openpilot/opendbc_repo /usr/local/venv/bin/python3 tools/ars510/meter_dim_test.py --parked
 Afterwards:                  sudo reboot        (brings openpilot back)
 Watch the meter: does it brighten during the test phase, flicker every few seconds (the real frame), or show warnings?
 """
@@ -45,8 +45,10 @@ def offroad() -> bool:
 
 
 def main():
-  if not offroad():
-    sys.exit("IsOffroad is not 1: park, P, then stop openpilot (sudo systemctl stop comma)")
+  # the meter needs the car ON (READY), so IsOffroad is 0; --parked = the caller checked carState (P, 0 km/h) right before
+  # stopping openpilot
+  if not (offroad() or "--parked" in sys.argv):
+    sys.exit("not confirmed parked: check carState (gear P, vEgo 0) first, then run with --parked")
   try:
     p = Panda()
   except Exception as e:
