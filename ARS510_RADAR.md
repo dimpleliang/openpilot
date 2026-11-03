@@ -155,6 +155,15 @@ comma 在 Bus 1（前鏡頭），閘道器通常只把主機訊息轉往儀表�
   最大 2.41 m/s²、0.95 m/s³，命令最快 33°/s，沒有超表。
 - `tools/ars510/can_capture.py <標籤> <秒數>`：錄 pandad 的 can，輸出 `/data/ars510_can_<標籤>.csv.gz` 並列出各匯流排上的 AVN 訊息。
 
+## 儀表亮度（11/03 調查）
+
+437 段 rlog（Mac `analysis/dim/dim_scan.py`）：燈關 → 0x610 `METER_SLIDER_BRIGHTNESS_PCT` 100（白天固定全亮，581 次）；燈開且 0x620
+`METER_DIMMED` = 1 → 旋鈕的夜間值 17 %（駕駛調最暗，700 次）；燈開但 `METER_DIMMED` = 0（10/31 11:37 中午隧道）→ 66 %（207 次）。
+所以讓儀表套用夜間暗度的是車身電腦的 `METER_DIMMED`，不是大燈本身。DBC 註解說 0x610 只反映旋鈕，實測會隨日夜改變。
+0x610／0x620 約 0.1–0.2 Hz、0x622 約 0.05 Hz（事件為主）。與 LKAS_HUD 不同，這些訊息不是前鏡頭發的，comma 無法攔截替換，只能另外插入；
+儀表在閘道器另一側，插入的訊框可能根本到不了。停車實驗 `tools/ars510/meter_dim_test.py`（P 檔、夜間開燈、先停 openpilot、
+panda allOutput 透傳模式）：複製最新的真實 0x620、只清除 METER_DIMMED（byte 4 0x40），送 15 s，看儀表是否變亮、閃爍或跳警告。待執行。
+
 ## 自動上傳完整 rlog
 
 `openpilot/system/loggerd/uploader.py`：熄火（offroad）且非計量網路（WiFi）時，自動上傳每段的 rlog（含雷達 CAN），
