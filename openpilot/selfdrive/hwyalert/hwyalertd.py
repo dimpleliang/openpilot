@@ -416,7 +416,7 @@ class Tracker:
                  alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found])
     say = None
     if t - self.last_say_t >= SAY_GAP_S:
-      new = [(d, e) for d, e in found if e["id"] not in self.spoken and e["name"] not in NO_VOICE]
+      new = [(d, e) for d, e in found if e["id"] not in self.spoken and e["name"] not in NO_VOICE and not e.get("quiet")]
       remind = [(d, e) for d, e in found if e["id"] in self.spoken and e["id"] not in self.reminded and d <= REMIND_KM
                 and self.spoken[e["id"]] >= REMIND_FROM_KM and feed_age < REMIND_FRESH_S and e.get("src") != "thb"]
       if new:

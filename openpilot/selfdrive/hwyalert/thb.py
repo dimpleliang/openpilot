@@ -55,25 +55,29 @@ _KEYWORDS = (("火", "車輛火災"), ("散落", "散落物"), ("掉落", "散�
 
 
 def event_name(ev: dict) -> str | None:
+  """Only EventType and the short EventTitle decide (11/03 on real data: keyword matches in the long Description turned
+  construction notices into 濃霧 (霧峰, 霧社), 坍方 (落石防護柵), 路樹 (路樹修剪), 行人 (人行道) and 機車 (notices to riders)).
+  A works event (type 2) is always 施工維護; activities (type 7) are not shown."""
   t = ev.get("EventType")
-  text = (ev.get("EventTitle") or "") + " " + (ev.get("Description") or "")
+  title = ev.get("EventTitle") or ""
   imp = ev.get("Impact") or {}
   closed = imp.get("Severity") == 2 or str(imp.get("BlockedLanes", "")).strip() == "111111"
-  for k, name in _KEYWORDS:
-    if k in text:
-      if name == "道路封閉" and not closed and t != 4:
-        continue
-      return name
   if t == 1:
-    return "事故"
+    return "車輛火災" if "火" in title else "事故"
   if t == 2:
     return "施工維護"
   if t == 3:
     return "壅塞"
   if t == 4:
-    return "道路封閉" if closed else None
-  if t in (5, 6, 8) and "障礙" in text:
-    return "交通障礙"
+    return "道路封閉" if closed or "封閉" in title else None
+  if t in (5, 6, 8):
+    for k, name in _KEYWORDS:
+      if k in title and name != "道路封閉":
+        return name
+    if "封閉" in title and (closed or t == 6):
+      return "道路封閉"
+    if "障礙" in title:
+      return "交通障礙"
   return None
 
 
@@ -87,8 +91,20 @@ def parse_km(s):
   return int(m.group(1)) + int(m.group(2)) / 1000. if m else None
 
 
+THIN_M = 15.   # polyline points closer than this to the last kept one are dropped (memory: all province roads)
+
+
 def wkt_points(s: str):
-  return [[float(a), float(b)] for a, b in re.findall(r"(-?\d+\.\d+)\s+(-?\d+\.\d+)", s or "")]
+  pts = [[float(a), float(b)] for a, b in re.findall(r"(-?\d+\.\d+)\s+(-?\d+\.\d+)", s or "")]
+  if len(pts) < 3:
+    return pts
+  out = [pts[0]]
+  for p in pts[1:-1]:
+    q = out[-1]
+    if ((p[0] - q[0]) * 101000) ** 2 + ((p[1] - q[1]) * 110540) ** 2 >= THIN_M * THIN_M:
+      out.append(p)
+  out.append(pts[-1])
+  return out
 
 
 def build_sections(sections: list, shapes: list):
@@ -121,7 +137,7 @@ def build_sections(sections: list, shapes: list):
   return rows, inc, sorted(provincial)
 
 
-def parse_events(data: dict, now_s: float, inc: dict, iso_to_epoch, long_term_h: float, locate=None):
+def parse_events(data: dict, now_s: float, inc: dict, iso_to_epoch, long_term_h: float, locate=None, provincial=()):
   """TDX LiveEvents -> hwyalertd event dicts on the expressways in `inc`.
   locate(road, dir, lon, lat) -> km, for events that give a position but no km post."""
   out = []
@@ -153,7 +169,8 @@ def parse_events(data: dict, now_s: float, inc: dict, iso_to_epoch, long_term_h:
       if km is None:
         continue
       out.append(dict(id=f"thb:{ev.get('EventID')}:{dd}", road=road, dir=dd, km=km, km2=km2, lon=lon, lat=lat, name=name,
-                      lanes=lanes_text(str(imp.get("BlockedLanes", ""))), title=ev.get("EventTitle") or "", src="thb"))
+                      lanes=lanes_text(str(imp.get("BlockedLanes", ""))), title=ev.get("EventTitle") or "", src="thb",
+                      quiet=name == "施工維護" and road in provincial))   # ~100 works notices a day on 台1 / 台9 ...: no voice
   return out
 
 
@@ -167,6 +184,7 @@ class ThbFeed:
   def __init__(self, iso_to_epoch, long_term_h, on_sections, locate):
     self.events, self.t = [], -1e9   # t: wall time (time.time()) of the call that produced the events
     self.inc: dict = {}
+    self.provincial: set = set()
     self.lock = threading.Lock()
     self.token, self.token_exp = None, 0.
     self._iso, self._lt, self._on_sections, self._locate = iso_to_epoch, long_term_h, on_sections, locate
@@ -274,7 +292,8 @@ class ThbFeed:
       try:
         if not self.inc:
           rows, inc, provincial = self._load_sections()
-          self._on_sections(rows, set(provincial))
+          self.provincial = set(provincial)
+          self._on_sections(rows, self.provincial)
           self.inc = inc
           cloudlog.info(f"hwyalert thb: {len(rows)} province-road sections, {len(inc)} roads ({len(provincial)} ordinary), via {'Worker' if proxy else 'TDX'}")
         if proxy:
@@ -302,7 +321,7 @@ class ThbFeed:
         stop.wait(60.)   # the next events call still waits for FETCH_S since the last one (EVENTS_CACHE)
 
   def _publish(self, data, t):
-    evs = parse_events(data, time.time(), self.inc, self._iso, self._lt, self._locate)
+    evs = parse_events(data, time.time(), self.inc, self._iso, self._lt, self._locate, self.provincial)
     with self.lock:
       self.events, self.t = evs, t
 
