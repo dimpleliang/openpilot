@@ -8,6 +8,11 @@ ReadDataByIdentifier (0x22) to 0x7C0 in the default session: nothing is written,
 
   scan:    read every DID in RANGES, keep the ones that answer -> /data/ars510_meter_dids_<tag>.json
   reread:  read only the DIDs found by a scan again (after the driver changed the brightness) and print what changed
+  options: --full      every DID 0x0000-0xFFFF (~22 min) instead of RANGES
+           --extended  enter the extended diagnostic session first (0x10 0x03: reads only; the meter drops back to the
+                       default session by itself when the tester-present keep-alive stops), and also read the KWP-style
+                       ReadDataByLocalIdentifier (0x21) 0x00-0xFF
+           --base TAG  reread compares with this scan (default A)
 
 Run only parked (P, READY, openpilot stopped: the panda has one owner); --parked = the caller checked carState first.
   PYTHONPATH=/data/openpilot:/data/openpilot/opendbc_repo /usr/local/venv/bin/python3 meter_uds_scan.py scan A --parked
@@ -20,7 +25,7 @@ import sys
 import time
 
 from opendbc.car.structs import CarParams
-from opendbc.car.uds import UdsClient, NegativeResponseError, MessageTimeoutError
+from opendbc.car.uds import UdsClient, NegativeResponseError, MessageTimeoutError, SESSION_TYPE
 from panda import Panda
 
 METER = 0x7C0
@@ -65,12 +70,36 @@ def main():
       print("meter 0x7C0 answers TesterPresent", flush=True)
     except Exception as e:
       print(f"no TesterPresent answer ({e}); trying reads anyway", flush=True)
+    extended = "--extended" in sys.argv
+    if extended:
+      uds.diagnostic_session_control(SESSION_TYPE.EXTENDED_DIAGNOSTIC)
+      print("extended diagnostic session", flush=True)
+    base_tag = sys.argv[sys.argv.index("--base") + 1] if "--base" in sys.argv else "A"
     if mode == "scan":
-      dids = [d for lo, hi in RANGES for d in range(lo, hi)]
+      dids = list(range(0x10000)) if "--full" in sys.argv else [d for lo, hi in RANGES for d in range(lo, hi)]
+      lids = list(range(0x100)) if extended else []
     else:
-      dids = [int(k, 16) for k in json.load(open("/data/ars510_meter_dids_A.json"))["dids"]]
-    nrc, tmo, t0 = {}, 0, time.monotonic()
+      base = json.load(open(f"/data/ars510_meter_dids_{base_tag}.json"))
+      dids = [int(k, 16) for k in base["dids"] if not k.startswith("L")]
+      lids = [int(k[1:], 16) for k in base["dids"] if k.startswith("L")]
+    nrc, tmo, t0, last_tp = {}, 0, time.monotonic(), time.monotonic()
+    for lid in lids:   # Toyota / KWP-style ReadDataByLocalIdentifier
+      try:
+        out[f"L{lid:02x}"] = uds._uds_request(0x21,
+                                              subfunction=None, data=bytes([lid])).hex()
+      except NegativeResponseError as e:
+        nrc[e.error_code] = nrc.get(e.error_code, 0) + 1
+      except Exception:
+        tmo += 1
+    if lids:
+      print(f"0x21 local identifiers: {sum(1 for k in out if k.startswith('L'))} answered", flush=True)
     for i, did in enumerate(dids):
+      if extended and time.monotonic() - last_tp > 1.5:   # keep the extended session alive
+        try:
+          uds.tester_present()
+        except Exception:
+          pass
+        last_tp = time.monotonic()
       try:
         out[f"{did:04x}"] = uds.read_data_by_identifier(did).hex()
       except NegativeResponseError as e:
@@ -79,14 +108,13 @@ def main():
         tmo += 1
       except Exception:
         tmo += 1
-      if i % 512 == 511:
+      if i % 4096 == 4095 or (len(dids) < 10000 and i % 512 == 511):
         print(f"  {i + 1}/{len(dids)} read, {len(out)} answered, {time.monotonic() - t0:.0f} s", flush=True)
     pct2 = meter_pct(p)
     print(f"done: {len(out)} DIDs answered, negative {nrc}, timeouts {tmo}, meter {pct2} %", flush=True)
     json.dump(dict(tag=tag, meter_pct=pct2, dids=out), open(f"/data/ars510_meter_dids_{tag}.json", "w"), indent=1)
     if mode == "reread":
-      base = json.load(open("/data/ars510_meter_dids_A.json"))
-      print(f"brightness A {base.get('meter_pct')} % -> {tag} {pct2} %; DIDs that changed:", flush=True)
+      print(f"brightness {base_tag} {base.get('meter_pct')} % -> {tag} {pct2} %; DIDs that changed:", flush=True)
       for k, v in out.items():
         if base["dids"].get(k) != v:
           print(f"  {k}: {base['dids'].get(k)} -> {v}", flush=True)
