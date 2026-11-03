@@ -2,7 +2,7 @@
 
 TDX 道路事件 v1 `LiveEvent/Highway` is one nationwide call (every province road and county), made at most once every
 FETCH_S (30 min, owner's limit: TDX bills per call; the last result is kept in EVENTS_CACHE so a restart or the next drive
-does not call again early); only the expressways
+does not call again early); expressways and (11/03, owner: "全部抓") every other province road
 (快速公路, RoadClass 1 in the 公路局 section list) are kept. Section polylines with km posts come from `Section/Highway` +
 `SectionShape/Highway`, cached in SECTIONS_CACHE and refreshed every SECTIONS_MAX_AGE_D days.
 
@@ -38,7 +38,8 @@ SECTION_PATH = "/v2/Road/Traffic/Section/Highway"
 SHAPE_PATH = "/v2/Road/Traffic/SectionShape/Highway"
 FETCH_S = 1800.              # at most one events call per 30 min, failed ones included (owner's limit, 11/02)
 FEED_MAX_AGE_S = 2400.       # events older than this (two calls missed) are dropped
-EXPRESSWAY_CLASS = 1         # Section.RoadClass: 0 國道, 1 快速道路, 3 省道, ...
+ROAD_CLASSES = (1, 3)        # Section.RoadClass: 0 國道, 1 快速道路, 3 省道 (both kept since 11/03), ...
+PROVINCIAL_CLASS = 3
 
 OPP = {"N": "S", "S": "N", "E": "W", "W": "E"}
 DIRS = {"北向": "N", "南向": "S", "東向": "E", "西向": "W"}
@@ -92,11 +93,12 @@ def wkt_points(s: str):
 
 def build_sections(sections: list, shapes: list):
   """TDX Section + SectionShape -> (rows [sid, road, dir, km_start, km_end, pts] as in freeway_sections.json.gz,
-  road -> compass letter of the carriageway whose km posts increase)."""
+  road -> compass letter of the carriageway whose km posts increase, roads that are ordinary province roads)."""
   shape = {s.get("SectionID"): wkt_points(s.get("Geometry", "")) for s in shapes}
   raw = []
+  provincial: set[str] = set()
   for s in sections:
-    if s.get("RoadClass") != EXPRESSWAY_CLASS:
+    if s.get("RoadClass") not in ROAD_CLASSES:
       continue
     mile = s.get("SectionMile") or {}
     ks, ke = parse_km(mile.get("StartKM")), parse_km(mile.get("EndKM"))
@@ -104,6 +106,8 @@ def build_sections(sections: list, shapes: list):
     if ks is None or ke is None or not pts or len(pts) < 2 or ks == ke:
       continue
     raw.append((s["SectionID"], norm_road(s.get("RoadName")), (s.get("RoadDirection") or "").upper(), ks, ke, pts))
+    if s.get("RoadClass") == PROVINCIAL_CLASS:
+      provincial.add(norm_road(s.get("RoadName")))
   # the section's RoadDirection is its local compass bearing (N, NE, SW ...), which wanders along a road: name each
   # carriageway by the letter that goes with increasing km posts on most of the road's sections
   votes: dict[str, Counter] = {}
@@ -114,7 +118,7 @@ def build_sections(sections: list, shapes: list):
         c[ch if ke > ks else OPP[ch]] += 1
   inc = {road: c.most_common(1)[0][0] for road, c in votes.items() if c}
   rows = [[sid, road, inc[road] if ke > ks else OPP[inc[road]], ks, ke, pts] for sid, road, d, ks, ke, pts in raw if road in inc]
-  return rows, inc
+  return rows, inc, sorted(provincial)
 
 
 def parse_events(data: dict, now_s: float, inc: dict, iso_to_epoch, long_term_h: float, locate=None):
@@ -220,24 +224,24 @@ class ThbFeed:
   def _load_sections(self):
     if os.path.exists(SECTIONS_CACHE) and time.time() - os.path.getmtime(SECTIONS_CACHE) < SECTIONS_MAX_AGE_D * 86400:
       c = json.loads(gzip.open(SECTIONS_CACHE).read())
-      return c["rows"], c["inc"]
+      return c["rows"], c["inc"], c.get("provincial", [])
     try:
       if self._proxy():
         sec, shp = self._proxy_get("section")[0], self._proxy_get("shape")[0]
       else:
         sec, shp = self._get(SECTION_PATH), self._get(SHAPE_PATH)
-      rows, inc = build_sections(self._items(sec), self._items(shp))
+      rows, inc, provincial = build_sections(self._items(sec), self._items(shp))
     except Exception:
       if os.path.exists(SECTIONS_CACHE):   # stale cache beats nothing
         c = json.loads(gzip.open(SECTIONS_CACHE).read())
-        return c["rows"], c["inc"]
+        return c["rows"], c["inc"], c.get("provincial", [])
       raise
     if rows:
       tmp = SECTIONS_CACHE + ".tmp"
       with gzip.open(tmp, "wt") as f:
-        json.dump(dict(rows=rows, inc=inc), f, ensure_ascii=False)
+        json.dump(dict(rows=rows, inc=inc, provincial=provincial), f, ensure_ascii=False)
       os.replace(tmp, SECTIONS_CACHE)
-    return rows, inc
+    return rows, inc, provincial
 
   def _last_call(self):
     """(wall time of the last events call, its raw response or None) from EVENTS_CACHE."""
@@ -269,15 +273,15 @@ class ThbFeed:
         continue
       try:
         if not self.inc:
-          rows, inc = self._load_sections()
-          self._on_sections(rows)
+          rows, inc, provincial = self._load_sections()
+          self._on_sections(rows, set(provincial))
           self.inc = inc
-          cloudlog.info(f"hwyalert thb: {len(rows)} expressway sections, roads {sorted(inc)}, via {'Worker' if proxy else 'TDX'}")
+          cloudlog.info(f"hwyalert thb: {len(rows)} province-road sections, {len(inc)} roads ({len(provincial)} ordinary), via {'Worker' if proxy else 'TDX'}")
         if proxy:
           data, t_tdx = self._proxy_get("events", self.t if self.t > 0 else None)
           if data is not None and t_tdx > 0:
             self._publish(data, t_tdx)
-            cloudlog.info(f"hwyalert thb: {len(self.events)} expressway events (TDX call {time.time() - t_tdx:.0f} s ago)")
+            cloudlog.info(f"hwyalert thb: {len(self.events)} province-road events (TDX call {time.time() - t_tdx:.0f} s ago)")
           stop.wait(PROXY_POLL_S)
           continue
         t_last, data = self._last_call()
@@ -292,7 +296,7 @@ class ThbFeed:
         data = self._get(EVENTS_PATH)
         self._save_call(t_call, data)
         self._publish(data, t_call)
-        cloudlog.info(f"hwyalert thb: {len(self.events)} expressway events")
+        cloudlog.info(f"hwyalert thb: {len(self.events)} province-road events")
       except Exception as e:
         cloudlog.warning(f"hwyalert thb fetch failed: {e}")
         stop.wait(60.)   # the next events call still waits for FETCH_S since the last one (EVENTS_CACHE)

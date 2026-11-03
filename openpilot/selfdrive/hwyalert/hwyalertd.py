@@ -49,6 +49,7 @@ REMIND_FROM_KM = 1.5
 REMIND_FRESH_S = 120.      # ... only while the event is still in a feed fetched within this time
 RANGE_KM = 1.0             # inside an event range at least this long (移動性施工, closures) -> "本路段"
 FETCH_RETRY_S = 15.
+CONFIRM_V_PROVINCIAL = 30 / 3.6   # ordinary province roads (台1, 台9 ...; thb.PROVINCIAL_CLASS) run through towns at 30-60 km/h
 CONFIRM_V = 60 / 3.6       # m/s: alerts start only once the car has driven this fast while matched to the road (a surface
                            # road right under an elevated freeway matches by position and heading; it rarely reaches 60 km/h)
 # ... or sunnypilot's map data (OSM, liveMapDataSP) says the current road is a freeway: name contains one of
@@ -355,6 +356,7 @@ class Tracker:
     self.S = sections
     self.streak, self.last_key = 0, None
     self.fast_ok = False                                     # reached CONFIRM_V on the current road
+    self.provincial: set[str] = set()                        # ordinary province roads: confirmed at CONFIRM_V_PROVINCIAL
     self.held, self.held_dist, self.last_t = [], 0., None   # last good match, metres driven since (no GPS)
     self.last_fix, self.rejects = None, 0                     # (t, x, y) of the last accepted fix
     self.spoken: dict[str, float] = {}   # event id -> distance (km) at the first announcement
@@ -398,7 +400,7 @@ class Tracker:
     if key != self.last_key:
       self.fast_ok = False
     self.last_key = key
-    if key is not None and (v >= CONFIRM_V or map_freeway):
+    if key is not None and (v >= (CONFIRM_V_PROVINCIAL if key[0] in self.provincial else CONFIRM_V) or map_freeway):
       self.fast_ok = True
     state = dict(road="", alerts=[])
     if not m or self.streak < MATCH_FRAMES or not self.fast_ok:
@@ -444,7 +446,10 @@ def main():
   last_mapd_pos_t = 0.
   stop = threading.Event()
   threading.Thread(target=feed.fetch_loop, args=(stop,), daemon=True).start()
-  thb_feed = thb.ThbFeed(_iso_to_epoch, LONG_TERM_H, tracker.S.add_rows, tracker.S.locate_km)
+  def on_thb_sections(rows, provincial):
+    tracker.S.add_rows(rows)
+    tracker.provincial = provincial
+  thb_feed = thb.ThbFeed(_iso_to_epoch, LONG_TERM_H, on_thb_sections, tracker.S.locate_km)
   threading.Thread(target=thb_feed.fetch_loop, args=(stop,), daemon=True).start()
   sm = messaging.SubMaster(["gpsLocation", "gpsLocationExternal", "carState", "liveMapDataSP"],
                            ignore_alive=["liveMapDataSP"], ignore_avg_freq=["liveMapDataSP"], ignore_valid=["liveMapDataSP"])
