@@ -23,7 +23,6 @@ const SOURCES = {
   events: { path: "/v1/Traffic/RoadEvent/LiveEvent/Highway", estMB: 0.1 },
   section: { path: "/v2/Road/Traffic/Section/Highway", maxAgeS: 180 * 86400, estMB: 2.4 },   // owner: twice a year at most
   shape: { path: "/v2/Road/Traffic/SectionShape/Highway", maxAgeS: 180 * 86400, estMB: 5.8 },
-  taipei: { path: "/v1/Traffic/RoadEvent/LiveEvent/City/Taipei", maxAgeS: 1800, estMB: 0.1 },   // city roads (市民／建國高架), trial
 };
 const BUDGET_POINTS = 2.8;          // of the free 3, leaving room for the token calls and rounding
 const MIN_INTERVAL_S = 120;         // fastest events refresh (owner wants it dense)
