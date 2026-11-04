@@ -40,6 +40,18 @@ GAP_MARGIN_DEFAULT_M = 3.0
 # 11/04 slimming (replay ablation, 128 km, merge_replay.py): removed the wide (2.6-5 m) trend, the fast (> 1 m/s sideways)
 # trigger, the close fast trigger and the curve skip: with them 32 true / 23 line-huggers / 25 noise marks, without them
 # 35 / 21 / 22. Kept: near trend, close moving-in (most real cut-ins), the radar's lane-crossing code, confirmed.
+# 11/04 motion check (borrowed from CarrotPilot radar_motion/trajectory_cutin.py: direction consistency + jitter filter, and a
+# distance-dependent noise floor for our front radar): the near trend and the close moving-in triggers also need, over the
+# last MOTION_WIN_S, the offset steps to point inward (inward travel / all travel >= MOTION_MIN_CONSISTENCY), no jitter (if it
+# moved >= JITTER_MIN_TRAVEL_M in all, the net inward part >= JITTER_MIN_NET_FRACTION of it) and a net inward progress above
+# the radar's lateral noise at that range (NOISE_FLOOR_*: ARS510 lateral noise grows with range, 17:05 +-0.6 m at 80 m).
+MOTION_GATE = True
+MOTION_WIN_S = 1.0
+MOTION_MIN_CONSISTENCY = 0.65
+JITTER_MIN_TRAVEL_M = 0.45
+JITTER_MIN_NET_FRACTION = 0.5
+NOISE_FLOOR_BP = [20.0, 80.0]
+NOISE_FLOOR_V = [0.2, 0.6]
 LC_OFF = (0.9, 5.0)          # m from my path (radar lane-crossing code)
 LC_D = (15.0, 120.0)         # m
 CUTIN_MAX_VREL = 1.5         # m/s, lane-crossing code: slower or about my speed
@@ -210,6 +222,24 @@ class CutinRule:
         return (ly - y_right) if off_signed > 0 else (y_right - ly)
     return self._lane_w / 2. - abs(off_signed) - LINE_PATH_EXTRA_M
 
+  @staticmethod
+  def _motion_ok(h, frame: int, d: float) -> bool:
+    """MOTION_* check on the offset history h [(frame, |offset|)]: consistent, not jitter, above the noise floor."""
+    if not MOTION_GATE:
+      return True
+    w = [o for f, o in h if frame - f <= MOTION_WIN_S * FRAME_HZ]
+    if len(w) < 4:
+      return False
+    steps = np.diff(np.asarray(w, float))
+    travel = float(np.abs(steps).sum())
+    inward = float(-steps[steps < 0].sum())
+    net = float(w[0] - w[-1])
+    if travel <= 1e-6 or inward / travel < MOTION_MIN_CONSISTENCY:
+      return False
+    if travel >= JITTER_MIN_TRAVEL_M and net < JITTER_MIN_NET_FRACTION * travel:
+      return False
+    return net >= float(np.interp(d, NOISE_FLOOR_BP, NOISE_FLOOR_V))
+
   def _line_intr(self, lanes, d: float, y_right: float, off_signed: float) -> float:
     """As _intrusion, from a reliable model lane line only (nan without one, or beyond its range)."""
     if lanes is not None:
@@ -233,14 +263,14 @@ class CutinRule:
     if len(h) >= 6 and not settling and near:
       t = np.array([x[0] for x in h], float) / FRAME_HZ; o = np.array([x[1] for x in h], float)
       slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
-      ok = slope < CUTIN_RATE
+      ok = slope < CUTIN_RATE and self._motion_ok(h, frame, d)
     # close, moving in: within CLOSE_D / CLOSE_OFF, the radar's sideways speed toward me > SLOW_TOWARD for SLOW_HOLD_RECORDS
     close = CLOSE_OFF[0] < off < CLOSE_OFF[1] and CLOSE_D[0] <= d <= CLOSE_D[1]
     if fresh:
       self._slow[tid] = self._slow.get(tid, 0) + 1 if (close and toward == toward and toward > SLOW_TOWARD) else 0
     # the radar's own lane-crossing code (2 / 5)
     lc_ok = lc in LC_CUTIN and LC_OFF[0] < off < LC_OFF[1] and LC_D[0] <= d <= LC_D[1] and vrel < CUTIN_MAX_VREL
-    if lc_ok or (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS):
+    if lc_ok or (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS and self._motion_ok(h, frame, d)):
       ok = True
       if fresh:
         self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)
