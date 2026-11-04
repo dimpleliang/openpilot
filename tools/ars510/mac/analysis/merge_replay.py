@@ -203,6 +203,8 @@ def main():
     if x == '--set': k, v = a[i + 1].split('=', 1); sets[k] = v
   lo, hi = (a[a.index('--routes') + 1].split('-') if '--routes' in a else ('33', 'ff'))
   maxs = int(a[a.index('--max-segs') + 1]) if '--max-segs' in a else 100000
+  global MIN_KMH
+  if '--min-kmh' in a: MIN_KMH = float(a[a.index('--min-kmh') + 1])
   jobs = int(a[a.index('--jobs') + 1]) if '--jobs' in a else 6
   segs = []
   for s in sorted(glob.glob(os.path.join(ROOT, 'raw', '*--*--*'))):
