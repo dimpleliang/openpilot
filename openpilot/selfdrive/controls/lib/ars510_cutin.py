@@ -31,36 +31,23 @@ CUTIN_VREL = -1.5
 CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
 CUTIN_MIN_V_GROUND = 2.0  # m/s over the ground, forward: excludes oncoming cars
 CUTIN_MIN_V_EGO = 1.0     # m/s: nothing while I am (nearly) stopped (11/02 driver)
-# Wide merge (10/31 11:39, on-ramp car): a clearly slower car 2.6-5 m out, drifting in fast.
-CUTIN_WIDE_OFF_MAX = 5.0
-CUTIN_WIDE_RATE = -0.3   # m/s: twice the near rate
-CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
-CUTIN_WIDE_D = (25.0, 70.0)  # 11/04 (was 110): at 75-90 m the radar's lateral position (+-0.6 m) and the model path wobble
-                              # read as a slow drift: 17:05 a right-lane car steady 3.0-3.7 m out was marked
-CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only
 CUTIN_RELEASE_FRAMES = 20
 # 11/04 driver: with a lead, a cut-in is an object entering the GAP between me and my lead. The radar range is to the
 # object's rear: it must sit at least its own length (less ~1.5 m of overlap) nearer than the lead's rear. By radar class
 # (163|3): 1 unclassified, 2 car, 3 large vehicle, 4 pedestrian, 5 provisional two-wheeler, 6 two-wheeler.
 GAP_MARGIN_M = {1: 3.0, 2: 3.0, 3: 10.5, 4: 0.5, 5: 0.5, 6: 0.5}
 GAP_MARGIN_DEFAULT_M = 3.0
-# Fast trigger: the radar's lateral speed toward my path in the ego frame, held FAST_HOLD_FRAMES; the radar's lane-crossing
-# code (2 / 5 = cut-in from left / right) marks at once.
-FAST_VLAT_TOWARD = 1.0
-FAST_HOLD_FRAMES = 8
-FAST_OFF = (0.9, 5.0)
-FAST_D = (15.0, 120.0)
-CUTIN_MAX_VREL = 1.5
-CURVE_STEER_DEG = 15.0
-CURVE_PATH_Y_50 = 2.5
-CURVE_MIN_V = 60 / 3.6
+# 11/04 slimming (replay ablation, 128 km, merge_replay.py): removed the wide (2.6-5 m) trend, the fast (> 1 m/s sideways)
+# trigger, the close fast trigger and the curve skip: with them 32 true / 23 line-huggers / 25 noise marks, without them
+# 35 / 21 / 22. Kept: near trend, close moving-in (most real cut-ins), the radar's lane-crossing code, confirmed.
+LC_OFF = (0.9, 5.0)          # m from my path (radar lane-crossing code)
+LC_D = (15.0, 120.0)         # m
+CUTIN_MAX_VREL = 1.5         # m/s, lane-crossing code: slower or about my speed
 LC_CUTIN = (2, 5)
 SLOW_TOWARD = 0.4
 SLOW_HOLD_RECORDS = 17
 CLOSE_D = (5.0, 40.0)
 CLOSE_OFF = (0.9, 4.0)
-CLOSE_VLAT_TOWARD = 1.0
-CLOSE_HOLD_FRAMES = 3
 # Confirmed cut-in: within CONFIRM_OFF of my path, CONFIRM_D, slower by CONFIRM_VREL, CONFIRM_FROM m or more out within CONFIRM_WIN s.
 CONFIRM_OFF = 1.3
 CONFIRM_D = (10.0, 60.0)
@@ -119,8 +106,6 @@ class CutinRule:
     self._out_t: dict[int, float] = {}
     self._confirm_t: dict[int, tuple[float, int]] = {}
     self._side: dict[int, int] = {}
-    self._close: dict[int, int] = {}
-    self._fast: dict[int, int] = {}
     self._slow: dict[int, int] = {}
     self._release: dict[int, int] = {}
     self._qual_t: dict[int, float] = {}
@@ -137,7 +122,6 @@ class CutinRule:
       if radar_state.leadOne.present:
         lead_d = radar_state.leadOne.dRel
     v_ego = car_state.vEgo
-    curve = (abs(car_state.steeringAngleDeg) > CURVE_STEER_DEG or abs(path_y(50.)) > CURVE_PATH_Y_50) and v_ego < CURVE_MIN_V
     ego_lc = self._ego_lc.update(car_state, md, now)
     lanes = None
     if len(md.laneLines) >= 3 and len(md.laneLineProbs) >= 3:
@@ -191,7 +175,7 @@ class CutinRule:
       if tid >= 0:
         seen.add(tid)
       cutin = self._cutin(tid, off, d, v, frame, fresh, settling, v_ego, toward, lc) \
-        if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
+        if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND) else False
       qual = False
       if cutin:
         if ego_lc or intr < LINE_GATE_M or beyond:
@@ -211,7 +195,7 @@ class CutinRule:
         o.strict = (line == line and line >= BRAKE_LINE_M) or lc in LC_CUTIN
     if fresh:
       for tid in [k for k in self._hist if k not in seen]:
-        for store in (self._hist, self._hold, self._release, self._fast, self._close, self._slow, self._out_t,
+        for store in (self._hist, self._hold, self._release, self._slow, self._out_t,
                       self._confirm_t, self._side, self._qual_t):
           store.pop(tid, None)
     return out
@@ -244,24 +228,19 @@ class CutinRule:
       while h and frame - h[0][0] > CUTIN_WIN * FRAME_HZ:
         h.pop(0)
     ok = False
+    # near trend: a slower car 0.8-2.6 m off my path, 25-90 m ahead, its offset shrinking over CUTIN_WIN
     near = CUTIN_OFF_MIN < off < CUTIN_OFF_MAX and vrel < CUTIN_VREL and CUTIN_D[0] <= d <= CUTIN_D[1]
-    wide = v_ego > CUTIN_WIDE_MIN_V_EGO and CUTIN_OFF_MAX <= off < CUTIN_WIDE_OFF_MAX and vrel < CUTIN_WIDE_VREL and \
-      CUTIN_WIDE_D[0] <= d <= CUTIN_WIDE_D[1]
-    if len(h) >= 6 and not settling and (near or wide):
+    if len(h) >= 6 and not settling and near:
       t = np.array([x[0] for x in h], float) / FRAME_HZ; o = np.array([x[1] for x in h], float)
       slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
-      ok = slope < (CUTIN_RATE if near else CUTIN_WIDE_RATE)
-    in_range = FAST_OFF[0] < off < FAST_OFF[1] and FAST_D[0] <= d <= FAST_D[1] and vrel < CUTIN_MAX_VREL
-    if fresh:
-      self._fast[tid] = self._fast.get(tid, 0) + 1 if (in_range and toward == toward and toward > FAST_VLAT_TOWARD) else 0
+      ok = slope < CUTIN_RATE
+    # close, moving in: within CLOSE_D / CLOSE_OFF, the radar's sideways speed toward me > SLOW_TOWARD for SLOW_HOLD_RECORDS
     close = CLOSE_OFF[0] < off < CLOSE_OFF[1] and CLOSE_D[0] <= d <= CLOSE_D[1]
     if fresh:
-      self._close[tid] = self._close.get(tid, 0) + 1 if (close and toward == toward and toward > CLOSE_VLAT_TOWARD) else 0
       self._slow[tid] = self._slow.get(tid, 0) + 1 if (close and toward == toward and toward > SLOW_TOWARD) else 0
-    if close and (self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES or self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS):
-      in_range = True
-    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES or self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES or
-                     (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS)):
+    # the radar's own lane-crossing code (2 / 5)
+    lc_ok = lc in LC_CUTIN and LC_OFF[0] < off < LC_OFF[1] and LC_D[0] <= d <= LC_D[1] and vrel < CUTIN_MAX_VREL
+    if lc_ok or (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS):
       ok = True
       if fresh:
         self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)
