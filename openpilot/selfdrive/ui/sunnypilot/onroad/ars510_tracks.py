@@ -57,7 +57,8 @@ CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
 CUTIN_WIDE_D = (25.0, 110.0)
 CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
 CUTIN_RELEASE_FRAMES = 20
-BEYOND_LEAD_M = 3.0      # 11/04 17:05 driver: a car merging beyond my current lead does not concern me -> no mark
+GAP_MARGIN_M = 3.0       # 11/04 driver: with a lead, a cut-in is a car entering the GAP between me and my lead; its rear must be
+                         # at least this much nearer than the lead's rear (side by side with or beyond the lead: no mark)
 # 10/31 driver: mark as soon as the radar reports the car moving toward my lane, not only when slower (similar speed counts),
 # and not in curves. Fast trigger: the radar's lateral speed toward my path in the ego frame (yaw rate x range removed in
 # the interface; the raw over-ground value carried my own turning, 22:36 a merging car read 1.5 m/s AWAY), held FAST_HOLD_FRAMES. The radar's
@@ -213,7 +214,7 @@ class Ars510Tracks:
           if lead.present and lead.radar:
             leads.append((lead.dRel, lead.yRel))
 
-      lead_d = None   # my lane's lead (radar or vision): merges farther away than it are not shown
+      lead_d = None   # my lane's lead (radar or vision): only cars entering the gap in front of me are shown
       if radar_state is not None and radar_state.leadOne.present:
         lead_d = radar_state.leadOne.dRel
       v_ego = sm['carState'].vEgo
@@ -244,7 +245,7 @@ class Ars510Tracks:
         y_right = -y + camera_offset  # radar yRel is left-positive; the model path and map_to_screen use right-positive (calibrated frame)
         off_c = y_right - path_y(d)
         # confirmed cut-in (really in my lane now, slower): flashing circle, drawn even when the car has become the lead
-        beyond = lead_d is not None and d > lead_d + BEYOND_LEAD_M
+        beyond = lead_d is not None and d > lead_d - GAP_MARGIN_M
         if tid >= 0:
           if abs(off_c) >= CONFIRM_FROM:
             self._out_t[tid] = now
