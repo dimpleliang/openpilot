@@ -18,6 +18,7 @@ OP = os.path.join(ROOT, 'op')
 sys.path[:0] = [OP, os.path.join(OP, 'opendbc_repo')]
 
 HORIZON_S, IN_LANE_M, CUT_FROM_M, MIN_KMH = 8.0, 0.9, 1.8, 60.0
+HUG_LINE_M = 0.5   # a false episode whose object came within this of the lane line = a line-hugger (driver 11/04: a hazard too)
 SIM = {'t': 0.0}
 
 
@@ -108,8 +109,17 @@ def run_seg(args):
     if last_t is not None: km += v * (t - last_t) / 1000.
     last_t = t
     pts = {}
+    ll = [(np.asarray(md.laneLines[i].x, float), np.asarray(md.laneLines[i].y, float), float(md.laneLineProbs[i])) for i in (1, 2)] \
+      if len(md.laneLines) >= 3 and len(md.laneLineProbs) >= 3 else None
     for d, y, vr, _s, settling, cls, tid, vlat, lc in tr._points:
-      if tid >= 0 and 0.5 < d < 120: pts[tid] = (-y - path_y(d), d)
+      if tid >= 0 and 0.5 < d < 120:
+        yr = -y; off_s = yr - path_y(d)
+        line = float('nan')   # distance from the object to the lane line on its side (negative: inside my lane)
+        if ll is not None:
+          x, ly, pr = ll[1] if off_s > 0 else ll[0]
+          if pr >= 0.5 and len(x) > 1 and d <= x[-1]:
+            lyd = float(np.interp(d, x, ly)); line = (yr - lyd) if off_s > 0 else (lyd - yr)
+        pts[tid] = (off_s, d, line)
     lead = (rs.leadOne.dRel, rs.leadOne.yRel) if rs is not None and rs.leadOne.present and rs.leadOne.radar else None
     mk = set()
     for dm in marked_now:
@@ -127,19 +137,19 @@ def score(segres):
     km += k
     hist = defaultdict(list)  # tid -> [(t, |off|, is_lead, v)]
     for t, v, eng, pts, lead, mk, raw in frames:
-      for tid, (off, d) in pts.items():
+      for tid, (off, d, line) in pts.items():
         dy = raw.get(tid)
         is_lead = lead is not None and dy is not None and abs(dy[0] - lead[0]) < 2.0 and abs(dy[1] - lead[1]) < 1.2
-        hist[tid].append((t, abs(off), is_lead, v, eng))
+        hist[tid].append((t, abs(off), is_lead, v, eng, line))
     entry = {}
     for tid, h in hist.items():
       out_seen = False
-      for t, off, il, v, eng in h:
+      for t, off, il, v, eng, _line in h:
         if off >= CUT_FROM_M: out_seen = True
         elif out_seen and (off < IN_LANE_M or il) and v * 3.6 > MIN_KMH:
           entry[tid] = t; break
     for tid, te in entry.items():
-      if any(eng for t, off, il, v, eng in hist[tid] if abs(t - te) < 0.5):
+      if any(x[4] for x in hist[tid] if abs(x[0] - te) < 0.5):
         real.append((name, tid, te))
     # mark episodes
     cur = {}
@@ -152,13 +162,19 @@ def score(segres):
     for tid, (a, b, v) in cur.items(): eps.append((name, tid, a, b, v))
     for i, ep in enumerate(eps):
       if ep[0] == name and len(ep) == 5:
-        te = entry.get(ep[1]); eps[i] = ep + (te is not None and ep[2] - 1.0 <= te <= ep[2] + HORIZON_S, te)
+        te = entry.get(ep[1])
+        near = [x[5] for x in hist[ep[1]] if ep[2] - 0.5 <= x[0] <= ep[3] + 0.5 and x[5] == x[5]]
+        eps[i] = ep + (te is not None and ep[2] - 1.0 <= te <= ep[2] + HORIZON_S, te, min(near) if near else float('nan'))
   tp = sum(1 for e in eps if e[5]); fp = len(eps) - tp
   caught, warn = 0, []
   for name, tid, te in real:
     ms = [e for e in eps if e[0] == name and e[1] == tid and te - HORIZON_S <= e[2] <= te]
     if ms: caught += 1; warn.append(te - min(e[2] for e in ms))
-  return dict(km=km, episodes=len(eps), true=tp, false=fp, false_per_100km=fp / max(km, 1e-3) * 100,
+  hug = [e for e in eps if not e[5] and e[7] == e[7] and e[7] <= HUG_LINE_M]
+  noise = [e for e in eps if not e[5] and not (e[7] == e[7] and e[7] <= HUG_LINE_M)]
+  sec = lambda es: sum(min(e[3] - e[2] + 0.5, 3.0) for e in es)   # coast seconds (marked time + 0.5 s release, max 3 s)
+  extra = dict(hug=len(hug), noise=len(noise), coast_s_true=sec([e for e in eps if e[5]]), coast_s_hug=sec(hug), coast_s_noise=sec(noise))
+  return dict(**extra, km=km, episodes=len(eps), true=tp, false=fp, false_per_100km=fp / max(km, 1e-3) * 100,
               real=len(real), recall=caught / max(len(real), 1), warn_med=float(np.median(warn)) if warn else float('nan')), eps
 
 
@@ -179,10 +195,11 @@ def main():
     res = [r for r in pool.imap_unordered(run_seg, [(s, sets) for s in segs], chunksize=1) if r]
   sc, eps = score(res)
   print(f"sets {sets or 'current'}: segments {len(res)}, {sc['km']:.0f} km | episodes {sc['episodes']} true {sc['true']} false {sc['false']} "
-        f"({sc['false_per_100km']:.0f}/100 km) | real cut-ins {sc['real']} recall {sc['recall']*100:.0f}% warn median {sc['warn_med']:.1f} s")
+        f"({sc['false_per_100km']:.0f}/100 km: hugger {sc['hug']} noise {sc['noise']}) | coast s true/hug/noise "
+        f"{sc['coast_s_true']:.0f}/{sc['coast_s_hug']:.0f}/{sc['coast_s_noise']:.0f} | real cut-ins {sc['real']} recall {sc['recall']*100:.0f}% warn median {sc['warn_med']:.1f} s")
   if '--list' in a:
     for e in sorted(eps, key=lambda e: (e[0], e[2])):
-      print(f"  {e[0]} tid {e[1]} {e[3]-e[2]:4.1f}s v {e[4]*3.6:3.0f} {'TRUE' if e[5] else 'false'}")
+      print(f"  {e[0]} tid {e[1]} {e[3]-e[2]:4.1f}s v {e[4]*3.6:3.0f} {'TRUE' if e[5] else ('hug' if e[7] == e[7] and e[7] <= HUG_LINE_M else 'noise')} line {e[7]:.1f}")
 
 
 if __name__ == '__main__':
