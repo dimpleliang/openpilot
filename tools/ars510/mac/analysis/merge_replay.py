@@ -189,8 +189,8 @@ def score(segres):
   sec = lambda es: sum(min(e[3] - e[2] + 0.5, 3.0) for e in es)   # coast seconds (marked time + 0.5 s release, max 3 s)
   extra = dict(hug=len(hug), noise=len(noise), coast_s_true=sec([e for e in eps if e[5]]), coast_s_hug=sec(hug), coast_s_noise=sec(noise))
   for nm, es in (('true', [e for e in eps if e[5]]), ('hug', hug), ('noise', noise)):
-    extra[f'brake_{nm}'] = sum(1 for e in es if e[8] < -0.31)
-    extra[f'lift_{nm}'] = sum(1 for e in es if -0.31 <= e[8] < 0.)
+    extra[f'brake_{nm}'] = sum(1 for e in es if e[8] < -0.36)
+    extra[f'lift_{nm}'] = sum(1 for e in es if -0.36 <= e[8] < 0.)
     extra[f'maxdec_{nm}'] = min([e[8] for e in es], default=0.)
   return dict(**extra, km=km, episodes=len(eps), true=tp, false=fp, false_per_100km=fp / max(km, 1e-3) * 100,
               real=len(real), recall=caught / max(len(real), 1), warn_med=float(np.median(warn)) if warn else float('nan')), eps
