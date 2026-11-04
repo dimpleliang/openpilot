@@ -36,6 +36,17 @@ SHOW_BANNER = False  # 10/31 driver: no edge banner ("右側匯入／左側匯�
 CUTIN_SCALE = 1.5
 CUTIN_MIN_SIZE = 24.0
 BANNER_FONT = 56
+# 11/04 driver: a lamp at the bottom left (right of the driver-monitoring icon) for LAMP_HOLD_S whenever the cut-in response's
+# conditions hold (ars510_cutin.CutinResponse: a marked object that needs me to slow down), shown whether or not the planner's
+# response is switched on (/data/ars510_cutin_predict). Amber = a lift-off is enough, red = light braking is needed.
+LAMP_HOLD_S = 3.0
+LAMP_R = 46
+LAMP_X = 30 + 192 + 40 + LAMP_R      # UI_BORDER_SIZE + driver-monitoring icon (BTN_SIZE) + gap
+LAMP_Y_FROM_BOTTOM = 30 + 192 // 2   # same height as the driver-monitoring icon's centre
+COLOR_LAMP_LIFT = (255, 190, 0)
+COLOR_LAMP_BRAKE = (255, 60, 40)
+T_FOLLOW_DEFAULT = 1.45
+T_FOLLOW_BY_PERSONALITY = {"relaxed": 1.75, "standard": 1.45, "aggressive": 1.25}   # = long_mpc.get_T_FOLLOW (not imported here)
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
 # two-wheelers on sampled frames). Shown once the track has settled. Chinese only where the UI font carries the glyphs.
@@ -67,6 +78,9 @@ class Ars510Tracks:
     self._font = gui_app.font(FontWeight.SEMI_BOLD)
     self._points: list[tuple] = []
     self._rule = rule.CutinRule()
+    self._resp = rule.CutinResponse()
+    self._lamp_until = 0.
+    self._lamp_brake = False
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -97,8 +111,30 @@ class Ars510Tracks:
           self._draw_marker(pt, o.d, o.vrel + v_ego, COLOR_PATH if o.in_lane else COLOR_SIDE, rect, o.settling, o.cls, False, 0)
       if merging and SHOW_BANNER:
         self._draw_banner(min(merging), rect)
+      now = rl.get_time()
+      t_follow = T_FOLLOW_BY_PERSONALITY.get(str(sm['selfdriveState'].personality), T_FOLLOW_DEFAULT)
+      best = self._resp.update(objs, v_ego, t_follow, now)
+      if best is not None:
+        brake = best[0] > rule.RESP_LIFT_MAX + 1e-3
+        self._lamp_brake = brake or (self._lamp_brake and now < self._lamp_until)
+        self._lamp_until = now + LAMP_HOLD_S
+      if now < self._lamp_until:
+        self._draw_lamp(rect, self._lamp_brake)
     except Exception:
       self._points = []
+
+  def _draw_lamp(self, rect: rl.Rectangle, brake: bool):
+    """Bottom-left lamp: a filled circle with a bold down chevron (slow down); red when light braking is needed."""
+    x = rect.x + LAMP_X
+    y = rect.y + rect.height - LAMP_Y_FROM_BOTTOM
+    rgb = COLOR_LAMP_BRAKE if brake else COLOR_LAMP_LIFT
+    rl.draw_circle(int(x), int(y + 3), LAMP_R + 4, rl.Color(0, 0, 0, 150))
+    rl.draw_circle(int(x), int(y), LAMP_R, rl.Color(*rgb, 240))
+    dark = rl.Color(20, 20, 20, 255)
+    th = 11.0
+    for dy in (-14, 10):
+      rl.draw_line_ex(rl.Vector2(x - 24, y + dy - 10), rl.Vector2(x, y + dy + 10), th, dark)
+      rl.draw_line_ex(rl.Vector2(x, y + dy + 10), rl.Vector2(x + 24, y + dy - 10), th, dark)
 
   def _draw_confirmed(self, pt, d: float, direction: int, flash: bool = True):
     """Cut-in marker: a solid amber circle on the car with a dark arrow inside pointing into my lane (the way it moves).
