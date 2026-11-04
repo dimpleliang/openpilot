@@ -167,8 +167,9 @@ CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
 # needed to settle at my following distance behind it (closing^2 / 2 x room, less its own relative acceleration): at most a
 # lift-off (-0.3) for a prediction, light braking (-1.0) once it is on / past its lane line, moving in fast, or confirmed.
 # Harder braking stays with the MPC once the car is the lead. A line-hugging car counts (driver: a hazard too).
-# Onset at CR_JERK_DOWN, release at CR_JERK_UP; nothing while the driver presses the gas. Off: /data/ars510_no_cutin_predict.
-CR_OFF_FILE = "/data/ars510_no_cutin_predict"
+# Onset at CR_JERK_DOWN, release at CR_JERK_UP; nothing while the driver presses the gas.
+# Until validated on replay and enabled by the driver: on only while /data/ars510_cutin_predict exists.
+CR_ON_FILE = "/data/ars510_cutin_predict"
 CR_JERK_DOWN = 0.8               # m/s^3
 CR_JERK_UP = 1.0                 # m/s^3
 CR_STALE_FRAMES = 10             # planner cycles without a radar display record: drop the objects
@@ -309,7 +310,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.cr_frame = 0
     self.cr_cap = None
     self.cr_on = False
-    self.cr_off = os.path.exists(CR_OFF_FILE)
+    self.cr_off = not os.path.exists(CR_ON_FILE)
     self.cr_cam = 0.   # the UI's camera offset (CameraOffset, with a sunnypilot model bundle), read once
     try:
       from openpilot.common.params import Params
@@ -547,7 +548,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # ars510: cut-in response (see CR_*)
     if self.far_lead_cnt == 0:
-      self.cr_off = os.path.exists(CR_OFF_FILE)
+      self.cr_off = not os.path.exists(CR_ON_FILE)
     cr_target = None
     svc = ars510_cutin.SERVICE
     if self.CP.openpilotLongitudinalControl and not self.cr_off and not reset_state and svc in sm.data and \
