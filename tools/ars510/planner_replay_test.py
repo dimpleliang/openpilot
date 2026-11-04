@@ -14,7 +14,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib import longitudinal_planner as lp
 
 SERVICES = ['carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState', 'liveMapDataSP',
-            'carStateSP', 'selfdriveStateSP', 'gpsLocation', 'radarTracks', 'customReservedRawData0']
+            'carStateSP', 'selfdriveStateSP', 'gpsLocation', 'gpsLocationExternal', 'radarTracks', 'customReservedRawData0']
 
 
 class SM:
@@ -22,7 +22,10 @@ class SM:
     self.data, self.updated, self.logMonoTime, self.recv_frame, self.frame = {}, defaultdict(bool), {}, defaultdict(int), 0
     self.valid, self.alive = defaultdict(lambda: True), defaultdict(lambda: True)
 
-  def __getitem__(self, k): return self.data[k]
+  def __getitem__(self, k):
+    if k not in self.data:
+      self.data[k] = getattr(messaging.new_message(k), k)
+    return self.data[k]
   def all_checks(self, *a): return True
   def all_alive(self, *a): return True
   def all_valid(self, *a): return True
@@ -41,7 +44,7 @@ def main():
     if w not in SERVICES:
       continue
     sm.data[w] = getattr(e, w); sm.logMonoTime[w] = e.logMonoTime; pend.add(w)
-    if w != 'modelV2' or len(sm.data) < 8:
+    if w != 'modelV2' or not all(k in sm.data for k in ('carState', 'controlsState', 'radarState', 'selfdriveState', 'carControl')):
       continue
     sm.frame += 1
     for k in list(sm.updated): sm.updated[k] = False
