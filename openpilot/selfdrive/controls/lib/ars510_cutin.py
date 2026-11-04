@@ -259,10 +259,18 @@ class CutinRule:
 
 # ---- 11/04 planner response (driver: by my speed, the distance and its speed; sometimes a lift-off, sometimes light braking)
 RESP_STOP_DISTANCE = 6.0   # m, = long_mpc STOP_DISTANCE
-RESP_LIFT_MAX = 0.3        # m/s^2: the most a prediction alone may ask (a lift-off)
+# m/s^2: the most a prediction alone may ask (a lift-off), by my speed. 11/04 coast_scan.py (the driver lifting off, no
+# brake, openpilot off, 846 segments, 8 min): -0.22 at 10-20 km/h, -0.36..-0.41 at 20-80 km/h (no data above 80 yet).
+RESP_LIFT_BP = [15 / 3.6, 25 / 3.6]
+RESP_LIFT_V = [0.2, 0.35]
+RESP_LIFT_MAX = 0.35       # the highest of RESP_LIFT_V
 RESP_BRAKE_MAX = 1.0       # m/s^2: light braking, only for strict / confirmed objects; harder is the MPC's job once it is the lead
 RESP_MIN = 0.05            # m/s^2: below this, nothing
 RESP_ACC_WIN_S = 1.0       # s: relative-speed history for the object's relative acceleration
+
+
+def lift_max(v_ego: float) -> float:
+  return float(np.interp(v_ego, RESP_LIFT_BP, RESP_LIFT_V))
 
 
 class CutinResponse:
@@ -296,7 +304,7 @@ class CutinResponse:
       a_req = max(a_req - max(a_rel, 0.), 0.)
       if a_req < RESP_MIN:
         continue
-      cap = min(a_req, RESP_BRAKE_MAX if o.strict else RESP_LIFT_MAX)
+      cap = min(a_req, RESP_BRAKE_MAX if o.strict else lift_max(v_ego))
       if best is None or cap > best[0]:
         best = (cap, o, a_req)
     for tid in [k for k in self._vrel if k not in live]:

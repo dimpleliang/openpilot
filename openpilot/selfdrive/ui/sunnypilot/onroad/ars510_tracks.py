@@ -115,7 +115,7 @@ class Ars510Tracks:
       t_follow = T_FOLLOW_BY_PERSONALITY.get(str(sm['selfdriveState'].personality), T_FOLLOW_DEFAULT)
       best = self._resp.update(objs, v_ego, t_follow, now)
       if best is not None:
-        brake = best[0] > rule.RESP_LIFT_MAX + 1e-3
+        brake = best[0] > rule.lift_max(v_ego) + 1e-3
         self._lamp_brake = brake or (self._lamp_brake and now < self._lamp_until)
         self._lamp_until = now + LAMP_HOLD_S
       if now < self._lamp_until:
