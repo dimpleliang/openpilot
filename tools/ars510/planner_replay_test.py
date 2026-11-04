@@ -7,7 +7,9 @@ import sys
 from collections import defaultdict
 
 import zstandard
-from openpilot.cereal import car, custom, log
+import openpilot.cereal.messaging as messaging
+from opendbc.car.structs import car
+from openpilot.cereal import custom, log
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib import longitudinal_planner as lp
 
@@ -28,8 +30,8 @@ class SM:
 
 def main():
   params = Params()
-  CP = car.CarParams.from_bytes(params.get("CarParamsPersistent") or params.get("CarParams"))
-  CP_SP = custom.CarParamsSP.from_bytes(params.get("CarParamsSPPersistent") or params.get("CarParamsSP"))
+  CP = messaging.log_from_bytes(params.get("CarParamsPersistent") or params.get("CarParams"), car.CarParams)
+  CP_SP = messaging.log_from_bytes(params.get("CarParamsSPPersistent") or params.get("CarParamsSP"), custom.CarParamsSP)
   pl = lp.LongitudinalPlanner(CP, CP_SP)
   pl.cr_off = False
   dat = zstandard.ZstdDecompressor().decompressobj().decompress(open(sys.argv[1], 'rb').read())
