@@ -128,6 +128,10 @@ SHOW_AFTER_S = 0.0          # 11/01 driver: 0.3 s was too late. Without the hold
                              # 18/34/20 %, warning median 0.2/1.0/0.4 s (the hold alone cost ~0.4 s)
 LINE_PATH_EXTRA_M = 0.3
 LINE_MIN_PROB = 0.5
+# 11/04: measure the object's lateral offset (trend, in-lane, confirm) from my LANE CENTRE (the model's two lane lines) instead
+# of my predicted path, so my own drift inside the lane and the path's far-range wobble do not read as the object moving
+# (17:05: left- and right-lane cars both "moved" the same way). Falls back to the path without two reliable lines.
+TREND_REF_LANE = False
 CUTIN_PULSE_HZ = 2.5
 SHOW_BANNER = False  # 10/31 driver: no edge banner ("右側匯入／左側匯入"), the arrows on the car are enough
 CUTIN_SCALE = 1.5
@@ -244,11 +248,21 @@ class Ars510Tracks:
           w = float(np.interp(8., lanes[1][0], lanes[1][1]) - np.interp(8., lanes[0][0], lanes[0][1]))
           if 2.5 < w < 4.5:
             self._lane_w += 0.05 * (float(np.clip(w, 3.0, 4.0)) - self._lane_w)
+      ref_y = path_y
+      if TREND_REF_LANE and lanes is not None and lanes[0][2] >= LINE_MIN_PROB and lanes[1][2] >= LINE_MIN_PROB \
+         and len(lanes[0][0]) > 1 and len(lanes[1][0]) > 1:
+        (lx, ly, _lp), (rx, ry, _rp) = lanes
+        ref_max = min(float(lx[-1]), float(rx[-1]))
+
+        def ref_y(dd, lx=lx, ly=ly, rx=rx, ry=ry, ref_max=ref_max):
+          if dd > ref_max:
+            return path_y(dd)
+          return 0.5 * (float(np.interp(dd, lx, ly)) + float(np.interp(dd, rx, ry)))
       for d, y, v, _sent, settling, cls, tid, vlat, lc in self._points:
         if not (0.5 < d < MAX_DRAW_M):
           continue
         y_right = -y + camera_offset  # radar yRel is left-positive; the model path and map_to_screen use right-positive (calibrated frame)
-        off_c = y_right - path_y(d)
+        off_c = y_right - ref_y(d)
         # confirmed cut-in (really in my lane now, slower): flashing circle, drawn even when the car has become the lead
         beyond = lead_d is not None and d > lead_d - GAP_MARGIN_M.get(cls, GAP_MARGIN_DEFAULT_M)
         if tid >= 0:
@@ -273,10 +287,10 @@ class Ars510Tracks:
         pt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
         if pt is None:
           continue
-        off = abs(y_right - path_y(d))
+        off = abs(y_right - ref_y(d))
         in_lane = off < LANE_HALF_M
         # oncoming traffic (moving backward over the ground) never counts as a cut-in
-        off_signed = y_right - path_y(d)
+        off_signed = y_right - ref_y(d)
         toward = (vlat - vlat_bias) * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
         cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling, v_ego, toward, lc) \
           if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
@@ -296,7 +310,7 @@ class Ars510Tracks:
           self._qual_t.pop(tid, None)
         arrow = 0
         if cutin:
-          arrow = -1 if (y_right - path_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
+          arrow = -1 if (y_right - ref_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
           merging.append((d, -arrow))
         # 10/31, driver's request: only cars predicted to merge into my lane are drawn; the other radar markers are hidden
         # (set SHOW_ALL_TRACKS = True to bring them back)
