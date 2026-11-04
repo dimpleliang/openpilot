@@ -76,9 +76,9 @@ SHOW_AFTER_S = 0.0
 LINE_PATH_EXTRA_M = 0.3
 LINE_MIN_PROB = 0.5
 TREND_REF_LANE = False   # 11/04 replay: offsets from the lane centre instead of my path, no gain (55 vs 54 false / 100 km)
-# 11/04 response: braking (beyond a lift-off) only for an object this close to / past its lane line, or moving in this fast
+# 11/04 response: braking (beyond a lift-off) only for an object this close to / past a reliable lane line (or the radar's
+# own cut-in code, or confirmed)
 BRAKE_LINE_M = -0.5
-BRAKE_TOWARD = 1.2
 
 
 def parse(payload: bytes) -> list[tuple]:
@@ -206,7 +206,9 @@ class CutinRule:
       if cutin:
         o.kind = "predicted"
         o.arrow = -1 if off_signed > 0 else 1  # car to my right drifts left into my lane, and vice versa
-        o.strict = intr >= BRAKE_LINE_M or (toward == toward and toward >= BRAKE_TOWARD) or lc in LC_CUTIN
+        # braking only on a real lane line (11/04 replay: on the path-width fallback 13 of 31 noise marks asked for braking)
+        line = self._line_intr(lanes, d, y_right, off_signed)
+        o.strict = (line == line and line >= BRAKE_LINE_M) or lc in LC_CUTIN
     if fresh:
       for tid in [k for k in self._hist if k not in seen]:
         for store in (self._hist, self._hold, self._release, self._fast, self._close, self._slow, self._out_t,
@@ -223,6 +225,15 @@ class CutinRule:
         ly = float(np.interp(d, x, y))
         return (ly - y_right) if off_signed > 0 else (y_right - ly)
     return self._lane_w / 2. - abs(off_signed) - LINE_PATH_EXTRA_M
+
+  def _line_intr(self, lanes, d: float, y_right: float, off_signed: float) -> float:
+    """As _intrusion, from a reliable model lane line only (nan without one, or beyond its range)."""
+    if lanes is not None:
+      x, y, p = lanes[1] if off_signed > 0 else lanes[0]
+      if p >= LINE_MIN_PROB and len(x) > 1 and d <= float(x[-1]):
+        ly = float(np.interp(d, x, y))
+        return (ly - y_right) if off_signed > 0 else (y_right - ly)
+    return float("nan")
 
   def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.,
              toward: float = float("nan"), lc: int = 0) -> bool:
