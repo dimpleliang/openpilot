@@ -24,13 +24,15 @@ def main():
 
   gps_location_service = get_gps_location_service(params)
   # ars510: radarTracks only for the radar-only far object (early ease-off), never gates the plan's validity
-  ignore_services = ["liveMapDataSP", "carStateSP", "selfdriveStateSP", gps_location_service, "radarTracks"]
+  # ars510: customReservedRawData0 = the radar's display object list, for the cut-in response (ars510_cutin.py), never gates it
+  ignore_services = ["liveMapDataSP", "carStateSP", "selfdriveStateSP", gps_location_service, "radarTracks", "customReservedRawData0"]
 
   ldw = LaneDepartureWarning()
   longitudinal_planner = LongitudinalPlanner(CP, CP_SP)
   pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP'])
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState',
-                            'liveMapDataSP', 'carStateSP', 'selfdriveStateSP', gps_location_service, 'radarTracks'],
+                            'liveMapDataSP', 'carStateSP', 'selfdriveStateSP', gps_location_service, 'radarTracks',
+                            'customReservedRawData0'],
                            poll='modelV2', ignore_alive=ignore_services, ignore_avg_freq=ignore_services, ignore_valid=ignore_services)
 
   while True:

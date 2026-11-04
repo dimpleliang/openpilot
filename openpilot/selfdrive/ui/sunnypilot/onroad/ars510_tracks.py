@@ -8,11 +8,11 @@ lead choice does not depend on it. A track still settling (younger than the deco
 range and speed have not converged) is drawn faint with its distance only. Pedestrians and two-wheelers (radar class) get a label. Display only: nothing here feeds the controls. A track that already carries a radar lead chevron is skipped, so the lead keeps one label.
 """
 import os
-import struct
 
 import numpy as np
 
-from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
+from openpilot.selfdrive.controls.lib import ars510_cutin as rule
+from openpilot.selfdrive.controls.lib.ars510_cutin import SERVICE, parse  # noqa: F401  (parse: tools import it from here)
 import pyray as rl
 
 from openpilot.common.constants import CV
@@ -20,124 +20,22 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
-SERVICE = "customReservedRawData0"
-FMT_V1 = "<fffB"
-FMT = "<fffBH"  # v2: + native track id
-FMT_V3 = "<fffBHhB"  # v3: + radar lateral speed (cm/s, left-positive), lane-crossing code (2 / 5 cut-in from left / right)
 STALE_FRAMES = 10  # ui frames (20 Hz) without a radar record before the markers go away
-MAX_DRAW_M = 120.0
-LEAD_MATCH_D_M = 2.0
-LEAD_MATCH_Y_M = 1.2
 LANE_HALF_M = 1.8  # half a lane: an object's lateral distance from the predicted path below this is in my lane
 
 COLOR_PATH = (60, 220, 120)
 COLOR_SIDE = (255, 60, 60)  # next lanes: red (cyan was hard to see)
-SHOW_ALL_TRACKS = False  # False: draw only the cut-in / merge markers
-COLOR_CUTIN = (255, 190, 0)  # amber: a next-lane car drifting toward my lane (see _cutin)
-
-# Cut-in prediction (display only, 10/31): a next-lane car whose lateral distance to my path has been shrinking faster than
-# CUTIN_RATE over the last CUTIN_WIN seconds, still CUTIN_OFF_MIN..CUTIN_OFF_MAX m from the path, slower than me, 25-90 m
-# ahead. On 220 km of 10/30 logs this marks about a third of real cut-ins ~2 s early and one in five line-hugging cars for
-# about a second. Needs the v2 display rows (track id) to follow a car between frames.
-CUTIN_WIN = 2.0
-CUTIN_RATE = -0.15  # m/s of |offset|
-CUTIN_OFF_MIN, CUTIN_OFF_MAX = 0.8, 2.6
-CUTIN_D = (25.0, 90.0)
-CUTIN_VREL = -1.5
-CUTIN_HOLD_FRAMES = 10  # 0.5 s at 20 Hz
-CUTIN_MIN_V_GROUND = 2.0  # m/s over the ground, forward: excludes oncoming cars
+SHOW_ALL_TRACKS = False  # False: draw only the cut-in / merge markers (10/31 driver)
+COLOR_CUTIN = (255, 190, 0)  # amber
 MARKS_OFF_FILE = "/data/ars510_no_cutin_marks"  # touch to hide the merge marks even while engaged
-CUTIN_MIN_V_EGO = 1.0     # m/s: no cut-in marks while I am (nearly) stopped (11/02 driver: cars moving across a stopped
-                          # car are not merges; at a light / in a jam every lateral mover got an amber circle)
-# Wide merge (10/31 11:39, on-ramp car): a clearly slower car 2.6-5 m out, drifting in fast, is marked too. That car spent
-# 10 s at 3.5-4.5 m closing at 15-20 km/h and was marked for only 0.8 s, one second before it was in my lane.
-CUTIN_WIDE_OFF_MAX = 5.0
-CUTIN_WIDE_RATE = -0.3   # m/s: twice the near rate
-CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
-CUTIN_WIDE_D = (25.0, 70.0)  # 11/04 (was 110): at 75-90 m the radar's lateral position (+-0.6 m) and the model path wobble
-                              # read as a slow drift: 17:05 a right-lane car steady 3.0-3.7 m out was marked
-CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
-CUTIN_RELEASE_FRAMES = 20
-# 11/04 driver: with a lead, a cut-in is an object entering the GAP between me and my lead. The radar range is to the
-# object's rear, so it must sit at least its own length (less ~1.5 m of overlap) nearer than the lead's rear to fit in:
-# side by side with, or beyond, the lead -> no mark. By radar class (163|3): 1 unclassified, 2 car, 3 large vehicle,
-# 4 pedestrian, 5 provisional two-wheeler, 6 two-wheeler.
-GAP_MARGIN_M = {1: 3.0, 2: 3.0, 3: 10.5, 4: 0.5, 5: 0.5, 6: 0.5}
-GAP_MARGIN_DEFAULT_M = 3.0
-# 10/31 driver: mark as soon as the radar reports the car moving toward my lane, not only when slower (similar speed counts),
-# and not in curves. Fast trigger: the radar's lateral speed toward my path in the ego frame (yaw rate x range removed in
-# the interface; the raw over-ground value carried my own turning, 22:36 a merging car read 1.5 m/s AWAY), held FAST_HOLD_FRAMES. The radar's
-# lane-crossing code (2 / 5 = cut-in from left / right) marks at once.
-FAST_VLAT_TOWARD = 1.0       # m/s, relative lateral speed toward my path
-FAST_HOLD_FRAMES = 8         # radar records (~0.5 s)
-FAST_OFF = (0.9, 5.0)        # m from my path
-FAST_D = (15.0, 120.0)       # m
-CUTIN_MAX_VREL = 1.5         # m/s, fast trigger only: slower or about my speed (a car pulling away faster is not marked)
-# Replay of 294 segments / 241 km (10/30-31, 242 real cut-ins): allowing about-my-speed cars in the 2 s trend rules doubled the
-# false marks (60-90 km/h: 142 -> 290 per 100 km) for +10 points of recall, so the trend rules keep "slower"; the fast
-# radar-lateral-speed trigger (1.0 m/s, 0.5 s, about-my-speed allowed) adds recall above 90 km/h (26 -> 32 %, warning
-# 1.3 -> 1.8 s median) at +8-15 % false marks; skipping curves removes a few. A 0.5 m/s / 0.18 s trigger was not better.
-CURVE_STEER_DEG = 15.0       # no cut-in marking while steering more than this ...
-CURVE_PATH_Y_50 = 2.5        # ... or while my path bends more than this at 50 m ...
-CURVE_MIN_V = 60 / 3.6       # ... below this speed (predicted cut-ins only; 10/31 driver: handle curves)
-LC_CUTIN = (2, 5)
-# 11/01 16:41: a car 10 m ahead on my right merged in slowly (0.5-0.7 m/s sideways, about my speed) and was never marked:
-# too close for the trend / fast rules (>= 15-25 m), too slow for the close rule (> 1.0 m/s). Slow close merge: CLOSE_D /
-# CLOSE_OFF, toward my path > SLOW_TOWARD for SLOW_HOLD_RECORDS (~1 s). Replay 124 km: recall 60-90 km/h 34 -> 44 %,
-# false marks 60/35/20 -> 63/35/22 per 100 km; 16:41 marked 2.6 s before it became the lead.
-SLOW_TOWARD = 0.4            # m/s
-SLOW_HOLD_RECORDS = 17       # radar records (~16.7 Hz)
-# 10/31 23:07: a car overtaking from the right rear was first seen 11 m ahead, 22 km/h faster, moving into my lane at
-# 1.6-1.8 m/s, and was in my lane 1.3 s later; the fast trigger required <= +1.5 m/s relative speed and >= 15 m. Close
-# range: within CLOSE_D, any relative speed, settling or not, CLOSE_HOLD records toward my path. Replay 241 km: recall
-# 60-90 km/h 27 -> 35 %, 90+ 36 -> 43 %, false marks 151 -> 154 / 102 -> 102 per 100 km (close lateral data is good).
-CLOSE_D = (5.0, 40.0)        # m
-CLOSE_OFF = (0.9, 4.0)       # m from my path
-CLOSE_VLAT_TOWARD = 1.0      # m/s
-CLOSE_HOLD_FRAMES = 3        # radar records (~0.18 s)
-# 10/31 driver: the predicted cut-in keeps a steady marker on the car; once the car has REALLY cut in and is slower than
-# me, the marker becomes a flashing solid circle with an arrow inside (the way it moved), and the planner lifts off
-# (longitudinal_planner.py CONFIRM_*, same rule). Confirmed: within CONFIRM_OFF of my path, CONFIRM_D, slower by
-# CONFIRM_VREL, and CONFIRM_FROM m or more out within the last CONFIRM_WIN s. Replay 241 km: 66 confirmations, 60 (91 %)
-# were in my lane within 4 s, 2.5 false per 100 km.
-CONFIRM_OFF = 1.3            # m
-CONFIRM_D = (10.0, 60.0)     # m
-CONFIRM_VREL = -0.5          # m/s
-CONFIRM_FROM = 1.8           # m
-CONFIRM_WIN = 3.0            # s
-CONFIRM_SHOW_S = 3.0         # s the circle stays after the car stops qualifying (it usually becomes the lead)
+# The cut-in rule itself (what is marked, and when) lives in controls/lib/ars510_cutin.py since 11/04, shared with the planner's
+# response: an amber circle (steady = predicted, flashing = confirmed) is shown exactly while the planner may react to it.
 CONFIRM_PULSE_HZ = 3.0
-# 10/31 driver: the merge marker was hard to see. Marked cars get a filled, pulsing, larger diamond and a big banner
-# at the screen edge on the side the car comes from ("右側匯入 45 m" with an arrow pointing into my lane).
-# 11/01 lane-line gate (idea from herizon1054/openpilot radard_ext v9.6.6+, which adopts a cut-in only once a radar point
-# is on the line): a predicted cut-in is shown only while the object is within LINE_GATE_M of the model lane line on its
-# side (laneLines[1] / [2], probability >= LINE_MIN_PROB); without a reliable line, within LINE_GATE_M + LINE_PATH_EXTRA_M
-# of my path +- half the filtered lane width. ARS510 y is near the car centre, so -1.5 m is about a car edge 0.6 m from
-# the line. Replay of 124 km with lane lines (tools/ars510/merge_eval_lanes.py): false marks per 100 km 102/140/81 ->
-# 91/75/37 (<60 / 60-90 / 90+ km/h), recall 21/37/32 -> 21/37/26 %, warning median 0.4/1.5/1.8 -> 0.3/1.2/0.8 s.
-# The confirmed cut-in (flashing circle, planner lift-off) is not gated.
-LINE_GATE_M = -1.5
-# 11/01 false-mark study (124 km, own lane changes excluded): most false marks were cars wandering in their own lane
-# (0.5 m toward the line, then back out), starting ~1.3 m from the line with a weak sideways speed and gone within 0.5 s.
-# A predicted cut-in is shown only once the object is within LINE_STRICT_M of the line OR moving toward my path at
-# >= STRICT_TOWARD m/s, continuously for SHOW_AFTER_S. Replay: false marks per 100 km 68/75/35 -> 43/16/11
-# (<60 / 60-90 / 90+ km/h), recall 20/34/30 -> 17/34/20 %, warning median 0.2/1.1/0.6 -> -0.2/0.7/0.1 s.
-LINE_STRICT_M = -1.0
-STRICT_TOWARD = 1.2          # m/s
-SHOW_AFTER_S = 0.0          # 11/01 driver: 0.3 s was too late. Without the hold: false 60/35/20 per 100 km, recall
-                             # 18/34/20 %, warning median 0.2/1.0/0.4 s (the hold alone cost ~0.4 s)
-LINE_PATH_EXTRA_M = 0.3
-LINE_MIN_PROB = 0.5
-# 11/04: measure the object's lateral offset (trend, in-lane, confirm) from my LANE CENTRE (the model's two lane lines) instead
-# of my predicted path, so my own drift inside the lane and the path's far-range wobble do not read as the object moving
-# (17:05: left- and right-lane cars both "moved" the same way). Falls back to the path without two reliable lines.
-TREND_REF_LANE = False
 CUTIN_PULSE_HZ = 2.5
 SHOW_BANNER = False  # 10/31 driver: no edge banner ("右側匯入／左側匯入"), the arrows on the car are enough
 CUTIN_SCALE = 1.5
 CUTIN_MIN_SIZE = 24.0
-BANNER_FONT = 56  # keep a marked car marked for 1 s after the condition drops (the slope is noisy at 4-5 m)
-
+BANNER_FONT = 56
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
 # two-wheelers on sampled frames). Shown once the track has settled. Chinese only where the UI font carries the glyphs.
@@ -163,42 +61,12 @@ def _cutin_label() -> str:
     return "CUT-IN "
 
 
-def parse(payload: bytes) -> list[tuple]:
-  """(d, y, vrel, sent, settling, class, track id, v_lat left-positive m/s, lane-crossing code)"""
-  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2, 3):
-    return []
-  fmt = {1: FMT_V1, 2: FMT, 3: FMT_V3}[payload[2]]
-  size = struct.calcsize(fmt)
-  n = payload[3]
-  out = []
-  for i in range(n):
-    off = 4 + i * size
-    if off + size > len(payload):
-      break
-    f = struct.unpack_from(fmt, payload, off)
-    d, y, v, flags = f[:4]
-    out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7, f[4] if len(f) > 4 else -1,
-                f[5] / 100. if len(f) > 5 else float("nan"), f[6] if len(f) > 6 else 0))
-  return out
-
-
 class Ars510Tracks:
   def __init__(self):
     self._marks_off = os.path.exists(MARKS_OFF_FILE)
     self._font = gui_app.font(FontWeight.SEMI_BOLD)
-    self._points: list[tuple[float, float, float, bool, bool, int, int]] = []
-    self._hist: dict[int, list[tuple[int, float]]] = {}  # track id -> [(ui frame, |offset to path|)]
-    self._hold: dict[int, int] = {}                      # track id -> consecutive frames the cut-in condition held
-    self._out_t: dict[int, float] = {}                   # track id -> last time it was CONFIRM_FROM m or more off my path
-    self._confirm_t: dict[int, tuple[float, int]] = {}   # track id -> (time confirmed, arrow direction)
-    self._side: dict[int, int] = {}                      # track id -> side it was last seen on (+1 my right)
-    self._close: dict[int, int] = {}                     # track id -> consecutive close-range records moving toward my path
-    self._fast: dict[int, int] = {}                      # track id -> consecutive records moving toward my path
-    self._slow: dict[int, int] = {}                      # track id -> consecutive close-range records moving in slowly
-    self._release: dict[int, int] = {}                   # track id -> frames a marked car stays marked after the condition drops
-    self._ego_lc = EgoLaneChange()                       # my own lane change: no markers (ars510_ego_lc.py)
-    self._qual_t: dict[int, float] = {}                  # track id -> start of the current run passing the strict check
-    self._lane_w = 3.5                                   # filtered lane width (m), both lane lines reliable at 8 m
+    self._points: list[tuple] = []
+    self._rule = rule.CutinRule()
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -207,183 +75,30 @@ class Ars510Tracks:
       if sm.updated[SERVICE]:
         self._points = parse(bytes(sm[SERVICE]))
       # 11/02 driver: while I drive myself the merge marks are a distraction with no effect; draw them only while
-      # openpilot is engaged (its own coast / follow actions are what they explain). MARKS_OFF_FILE hides them altogether.
-      # Not drawing (or no fresh data): forget the rule state, so a re-engage starts clean (checked before the data gate,
-      # 11/02 review round 2)
+      # openpilot is engaged. MARKS_OFF_FILE hides them altogether. Not drawing (or no fresh data): forget the rule state.
       if self._marks_off or not ("selfdriveState" in sm.data and sm["selfdriveState"].enabled) or not self._points \
          or sm.frame - sm.recv_frame[SERVICE] > STALE_FRAMES:
-        for store in (self._hist, self._hold, self._release, self._fast, self._close, self._slow, self._out_t, self._confirm_t,
-                      self._side, self._qual_t):
-          store.clear()
+        self._rule.reset()
         return
-
-      leads = []
-      if radar_state is not None:
-        for lead in (radar_state.leadOne, radar_state.leadTwo):
-          if lead.present and lead.radar:
-            leads.append((lead.dRel, lead.yRel))
-
-      lead_d = None   # my lane's lead (radar or vision): only cars entering the gap in front of me are shown
-      if radar_state is not None and radar_state.leadOne.present:
-        lead_d = radar_state.leadOne.dRel
+      objs = self._rule.update(sm['carState'], sm['modelV2'], self._points, radar_state, rl.get_time(), sm.frame,
+                               sm.updated[SERVICE], sm.updated['modelV2'], path_y, camera_offset)
       v_ego = sm['carState'].vEgo
-      fresh = sm.updated[SERVICE]
-      seen = set()
-      merging = []  # (d, side) of the cars marked as cutting in; side +1 = coming from my right
-      # curves (my steering or my path bending): 10/31 replay with the ego-frame lateral speed, curves are fine above
-      # CURVE_MIN_V (predicted cut-ins) and always for the confirmed one (98 vs 66 confirmations, still 91 % real); only
-      # predicted marks below CURVE_MIN_V are skipped in curves (town junctions)
-      curve = (abs(sm['carState'].steeringAngleDeg) > CURVE_STEER_DEG or abs(path_y(50.)) > CURVE_PATH_Y_50) and v_ego < CURVE_MIN_V
-      # the display's lateral speed is in the ego frame (the radar's over-ground vy minus yaw rate x range, ars510 interface):
-      # replay of 241 km, that alone beats subtracting the other objects' median (fast trigger recall above 90 km/h 32 -> 36 %)
-      vlat_bias = 0.
-      now = rl.get_time()
-      ego_lc = self._ego_lc.update(sm['carState'], sm['modelV2'], now)
-      lanes = None
-      md = sm['modelV2']
-      if len(md.laneLines) >= 3 and len(md.laneLineProbs) >= 3:
-        lanes = [(np.asarray(md.laneLines[i].x, dtype=float), np.asarray(md.laneLines[i].y, dtype=float) + camera_offset,
-                  float(md.laneLineProbs[i])) for i in (1, 2)]
-        if sm.updated['modelV2'] and lanes[0][2] >= LINE_MIN_PROB and lanes[1][2] >= LINE_MIN_PROB and len(lanes[0][0]) > 1:
-          w = float(np.interp(8., lanes[1][0], lanes[1][1]) - np.interp(8., lanes[0][0], lanes[0][1]))
-          if 2.5 < w < 4.5:
-            self._lane_w += 0.05 * (float(np.clip(w, 3.0, 4.0)) - self._lane_w)
-      ref_y = path_y
-      if TREND_REF_LANE and lanes is not None and lanes[0][2] >= LINE_MIN_PROB and lanes[1][2] >= LINE_MIN_PROB \
-         and len(lanes[0][0]) > 1 and len(lanes[1][0]) > 1:
-        (lx, ly, _lp), (rx, ry, _rp) = lanes
-        ref_max = min(float(lx[-1]), float(rx[-1]))
-
-        def ref_y(dd, lx=lx, ly=ly, rx=rx, ry=ry, ref_max=ref_max):
-          if dd > ref_max:
-            return path_y(dd)
-          return 0.5 * (float(np.interp(dd, lx, ly)) + float(np.interp(dd, rx, ry)))
-      for d, y, v, _sent, settling, cls, tid, vlat, lc in self._points:
-        if not (0.5 < d < MAX_DRAW_M):
-          continue
-        y_right = -y + camera_offset  # radar yRel is left-positive; the model path and map_to_screen use right-positive (calibrated frame)
-        off_c = y_right - ref_y(d)
-        # confirmed cut-in (really in my lane now, slower): flashing circle, drawn even when the car has become the lead
-        beyond = lead_d is not None and d > lead_d - GAP_MARGIN_M.get(cls, GAP_MARGIN_DEFAULT_M)
-        if tid >= 0:
-          if abs(off_c) >= CONFIRM_FROM:
-            self._out_t[tid] = now
-          if not ego_lc and abs(off_c) < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
-             v_ego > CUTIN_MIN_V_GROUND and now - self._out_t.get(tid, -99.) < CONFIRM_WIN and tid not in self._confirm_t:
-            # arrow: the way it moved (came from my right -> it moved left)
-            came_right = self._side.get(tid, 0) > 0
-            self._confirm_t[tid] = (now, -1 if came_right else 1)
-          if abs(off_c) >= CONFIRM_FROM:
-            self._side[tid] = 1 if off_c > 0 else -1
-          ct = self._confirm_t.get(tid)
-          if ct is not None and now - ct[0] < CONFIRM_SHOW_S and not beyond:
-            cpt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
-            if cpt is not None:
-              self._draw_confirmed(cpt, d, ct[1])
-            seen.add(tid)
-            continue
-        if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
-          continue
-        pt = map_to_screen(d, y_right, path_z(d) + path_offset_z)
+      merging = []
+      for o in objs:
+        pt = map_to_screen(o.d, o.y_right, path_z(o.d) + path_offset_z)
         if pt is None:
           continue
-        off = abs(y_right - ref_y(d))
-        in_lane = off < LANE_HALF_M
-        # oncoming traffic (moving backward over the ground) never counts as a cut-in
-        off_signed = y_right - ref_y(d)
-        toward = (vlat - vlat_bias) * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
-        cutin = self._cutin(tid, off, d, v, sm.frame, fresh, settling, v_ego, toward, lc) \
-          if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND and not curve) else False
-        if tid >= 0:
-          seen.add(tid)
-        qual = False
-        if cutin:
-          intr = self._intrusion(lanes, d, y_right, off_signed)
-          if ego_lc or intr < LINE_GATE_M or beyond:
-            cutin = False   # display only; the rule's own state above keeps running
-          elif intr >= LINE_STRICT_M or (toward == toward and toward >= STRICT_TOWARD):
-            qual = True
-            cutin = now - self._qual_t.setdefault(tid, now) >= SHOW_AFTER_S
-          else:
-            cutin = False
-        if not qual:
-          self._qual_t.pop(tid, None)
-        arrow = 0
-        if cutin:
-          arrow = -1 if (y_right - ref_y(d)) > 0 else 1  # car to my right drifts left into my lane, and vice versa
-          merging.append((d, -arrow))
-        # 10/31, driver's request: only cars predicted to merge into my lane are drawn; the other radar markers are hidden
-        # (set SHOW_ALL_TRACKS = True to bring them back)
-        if cutin:
-          # 10/31 driver: the predicted cut-in is a steady solid circle with the arrow inside (no diamond, no side arrow)
-          self._draw_confirmed(pt, d, arrow, flash=False)
+        if o.kind is not None:
+          # predicted: steady solid circle with the arrow inside; confirmed (really cut in, slower): flashing (10/31 driver)
+          self._draw_confirmed(pt, o.d, o.arrow, flash=o.kind == "confirmed")
+          if o.kind == "predicted":
+            merging.append((o.d, -o.arrow))
         elif SHOW_ALL_TRACKS:
-          self._draw_marker(pt, d, v + v_ego, COLOR_PATH if in_lane else COLOR_SIDE, rect, settling, cls, False, 0)
+          self._draw_marker(pt, o.d, o.vrel + v_ego, COLOR_PATH if o.in_lane else COLOR_SIDE, rect, o.settling, o.cls, False, 0)
       if merging and SHOW_BANNER:
         self._draw_banner(min(merging), rect)
-      if fresh:
-        for tid in [k for k in self._hist if k not in seen]:
-          self._hist.pop(tid, None); self._hold.pop(tid, None); self._release.pop(tid, None); self._fast.pop(tid, None); self._close.pop(tid, None); self._slow.pop(tid, None)
-          self._out_t.pop(tid, None); self._confirm_t.pop(tid, None); self._side.pop(tid, None); self._qual_t.pop(tid, None)
     except Exception:
       self._points = []
-
-  def _intrusion(self, lanes, d: float, y_right: float, off_signed: float) -> float:
-    """How far the object is past the lane line on its side (+ = inside my lane). Without a reliable line: my path
-    +- half the filtered lane width, less LINE_PATH_EXTRA_M (my own place in the lane is unknown)."""
-    if lanes is not None:
-      x, y, p = lanes[1] if off_signed > 0 else lanes[0]
-      if p >= LINE_MIN_PROB and len(x) > 1:
-        ly = float(np.interp(d, x, y))
-        return (ly - y_right) if off_signed > 0 else (y_right - ly)
-    return self._lane_w / 2. - abs(off_signed) - LINE_PATH_EXTRA_M
-
-  def _near_line(self, lanes, d: float, y_right: float, off_signed: float) -> bool:
-    return self._intrusion(lanes, d, y_right, off_signed) >= LINE_GATE_M
-
-  def _cutin(self, tid: int, off: float, d: float, vrel: float, frame: int, fresh: bool, settling: bool, v_ego: float = 99.,
-             toward: float = float("nan"), lc: int = 0) -> bool:
-    """Lateral-offset trend over CUTIN_WIN: True while the car has been drifting toward my path for CUTIN_HOLD_FRAMES."""
-    h = self._hist.setdefault(tid, [])
-    if fresh:
-      h.append((frame, off))
-      while h and frame - h[0][0] > CUTIN_WIN * 20:
-        h.pop(0)
-    ok = False
-    near = CUTIN_OFF_MIN < off < CUTIN_OFF_MAX and vrel < CUTIN_VREL and CUTIN_D[0] <= d <= CUTIN_D[1]
-    wide = v_ego > CUTIN_WIDE_MIN_V_EGO and CUTIN_OFF_MAX <= off < CUTIN_WIDE_OFF_MAX and vrel < CUTIN_WIDE_VREL and \
-      CUTIN_WIDE_D[0] <= d <= CUTIN_WIDE_D[1]
-    if len(h) >= 6 and not settling and (near or wide):
-      t = np.array([x[0] for x in h], float) / 20.0; o = np.array([x[1] for x in h], float)
-      slope = float(np.polyfit(t, o, 1)[0]) if t[-1] - t[0] > 0.5 else 0.
-      ok = slope < (CUTIN_RATE if near else CUTIN_WIDE_RATE)
-    # fast: the radar itself reports the car moving toward my path (relative lateral speed), or its cut-in code
-    in_range = FAST_OFF[0] < off < FAST_OFF[1] and FAST_D[0] <= d <= FAST_D[1] and vrel < CUTIN_MAX_VREL
-    if fresh:
-      self._fast[tid] = self._fast.get(tid, 0) + 1 if (in_range and toward == toward and toward > FAST_VLAT_TOWARD) else 0
-    close = CLOSE_OFF[0] < off < CLOSE_OFF[1] and CLOSE_D[0] <= d <= CLOSE_D[1]
-    if fresh:
-      self._close[tid] = self._close.get(tid, 0) + 1 if (close and toward == toward and toward > CLOSE_VLAT_TOWARD) else 0
-    if fresh:
-      self._slow[tid] = self._slow.get(tid, 0) + 1 if (close and toward == toward and toward > SLOW_TOWARD) else 0
-    if close and (self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES or self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS):
-      in_range = True
-    if in_range and (lc in LC_CUTIN or self._fast.get(tid, 0) >= FAST_HOLD_FRAMES or self._close.get(tid, 0) >= CLOSE_HOLD_FRAMES or
-                     (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS)):
-      ok = True
-      if fresh:
-        self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)  # mark on this record
-    if fresh:
-      held = self._hold.get(tid, 0)
-      if ok:
-        self._hold[tid] = held + 1
-        if self._hold[tid] >= CUTIN_HOLD_FRAMES:
-          self._release[tid] = CUTIN_RELEASE_FRAMES
-      else:
-        self._hold[tid] = 0
-        if self._release.get(tid, 0) > 0:
-          self._release[tid] -= 1
-    return self._hold.get(tid, 0) >= CUTIN_HOLD_FRAMES or self._release.get(tid, 0) > 0
 
   def _draw_confirmed(self, pt, d: float, direction: int, flash: bool = True):
     """Cut-in marker: a solid amber circle on the car with a dark arrow inside pointing into my lane (the way it moves).

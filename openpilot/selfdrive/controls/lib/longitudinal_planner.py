@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
+from openpilot.selfdrive.controls.lib import ars510_cutin
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
@@ -160,6 +161,17 @@ CONFIRM_JERK = 0.5               # m/s^3
 CONFIRM_MIN_V = 20. / 3.6
 CONFIRM_SPECIAL_ID = 1 << 26     # HAZARD / CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
 CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
+# ars510 cut-in response (11/04 driver: "keep my distance from a merging car and get off the throttle sooner; by my speed,
+# the distance and its speed, sometimes only a lift-off, sometimes light braking"). The UI's amber-circle rule
+# (controls/lib/ars510_cutin.py, the same code) picks the object; ars510_cutin.CutinResponse turns it into the deceleration
+# needed to settle at my following distance behind it (closing^2 / 2 x room, less its own relative acceleration): at most a
+# lift-off (-0.3) for a prediction, light braking (-1.0) once it is on / past its lane line, moving in fast, or confirmed.
+# Harder braking stays with the MPC once the car is the lead. A line-hugging car counts (driver: a hazard too).
+# Onset at CR_JERK_DOWN, release at CR_JERK_UP; nothing while the driver presses the gas. Off: /data/ars510_no_cutin_predict.
+CR_OFF_FILE = "/data/ars510_no_cutin_predict"
+CR_JERK_DOWN = 0.8               # m/s^3
+CR_JERK_UP = 1.0                 # m/s^3
+CR_STALE_FRAMES = 10             # planner cycles without a radar display record: drop the objects
 # ars510: hazard coast (11/01, driver: "at least lift off"). The radar interface's hazard candidate (radarTracks
 # HAZARD_TRACK_ID, see ars510_radar_interface.py HAZARD_*: a tracked car closing fast on a short time-to-collision that
 # the camera has not made the lead) within HAZARD_PATH_M of the model path, or within HAZARD_CROSS_M and moving toward
@@ -291,6 +303,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.ci_until = 0.                      # coast while time < this
     self.ci_closing = 0.
     self.ci_cap = None
+    self.cr_rule = ars510_cutin.CutinRule()   # ars510 cut-in response (see CR_*)
+    self.cr_resp = ars510_cutin.CutinResponse()
+    self.cr_points: list = []
+    self.cr_frame = 0
+    self.cr_cap = None
+    self.cr_on = False
+    self.cr_off = os.path.exists(CR_OFF_FILE)
+    self.cr_cam = 0.   # the UI's camera offset (CameraOffset, with a sunnypilot model bundle), read once
+    try:
+      from openpilot.common.params import Params
+      from openpilot.sunnypilot.models.helpers import get_active_bundle
+      if get_active_bundle():
+        self.cr_cam = float(Params().get("CameraOffset", return_default=True) or 0.)
+    except Exception:
+      pass
     self.ci_off = False
     self.far_lead_off = os.path.exists(FAR_LEAD_OFF_FILE)
     self.far_lead_cnt = 0
@@ -517,6 +544,50 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = min(output_a_target, cap)
     else:
       self.ci_cap = None
+
+    # ars510: cut-in response (see CR_*)
+    if self.far_lead_cnt == 0:
+      self.cr_off = os.path.exists(CR_OFF_FILE)
+    cr_target = None
+    svc = ars510_cutin.SERVICE
+    if self.CP.openpilotLongitudinalControl and not self.cr_off and not reset_state and svc in sm.data and \
+       sm['selfdriveState'].enabled and not sm['carState'].gasPressed:
+      if sm.updated[svc]:
+        self.cr_points = ars510_cutin.parse(bytes(sm[svc]))
+      md = sm['modelV2']
+      px = np.array(md.position.x); py = np.array(md.position.y) + self.cr_cam
+      if sm.frame - sm.recv_frame[svc] <= CR_STALE_FRAMES and self.cr_points and len(px) >= 2:
+        self.cr_frame += 1
+        objs = self.cr_rule.update(sm['carState'], md, self.cr_points, sm['radarState'], now, self.cr_frame, sm.updated[svc],
+                                   sm.updated['modelV2'], lambda d: float(np.interp(d, px, py)), self.cr_cam)
+        best = self.cr_resp.update(objs, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality), now)
+        if best is not None:
+          cr_target = -best[0]
+          if not self.cr_on:
+            o = best[1]
+            cloudlog.info(f"ARS510 cut-in response on: {o.kind} d={o.d:.1f} vRel={o.vrel:.1f} line={o.intr:.1f} "
+                          f"toward={o.toward:.2f} strict={o.strict} need={best[2]:.2f} cap={cr_target:.2f} v={v_ego*3.6:.0f}")
+      else:
+        self.cr_rule.reset()
+    else:
+      self.cr_rule.reset()
+    if cr_target is None and self.cr_on:
+      cloudlog.info("ARS510 cut-in response off")
+    self.cr_on = cr_target is not None
+    if cr_target is not None:
+      if self.cr_cap is None:
+        self.cr_cap = max(a_prev, cr_target)
+      if self.cr_cap > cr_target:
+        self.cr_cap = max(cr_target, self.cr_cap - CR_JERK_DOWN * self.dt)
+      else:
+        self.cr_cap = min(cr_target, self.cr_cap + CR_JERK_UP * self.dt)
+      output_a_target = min(output_a_target, self.cr_cap)
+    elif self.cr_cap is not None:
+      self.cr_cap += CR_JERK_UP * self.dt   # release smoothly: no throttle blip
+      if self.cr_cap >= output_a_target or reset_state:
+        self.cr_cap = None
+      else:
+        output_a_target = min(output_a_target, self.cr_cap)
 
     # ars510: hazard coast (see HAZARD_*)
     if self.far_lead_cnt == 0:

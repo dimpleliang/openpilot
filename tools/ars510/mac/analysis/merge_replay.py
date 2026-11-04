@@ -18,6 +18,7 @@ OP = os.path.join(ROOT, 'op')
 sys.path[:0] = [OP, os.path.join(OP, 'opendbc_repo')]
 
 HORIZON_S, IN_LANE_M, CUT_FROM_M, MIN_KMH = 8.0, 0.9, 1.8, 60.0
+T_FOLLOW = 1.45    # long_mpc standard personality
 HUG_LINE_M = 0.5   # a false episode whose object came within this of the lane line = a line-hugger (driver 11/04: a hazard too)
 SIM = {'t': 0.0}
 
@@ -55,8 +56,9 @@ def load_tracks(sets):
   path = os.path.join(OP, 'openpilot', 'selfdrive', 'ui', 'sunnypilot', 'onroad', 'ars510_tracks.py')
   spec = importlib.util.spec_from_file_location('ars510_tracks_replay', path)
   m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+  from openpilot.selfdrive.controls.lib import ars510_cutin as rule
   for k, v in sets.items():
-    setattr(m, k, eval(v))
+    setattr(rule if hasattr(rule, k) else m, k, eval(v))
   m.MARKS_OFF_FILE = '/nonexistent'
   return m
 
@@ -79,6 +81,13 @@ def run_seg(args):
   m = load_tracks(sets)
   tr = m.Ars510Tracks()
   marked_now = []
+  from openpilot.selfdrive.controls.lib import ars510_cutin as rule
+  resp = rule.CutinResponse(); last_objs = []
+  rule_update = tr._rule.update
+
+  def cap_update(*a, **k):
+    out = rule_update(*a, **k); last_objs[:] = out; return out
+  tr._rule.update = cap_update
   orig = tr._draw_confirmed
   tr._draw_confirmed = lambda pt, d, arrow, flash=True: marked_now.append(d)
   sm = SM(); pend = set(); t0 = None
@@ -104,8 +113,11 @@ def run_seg(args):
     mts = lambda d, y, z: RL.Vector2(100, 100)
     rs = sm.data.get('radarState')
     marked_now.clear()
+    last_objs.clear()
     tr.draw(sm, mts, path_z, path_y, 0.0, 1.2, rs, rect)
     v = sm.data['carState'].vEgo
+    best = resp.update(list(last_objs), v, T_FOLLOW, t) if last_objs else None
+    target = (-best[0], best[1].tid, best[1].strict) if best is not None else None
     if last_t is not None: km += v * (t - last_t) / 1000.
     last_t = t
     pts = {}
@@ -126,7 +138,7 @@ def run_seg(args):
       for d, y, vr, _s, settling, cls, tid, vlat, lc in tr._points:
         if d == dm: mk.add(tid)
     eng = 'selfdriveState' in sm.data and sm.data['selfdriveState'].enabled
-    frames.append((t, v, eng, pts, lead, mk, {tid: (d, y) for d, y, *_r, tid, _vl, _lc in
+    frames.append((t, v, eng, pts, lead, mk, target, {tid: (d, y) for d, y, *_r, tid, _vl, _lc in
                                              [(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]) for q in tr._points]}))
   return os.path.basename(seg), frames, km
 
@@ -136,7 +148,7 @@ def score(segres):
   for name, frames, k in segres:
     km += k
     hist = defaultdict(list)  # tid -> [(t, |off|, is_lead, v)]
-    for t, v, eng, pts, lead, mk, raw in frames:
+    for t, v, eng, pts, lead, mk, tg, raw in frames:
       for tid, (off, d, line) in pts.items():
         dy = raw.get(tid)
         is_lead = lead is not None and dy is not None and abs(dy[0] - lead[0]) < 2.0 and abs(dy[1] - lead[1]) < 1.2
@@ -153,7 +165,7 @@ def score(segres):
         real.append((name, tid, te))
     # mark episodes
     cur = {}
-    for t, v, eng, pts, lead, mk, raw in frames:
+    for t, v, eng, pts, lead, mk, tg, raw in frames:
       for tid in mk:
         if tid in cur and t - cur[tid][1] < 1.0: cur[tid][1] = t
         else:
@@ -164,7 +176,9 @@ def score(segres):
       if ep[0] == name and len(ep) == 5:
         te = entry.get(ep[1])
         near = [x[5] for x in hist[ep[1]] if ep[2] - 0.5 <= x[0] <= ep[3] + 0.5 and x[5] == x[5]]
-        eps[i] = ep + (te is not None and ep[2] - 1.0 <= te <= ep[2] + HORIZON_S, te, min(near) if near else float('nan'))
+        tgs = [f[6][0] for f in frames if f[6] is not None and f[6][1] == ep[1] and ep[2] - 0.05 <= f[0] <= ep[3] + 0.05]
+        eps[i] = ep + (te is not None and ep[2] - 1.0 <= te <= ep[2] + HORIZON_S, te, min(near) if near else float('nan'),
+                       min(tgs) if tgs else 0.)
   tp = sum(1 for e in eps if e[5]); fp = len(eps) - tp
   caught, warn = 0, []
   for name, tid, te in real:
@@ -174,6 +188,10 @@ def score(segres):
   noise = [e for e in eps if not e[5] and not (e[7] == e[7] and e[7] <= HUG_LINE_M)]
   sec = lambda es: sum(min(e[3] - e[2] + 0.5, 3.0) for e in es)   # coast seconds (marked time + 0.5 s release, max 3 s)
   extra = dict(hug=len(hug), noise=len(noise), coast_s_true=sec([e for e in eps if e[5]]), coast_s_hug=sec(hug), coast_s_noise=sec(noise))
+  for nm, es in (('true', [e for e in eps if e[5]]), ('hug', hug), ('noise', noise)):
+    extra[f'brake_{nm}'] = sum(1 for e in es if e[8] < -0.31)
+    extra[f'lift_{nm}'] = sum(1 for e in es if -0.31 <= e[8] < 0.)
+    extra[f'maxdec_{nm}'] = min([e[8] for e in es], default=0.)
   return dict(**extra, km=km, episodes=len(eps), true=tp, false=fp, false_per_100km=fp / max(km, 1e-3) * 100,
               real=len(real), recall=caught / max(len(real), 1), warn_med=float(np.median(warn)) if warn else float('nan')), eps
 
@@ -196,10 +214,12 @@ def main():
   sc, eps = score(res)
   print(f"sets {sets or 'current'}: segments {len(res)}, {sc['km']:.0f} km | episodes {sc['episodes']} true {sc['true']} false {sc['false']} "
         f"({sc['false_per_100km']:.0f}/100 km: hugger {sc['hug']} noise {sc['noise']}) | coast s true/hug/noise "
-        f"{sc['coast_s_true']:.0f}/{sc['coast_s_hug']:.0f}/{sc['coast_s_noise']:.0f} | real cut-ins {sc['real']} recall {sc['recall']*100:.0f}% warn median {sc['warn_med']:.1f} s")
+        f"{sc['coast_s_true']:.0f}/{sc['coast_s_hug']:.0f}/{sc['coast_s_noise']:.0f} | response lift/brake (max) true "
+        f"{sc['lift_true']}/{sc['brake_true']} ({sc['maxdec_true']:.2f}) hug {sc['lift_hug']}/{sc['brake_hug']} ({sc['maxdec_hug']:.2f}) "
+        f"noise {sc['lift_noise']}/{sc['brake_noise']} ({sc['maxdec_noise']:.2f}) | real cut-ins {sc['real']} recall {sc['recall']*100:.0f}% warn median {sc['warn_med']:.1f} s")
   if '--list' in a:
     for e in sorted(eps, key=lambda e: (e[0], e[2])):
-      print(f"  {e[0]} tid {e[1]} {e[3]-e[2]:4.1f}s v {e[4]*3.6:3.0f} {'TRUE' if e[5] else ('hug' if e[7] == e[7] and e[7] <= HUG_LINE_M else 'noise')} line {e[7]:.1f}")
+      print(f"  {e[0]} tid {e[1]} {e[3]-e[2]:4.1f}s v {e[4]*3.6:3.0f} {'TRUE' if e[5] else ('hug' if e[7] == e[7] and e[7] <= HUG_LINE_M else 'noise')} line {e[7]:.1f} resp {e[8]:+.2f}")
 
 
 if __name__ == '__main__':
