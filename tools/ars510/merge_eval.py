@@ -29,7 +29,7 @@ MIN_V = 60 / 3.6
 
 # keep in sync with ars510_tracks.py
 WIN, RATE, OFF_MIN, OFF_MAX, D, VREL, HOLD, MIN_VG = 2.0, -0.15, 0.8, 2.6, (25., 90.), -1.5, 10, 2.0
-W_OFF_MAX, W_RATE, W_VREL, W_D, RELEASE, W_MIN_V = 5.0, -0.3, -2.5, (25., 110.), 20, 60 / 3.6
+W_OFF_MAX, W_RATE, W_VREL, W_D, RELEASE, W_MIN_V = 5.0, -0.3, -2.5, (25., 70.), 20, 60 / 3.6
 
 
 class Rule:

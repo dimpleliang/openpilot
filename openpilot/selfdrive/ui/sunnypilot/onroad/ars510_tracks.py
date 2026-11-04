@@ -54,7 +54,8 @@ CUTIN_MIN_V_EGO = 1.0     # m/s: no cut-in marks while I am (nearly) stopped (11
 CUTIN_WIDE_OFF_MAX = 5.0
 CUTIN_WIDE_RATE = -0.3   # m/s: twice the near rate
 CUTIN_WIDE_VREL = -2.5   # m/s: at least 9 km/h slower
-CUTIN_WIDE_D = (25.0, 110.0)
+CUTIN_WIDE_D = (25.0, 70.0)  # 11/04 (was 110): at 75-90 m the radar's lateral position (+-0.6 m) and the model path wobble
+                              # read as a slow drift: 17:05 a right-lane car steady 3.0-3.7 m out was marked
 CUTIN_WIDE_MIN_V_EGO = 60 / 3.6  # m/s: highway merges only; in town the wide rule marked parked / turning cars (10/31 replay)
 CUTIN_RELEASE_FRAMES = 20
 # 11/04 driver: with a lead, a cut-in is an object entering the GAP between me and my lead. The radar range is to the
