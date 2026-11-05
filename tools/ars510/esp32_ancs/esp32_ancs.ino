@@ -20,7 +20,25 @@ static NimBLERemoteCharacteristic* cp = nullptr;
 static uint32_t q[32]; static volatile uint8_t qh = 0, qt = 0;
 static uint8_t evcat[256];  // category of recent UIDs (by low byte), for printing
 static std::vector<uint8_t> ds;  // Data Source reassembly
-static bool fetchExisting = true;  // test phase: also fetch notifications already on the phone
+static bool fetchExisting = false;  // skip notifications already on the phone at connect
+static volatile bool waiting = false; static uint32_t waitSince = 0;  // one Control Point request at a time
+// Privacy: only these apps' notification text is printed; for every other app only its id and category.
+static const char* NAV_APPS[] = {"com.apple.Maps", "com.google.Maps", "com.waze.iphone", "com.sygic.aura",
+                                 "com.autonavi.amap", "com.autonavi.minimap", "com.here.app.maps", nullptr};
+static bool isNav(const std::string& a) {
+  for (int i = 0; NAV_APPS[i]; i++) if (a == NAV_APPS[i]) return true;
+  return false;
+}
+static std::string esc(const uint8_t* p, uint16_t n) {
+  std::string o;
+  for (uint16_t i = 0; i < n; i++) {
+    uint8_t c = p[i];
+    if (c == '"' || c == '\\') { o += '\\'; o += (char)c; }
+    else if (c == '\n') o += "\\n";
+    else if (c >= 0x20) o += (char)c;
+  }
+  return o;
+}
 
 static void jsonStr(const char* k, const uint8_t* p, uint16_t n, bool comma) {
   Serial.printf("\"%s\":\"", k);
@@ -44,14 +62,21 @@ static void parseDs() {
       p += 3 + len; got++;
     }
     uint32_t uid = ds[1] | (ds[2] << 8) | (ds[3] << 16) | ((uint32_t)ds[4] << 24);
-    Serial.printf("{\"t\":%lu,\"uid\":%lu,\"cat\":%u,", (unsigned long)millis(), (unsigned long)uid, evcat[uid & 0xFF]);
-    size_t r = 5; const char* names[4] = {"app", "title", "subtitle", "msg"};
+    std::string f[4];
+    size_t r = 5;
     for (int i = 0; i < 4; i++) {
       uint16_t len = ds[r + 1] | (ds[r + 2] << 8);
-      jsonStr(names[i], &ds[r + 3], len, i < 3);
+      f[i] = esc(&ds[r + 3], len);
       r += 3 + len;
     }
-    Serial.println("}");
+    char head[96];
+    snprintf(head, sizeof(head), "{\"t\":%lu,\"uid\":%lu,\"cat\":%u,\"app\":\"", (unsigned long)millis(), (unsigned long)uid, evcat[uid & 0xFF]);
+    std::string line = std::string(head) + f[0] + "\"";
+    if (isNav(f[0])) line += ",\"title\":\"" + f[1] + "\",\"subtitle\":\"" + f[2] + "\",\"msg\":\"" + f[3] + "\"";
+    line += "}\n";
+    Serial.write((const uint8_t*)line.data(), line.size());
+    Serial.flush();
+    waiting = false;
     ds.erase(ds.begin(), ds.begin() + p);
   }
 }
@@ -61,8 +86,6 @@ static void onNs(NimBLERemoteCharacteristic*, uint8_t* d, size_t n, bool) {
   uint8_t ev = d[0], cat = d[2];
   uint32_t uid = d[4] | (d[5] << 8) | (d[6] << 16) | ((uint32_t)d[7] << 24);
   evcat[uid & 0xFF] = cat;
-  Serial.printf("{\"t\":%lu,\"ns\":{\"ev\":%u,\"flags\":%u,\"cat\":%u,\"count\":%u,\"uid\":%lu}}\n", (unsigned long)millis(), ev, d[1], cat, d[3],
-                (unsigned long)uid);
   if (ev == 2) { Serial.printf("{\"t\":%lu,\"uid\":%lu,\"removed\":1}\n", (unsigned long)millis(), (unsigned long)uid); return; }
   if ((d[1] & 0x04) && !fetchExisting) return;   // pre-existing notification at connect: skip the backlog
   uint8_t nt = (qt + 1) & 31;
@@ -92,6 +115,7 @@ class SrvCb : public NimBLEServerCallbacks {
 };
 
 void setup() {
+  Serial.setTxBufferSize(4096);
   Serial.begin(115200);
   delay(1500);
   NimBLEDevice::init("comma-nav");
@@ -136,14 +160,17 @@ void loop() {
     lastTry = millis();
     ready = setupAncs();
   }
-  if (ready && cp && qh != qt) {
+  if (waiting && millis() - waitSince > 1500) waiting = false;   // no answer: move on
+  if (ready && cp && qh != qt && !waiting) {
     uint32_t uid = q[qh]; qh = (qh + 1) & 31;
     uint8_t cmd[] = {0, (uint8_t)uid, (uint8_t)(uid >> 8), (uint8_t)(uid >> 16), (uint8_t)(uid >> 24),
                      0,                      // AppIdentifier
                      1, 0x80, 0x00,          // Title, max 128
                      2, 0x80, 0x00,          // Subtitle, max 128
                      3, 0x00, 0x01};         // Message, max 256
+    waiting = true; waitSince = millis();
     bool ok = cp->writeValue(cmd, sizeof(cmd), true);
+    if (!ok) waiting = false;
     if (!ok) Serial.printf("{\"t\":%lu,\"cp_write_failed\":%lu}\n", (unsigned long)millis(), (unsigned long)uid);
   }
   delay(20);
