@@ -68,6 +68,31 @@ list=$(ssh $O $HOST "cd /data/media/0/realdata && now=\$(date +%s) && for d in \
 if offroad; then mode=offroad; else mode=onroad; fi
 echo "mode $mode"
 IONICE=$(ssh $O $HOST 'command -v ionice >/dev/null && echo "ionice -c3" || echo ""')
+# 11/05 offroad: one rsync over the shared ssh connection per BATCH segments (was one rsync = new ssh + file list per segment:
+# over the phone hotspot, ~220 ms latency, the speed fell to a few kB/s between segments). The car may be started during a
+# long run: offroad is re-checked between batches. The per-segment loop below then only verifies, frees, and retries misses.
+BATCH=10
+if [ "$mode" = offroad ]; then
+  todo=$(while read -r s r_sz q_sz c_sz; do
+    [ -n "$s" ] || continue
+    [ "$r_sz" = "0" ] && [ -s "$DEST/$s/rlog.zst" ] && [ -s "$DEST/$s/qcamera.ts" ] && continue
+    for x in "rlog.zst $r_sz" "qlog.zst $q_sz" "qcamera.ts $c_sz"; do
+      set -- $x; [ "$2" = "0" ] && continue
+      [ "$(stat -f %z "$DEST/$s/$1" 2>/dev/null || echo 0)" = "$2" ] || echo "$s/$1"
+    done
+  done <<< "$list")
+  if [ -n "$todo" ]; then
+    nseg=$(echo "$todo" | cut -d/ -f1 | uniq | wc -l | tr -d ' ')
+    echo "batch rsync: $(echo "$todo" | wc -l | tr -d ' ') files in $nseg segments"
+    for segs in $(echo "$todo" | cut -d/ -f1 | uniq | awk -v b=$BATCH '{printf "%s%s", $0, (NR % b ? "," : "\n")} END {print ""}'); do
+      offroad || { echo "car went onroad: stopping batch rsync"; break; }
+      echo "$todo" | grep -E "^($(echo "$segs" | sed 's/,$//; s/,/|/g'))/" > "$DEST/.batch"
+      rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" -e "ssh ${O#-n }" --files-from="$DEST/.batch" \
+            "$HOST:/data/media/0/realdata/" "$DEST/" < /dev/null || echo "batch rsync failed (per-segment retry below)"
+    done
+    rm -f "$DEST/.batch"
+  fi
+fi
 n=0; freed=0
 while read -r s r_sz q_sz c_sz; do
   [ -n "$s" ] || continue
@@ -75,10 +100,16 @@ while read -r s r_sz q_sz c_sz; do
   mkdir -p "$DEST/$s"
   if [ "$mode" = offroad ]; then
     # the car may be driven off during a long offroad run: stop the full-speed rsync, the next run streams gently
+    have_all=1
+    for x in "rlog.zst $r_sz" "qlog.zst $q_sz" "qcamera.ts $c_sz"; do
+      set -- $x; [ "$2" = "0" ] || [ "$(stat -f %z "$DEST/$s/$1" 2>/dev/null || echo 0)" = "$2" ] || have_all=0
+    done
+    if [ "$have_all" = 0 ]; then
     if ! offroad; then echo "car went onroad after $n segments: stopping rsync"; break; fi
     rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" \
           --include='rlog*' --include='qlog*' --include='qcamera.ts' --exclude='*' \
           "$HOST:/data/media/0/realdata/$s/" "$DEST/$s/" < /dev/null || { echo "rsync failed $s"; continue; }
+    fi
   else
     ok=1
     if parked; then pk=1; files=$FILES; else pk=0; files=$FILES_ONROAD; fi
