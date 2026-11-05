@@ -530,7 +530,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
           if off >= CONFIRM_FROM:
             self.ci_out_t[tid] = now
           elif (not curve and off < CONFIRM_OFF and CONFIRM_D[0] < pnt.dRel < CONFIRM_D[1] and pnt.vRel < CONFIRM_VREL and
-                now - self.ci_out_t.get(tid, -99.) < CONFIRM_WIN):
+                v_ego + pnt.vRel > 2.0 and now - self.ci_out_t.get(tid, -99.) < CONFIRM_WIN):   # 11/05: moving forward
             if now >= self.ci_until:
               cloudlog.info(f"ARS510 cut-in confirmed: d={pnt.dRel:.1f} vRel={pnt.vRel:.1f} v={v_ego*3.6:.0f}")
             self.ci_until = now + CONFIRM_HOLD_S

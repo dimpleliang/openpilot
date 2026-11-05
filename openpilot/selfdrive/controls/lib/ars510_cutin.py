@@ -171,8 +171,9 @@ class CutinRule:
       if tid >= 0:
         if off >= CONFIRM_FROM:
           self._out_t[tid] = now
+        # (11/05: + over the ground forward: oncoming / crossing cars at junctions were "confirmed", -1.0 braking)
         if not ego_lc and off < CONFIRM_OFF and CONFIRM_D[0] < d < CONFIRM_D[1] and v < CONFIRM_VREL and \
-           v_ego > CUTIN_MIN_V_GROUND and now - self._out_t.get(tid, -99.) < CONFIRM_WIN and tid not in self._confirm_t:
+           v_ego > CUTIN_MIN_V_GROUND and v + v_ego > CUTIN_MIN_V_GROUND and now - self._out_t.get(tid, -99.) < CONFIRM_WIN and tid not in self._confirm_t:
           came_right = self._side.get(tid, 0) > 0
           self._confirm_t[tid] = (now, -1 if came_right else 1)
         if off >= CONFIRM_FROM:
@@ -323,7 +324,7 @@ class CutinResponse:
       if o.kind is None:
         continue
       closing = -o.vrel
-      if closing <= 0.:
+      if closing <= 0. or v_ego + o.vrel < CUTIN_MIN_V_GROUND:   # not closing, or not moving forward (oncoming / crossing)
         continue
       a_rel = 0.
       if len(h) >= 5 and h[-1][0] - h[0][0] > 0.5:
