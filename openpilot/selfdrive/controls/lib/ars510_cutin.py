@@ -18,6 +18,7 @@ FMT = "<fffBH"  # v2: + native track id
 FMT_V3 = "<fffBHhB"  # v3: + radar lateral speed (cm/s, left-positive), lane-crossing code (2 / 5 cut-in from left / right)
 LEAD_MATCH_D_M = 2.0
 LEAD_MATCH_Y_M = 1.2
+SELF_LEAD_D_M = 3.0   # an object this near my lead's range (and its y, if radar) is the lead itself
 MAX_D_M = 120.0
 FRAME_HZ = 20.0  # update() is called once per modelV2 (UI frame / planner cycle)
 
@@ -131,13 +132,13 @@ class CutinRule:
              path_y, camera_offset: float) -> list[CutObj]:
     """One frame. path_y(d): my predicted path's y (right-positive, camera offset applied)."""
     leads = []
-    lead_d = None
+    gap_leads = []   # (d, y or None if vision-only) of leadOne, leadTwo: for the gap rule
     if radar_state is not None:
       for lead in (radar_state.leadOne, radar_state.leadTwo):
         if lead.present and lead.radar:
           leads.append((lead.dRel, lead.yRel))
-      if radar_state.leadOne.present:
-        lead_d = radar_state.leadOne.dRel
+        if lead.present:
+          gap_leads.append((lead.dRel, lead.yRel if lead.radar else None))
     v_ego = car_state.vEgo
     ego_lc = self._ego_lc.update(car_state, md, now)
     lanes = None
@@ -167,6 +168,11 @@ class CutinRule:
       y_right = -y + camera_offset  # radar yRel is left-positive; the model path is right-positive (calibrated frame)
       off_signed = y_right - ref_y(d)
       off = abs(off_signed)
+      # the gap rule's lead is my lead other than this object: 11/05 route 53 (75 km/h) the model's (vision) lead had already
+      # moved to the car cutting in, 1 s before it crossed the line, so it was "beyond the lead" (itself) and never marked
+      lead_d = next((ld for ld, ly in gap_leads
+                     if not (abs(d - ld) < SELF_LEAD_D_M and (ly is None or abs(y - ly) < LEAD_MATCH_Y_M))), None) \
+        if gap_leads else None
       beyond = lead_d is not None and d > lead_d - GAP_MARGIN_M.get(cls, GAP_MARGIN_DEFAULT_M)
       toward = vlat * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
       intr = self._intrusion(lanes, d, y_right, off_signed)
