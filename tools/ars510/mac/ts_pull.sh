@@ -17,7 +17,9 @@ DEST=~/ars510_rlogs/raw
 LOG=~/ars510_rlogs/ts_pull.log
 HOST=comma-ts                       # ssh alias over Tailscale (see the ~/.ssh/config block in the setup notes)
 O="-n -o ConnectTimeout=20 -o BatchMode=yes"   # -n: never read the loop stdin
-RATE_ONROAD=400000                  # bytes/s while driving (a 1-min rlog in ~30 s; tailscaled stays at a few % CPU)
+RATE_ONROAD=250000                  # bytes/s within a burst while driving
+CHUNK_ONROAD=2000000                # bytes per burst while driving (11/05), then PAUSE_ONROAD s of nothing
+PAUSE_ONROAD=20
 CAT=/data/openpilot/tools/ars510/cat_nocache.py
 FILES="rlog.zst qlog.zst qcamera.ts"
 mkdir -p "$DEST"
@@ -67,9 +69,17 @@ while read -r s r_sz q_sz c_sz; do
       [ "$have" = "$want" ] && continue
       part="$DEST/$s/$f.part"; off=$(stat -f %z "$part" 2>/dev/null || echo 0)
       [ "$off" -gt "$want" ] && { rm -f "$part"; off=0; }
-      # one streamer only (11/02 review: a retry after a partial first attempt would append from a stale offset)
-      ssh $O $HOST "$IONICE python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD" >> "$part"
-      got=$(stat -f %z "$part" 2>/dev/null || echo 0)
+      # one streamer only (11/02 review: a retry after a partial first attempt would append from a stale offset).
+      # 11/05: in short bursts (CHUNK_ONROAD, then PAUSE_ONROAD s quiet), resumed from the .part size each time: a continuous
+      # stream at 22:02 was followed by "locationd Temporary Error" (driver: send 2-3 MB at a time, it resumes anyway)
+      while :; do
+        ssh $O $HOST "$IONICE python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD 2>/dev/null | head -c $CHUNK_ONROAD" >> "$part"
+        got=$(stat -f %z "$part" 2>/dev/null || echo 0)
+        [ "$got" -ge "$want" ] || [ "$got" = "$off" ] && break   # done, or no progress (offline): resume next run
+        off=$got
+        offroad && break
+        sleep $PAUSE_ONROAD
+      done
       if [ "$got" = "$want" ]; then mv -f "$part" "$DEST/$s/$f"; else echo "partial $s/$f $got/$want (resumes)"; ok=0; break; fi
       offroad && { echo "car stopped: switching to rsync next run"; break 2; }
     done
