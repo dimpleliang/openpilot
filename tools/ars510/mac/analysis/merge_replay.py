@@ -93,9 +93,11 @@ def run_seg(args):
   sm = SM(); pend = set(); t0 = None
   rect = RL.Rectangle(0, 0, 2160, 1080)
   frames = []  # (t, v_ego, engaged, {tid: (off_signed, d)}, lead (d, y) or None, marked tids)
-  km = 0.; last_t = None
+  km = 0.; last_t = None; gps = None
   for e in evs:
     w = e.which()
+    if gps is None and w == 'gpsLocationExternal' and e.gpsLocationExternal.unixTimestampMillis > 1.6e12:
+      gps = (e.logMonoTime / 1e9, e.gpsLocationExternal.unixTimestampMillis / 1e3)
     if w in ('carState', 'modelV2', 'radarState', 'selfdriveState', 'customReservedRawData0', 'controlsState', 'liveCalibration'):
       sm.data[w] = getattr(e, w); pend.add(w)
     if w != 'modelV2' or 'carState' not in sm.data:
@@ -138,14 +140,14 @@ def run_seg(args):
       for d, y, vr, _s, settling, cls, tid, vlat, lc in tr._points:
         if d == dm: mk.add(tid)
     eng = 'selfdriveState' in sm.data and sm.data['selfdriveState'].enabled
-    frames.append((t, v, eng, pts, lead, mk, target, {tid: (d, y) for d, y, *_r, tid, _vl, _lc in
+    frames.append((t, v, eng, pts, lead, mk, target, {tid: (d, y, vr, cls, vl) for d, y, vr, _s, _st, cls, tid, vl, _lc in
                                              [(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]) for q in tr._points]}))
-  return os.path.basename(seg), frames, km
+  return os.path.basename(seg), frames, km, gps
 
 
 def score(segres):
   eps, real, km = [], [], 0.
-  for name, frames, k in segres:
+  for name, frames, k, *_g in segres:
     km += k
     hist = defaultdict(list)  # tid -> [(t, |off|, is_lead, v)]
     for t, v, eng, pts, lead, mk, tg, raw in frames:
