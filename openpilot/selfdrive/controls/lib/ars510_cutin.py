@@ -169,13 +169,14 @@ class CutinRule:
       off_signed = y_right - ref_y(d)
       off = abs(off_signed)
       # the gap rule's lead is my lead other than this object: 11/05 route 53 (75 km/h) the model's (vision) lead had already
-      # moved to the car cutting in, 1 s before it crossed the line, so it was "beyond the lead" (itself) and never marked
-      lead_d = next((ld for ld, ly in gap_leads
-                     if not (abs(d - ld) < SELF_LEAD_D_M and (ly is None or abs(y - ly) < LEAD_MATCH_Y_M))), None) \
-        if gap_leads else None
-      beyond = lead_d is not None and d > lead_d - GAP_MARGIN_M.get(cls, GAP_MARGIN_DEFAULT_M)
-      toward = vlat * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
+      # moved to the car cutting in, 1 s before it crossed the line, so it was "beyond the lead" (itself) and never marked.
+      # Only while it is still outside my lane line: inside, it is my lead (replay: else leads off-centre got marked, braking)
+      self_lead = [abs(d - ld) < SELF_LEAD_D_M and (ly is None or abs(y - ly) < LEAD_MATCH_Y_M) for ld, ly in gap_leads]
+      lead_d = next((ld for (ld, _ly), sl in zip(gap_leads, self_lead) if not sl), None)
       intr = self._intrusion(lanes, d, y_right, off_signed)
+      is_self_lead = bool(self_lead) and self_lead[0]
+      beyond = (lead_d is not None and d > lead_d - GAP_MARGIN_M.get(cls, GAP_MARGIN_DEFAULT_M)) or (is_self_lead and intr >= 0.)
+      toward = vlat * (1. if off_signed > 0 else -1.) if vlat == vlat else float("nan")  # left-positive vlat
       o = CutObj(tid=tid, d=d, y_right=y_right, vrel=v, cls=cls, settling=settling, kind=None, arrow=0, intr=intr,
                  toward=toward, strict=False, in_lane=off < 1.8)
       out.append(o)
