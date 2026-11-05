@@ -20,6 +20,7 @@ static NimBLERemoteCharacteristic* cp = nullptr;
 static uint32_t q[32]; static volatile uint8_t qh = 0, qt = 0;
 static uint8_t evcat[256];  // category of recent UIDs (by low byte), for printing
 static std::vector<uint8_t> ds;  // Data Source reassembly
+static bool fetchExisting = true;  // test phase: also fetch notifications already on the phone
 
 static void jsonStr(const char* k, const uint8_t* p, uint16_t n, bool comma) {
   Serial.printf("\"%s\":\"", k);
@@ -60,8 +61,10 @@ static void onNs(NimBLERemoteCharacteristic*, uint8_t* d, size_t n, bool) {
   uint8_t ev = d[0], cat = d[2];
   uint32_t uid = d[4] | (d[5] << 8) | (d[6] << 16) | ((uint32_t)d[7] << 24);
   evcat[uid & 0xFF] = cat;
+  Serial.printf("{\"t\":%lu,\"ns\":{\"ev\":%u,\"flags\":%u,\"cat\":%u,\"count\":%u,\"uid\":%lu}}\n", (unsigned long)millis(), ev, d[1], cat, d[3],
+                (unsigned long)uid);
   if (ev == 2) { Serial.printf("{\"t\":%lu,\"uid\":%lu,\"removed\":1}\n", (unsigned long)millis(), (unsigned long)uid); return; }
-  if (d[1] & 0x04) return;                       // pre-existing notification at connect: skip the backlog
+  if ((d[1] & 0x04) && !fetchExisting) return;   // pre-existing notification at connect: skip the backlog
   uint8_t nt = (qt + 1) & 31;
   if (nt != qh) { q[qt] = uid; qt = nt; }
 }
@@ -140,7 +143,8 @@ void loop() {
                      1, 0x80, 0x00,          // Title, max 128
                      2, 0x80, 0x00,          // Subtitle, max 128
                      3, 0x00, 0x01};         // Message, max 256
-    cp->writeValue(cmd, sizeof(cmd), true);
+    bool ok = cp->writeValue(cmd, sizeof(cmd), true);
+    if (!ok) Serial.printf("{\"t\":%lu,\"cp_write_failed\":%lu}\n", (unsigned long)millis(), (unsigned long)uid);
   }
   delay(20);
 }
