@@ -83,6 +83,7 @@ TREND_REF_LANE = False   # 11/04 replay: offsets from the lane centre instead of
 # 11/04 response: braking (beyond a lift-off) only for an object this close to / past a reliable lane line (or the radar's
 # own cut-in code, or confirmed)
 BRAKE_LINE_M = -0.5
+CURVE_TRUST_K = 10.0   # m: offsets trusted up to sqrt(K x curve radius), see update()
 
 
 def parse(payload: bytes) -> list[tuple]:
@@ -150,6 +151,11 @@ class CutinRule:
         if 2.5 < w < 4.5:
           self._lane_w += 0.05 * (float(np.clip(w, 3.0, 4.0)) - self._lane_w)
     ref_y = path_y
+    # 11/05 route 53 ramp (55 km/h, 3.0 m/s^2): a next-lane car 54 m ahead was "confirmed" (-0.56 braking) though it never
+    # crossed its line: on a curve my predicted path's error grows ~ d^2 / 2R, so the offsets are only trusted up to
+    # sqrt(CURVE_TRUST_K x R) (R 78 m: 28 m; straight: no limit in range)
+    k = abs(2. * (path_y(30.) - path_y(0.)) / 900.)
+    d_trust = (CURVE_TRUST_K / k) ** 0.5 if k > 1e-5 else MAX_D_M
     if TREND_REF_LANE and lanes is not None and lanes[0][2] >= LINE_MIN_PROB and lanes[1][2] >= LINE_MIN_PROB \
        and len(lanes[0][0]) > 1 and len(lanes[1][0]) > 1:
       (lx, ly, _lp), (rx, ry, _rp) = lanes
@@ -191,7 +197,7 @@ class CutinRule:
         if off >= CONFIRM_FROM:
           self._side[tid] = 1 if off_signed > 0 else -1
         ct = self._confirm_t.get(tid)
-        if ct is not None and now - ct[0] < CONFIRM_SHOW_S and not beyond:
+        if ct is not None and now - ct[0] < CONFIRM_SHOW_S and not beyond and d <= d_trust:
           o.kind, o.arrow, o.strict = "confirmed", ct[1], True
           seen.add(tid)
           continue
@@ -203,7 +209,7 @@ class CutinRule:
         if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND) else False
       qual = False
       if cutin:
-        if ego_lc or intr < LINE_GATE_M or beyond:
+        if ego_lc or intr < LINE_GATE_M or beyond or d > d_trust:
           cutin = False   # the rule's own state above keeps running
         elif intr >= LINE_STRICT_M or (toward == toward and toward >= STRICT_TOWARD):
           qual = True
