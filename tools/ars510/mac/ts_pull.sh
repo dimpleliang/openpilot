@@ -17,11 +17,18 @@ DEST=~/ars510_rlogs/raw
 LOG=~/ars510_rlogs/ts_pull.log
 HOST=comma-ts                       # ssh alias over Tailscale (see the ~/.ssh/config block in the setup notes)
 O="-n -o ConnectTimeout=20 -o BatchMode=yes"   # -n: never read the loop stdin
+# 11/05: one shared ssh connection for the whole run (every burst + offroad check used to be a new ssh handshake on the comma)
+O="$O -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-ars510-%C -o ControlPersist=60"
 RATE_ONROAD=250000                  # bytes/s within a burst while driving
 CHUNK_ONROAD=2000000                # bytes per burst while driving (11/05), then PAUSE_ONROAD s of nothing
 PAUSE_ONROAD=20
 CAT=/data/openpilot/tools/ars510/cat_nocache.py
 FILES="rlog.zst qlog.zst qcamera.ts"
+FILES_ONROAD="rlog.zst qlog.zst"    # 11/05: the low-res video waits until the car is off (it is on comma connect anyway)
+# 11/05: the comma's own uploader sends the previous segment's qlog + qcamera in the first ~20 s after each new segment;
+# a burst waits until UPLOADER_QUIET_S after the newest segment started, and while the CPU is hotter than HOT_C
+UPLOADER_QUIET_S=25
+HOT_C=80
 mkdir -p "$DEST"
 exec >> "$LOG" 2>&1
 echo "== $(date '+%F %T')"
@@ -62,7 +69,7 @@ while read -r s r_sz q_sz c_sz; do
           "$HOST:/data/media/0/realdata/$s/" "$DEST/$s/" < /dev/null || { echo "rsync failed $s"; continue; }
   else
     ok=1
-    for f in $FILES; do
+    for f in $FILES_ONROAD; do
       case $f in rlog.zst) want=$r_sz;; qlog.zst) want=$q_sz;; qcamera.ts) want=$c_sz;; esac
       [ "$want" = "0" ] && continue
       have=$(stat -f %z "$DEST/$s/$f" 2>/dev/null || echo 0)
@@ -73,7 +80,11 @@ while read -r s r_sz q_sz c_sz; do
       # 11/05: in short bursts (CHUNK_ONROAD, then PAUSE_ONROAD s quiet), resumed from the .part size each time: a continuous
       # stream at 22:02 was followed by "locationd Temporary Error" (driver: send 2-3 MB at a time, it resumes anyway)
       while :; do
-        ssh $O $HOST "$IONICE python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD 2>/dev/null | head -c $CHUNK_ONROAD" >> "$part"
+        ssh $O $HOST "cd /data/media/0/realdata && a=\$(( \$(date +%s) - \$(stat -c %Y \$(ls -td */ | head -1)) )); \
+          [ \$a -ge 0 ] && [ \$a -lt $UPLOADER_QUIET_S ] && sleep \$(( $UPLOADER_QUIET_S - a )); \
+          for i in 1 2 3; do t=\$(for z in /sys/class/thermal/thermal_zone*; do case \$(cat \$z/type) in cpu*|gpu*) cat \$z/temp;; esac; done 2>/dev/null | sort -n | tail -1); \
+            [ \$(( \${t:-0} / 1000 )) -lt $HOT_C ] && break; sleep 20; done; \
+          $IONICE python3 $CAT /data/media/0/realdata/$s/$f $off $RATE_ONROAD 2>/dev/null | head -c $CHUNK_ONROAD" >> "$part"
         got=$(stat -f %z "$part" 2>/dev/null || echo 0)
         [ "$got" -ge "$want" ] || [ "$got" = "$off" ] && break   # done, or no progress (offline): resume next run
         off=$got
