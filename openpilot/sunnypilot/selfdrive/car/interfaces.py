@@ -79,7 +79,8 @@ def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsS
     cloudlog.warning("ICBM not available or openpilot Longitudinal Control enabled, cleaning up params")
     params.remove("IntelligentCruiseButtonManagement")
 
-  if not CP.openpilotLongitudinalControl and CP_SP.pcmCruiseSpeed:
+  # ars510 11/05: never on a mock / unrecognized car (the comma starting without the car's CAN): SCC-V was silently removed
+  if not CP.openpilotLongitudinalControl and CP_SP.pcmCruiseSpeed and CP.brand != "mock":
     cloudlog.warning("openpilot Longitudinal Control and ICBM not available, cleaning up params")
     params.remove("CustomAccIncrementsEnabled")
     params.remove("SmartCruiseControlVision")

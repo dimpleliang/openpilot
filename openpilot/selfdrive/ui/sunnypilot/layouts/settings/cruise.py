@@ -143,7 +143,7 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(MAPD_AVAILABLE)
-      else:
+      elif ui_state.CP.brand != "mock":   # ars510 11/05: not from a mock car's persistent params (SCC-V vanished)
         ui_state.params.remove("CustomAccIncrementsEnabled")
         ui_state.params.remove("SmartCruiseControlVision")
         ui_state.params.remove("SmartCruiseControlMap")
