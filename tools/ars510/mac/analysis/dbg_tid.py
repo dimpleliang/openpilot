@@ -28,7 +28,8 @@ def update(self, car_state, md, points, radar_state, now, frame, fresh, model_up
   for o in out:
     if o.tid == tid0:
       ld = radar_state.leadOne.dRel if radar_state is not None and radar_state.leadOne.present else None
-      trace.append(f"{now:.2f} d {o.d:.1f} intr {o.intr:+.2f} tw {o.toward:+.2f} kind {o.kind} strict {o.strict} lead {ld}")
+      v = car_state.vEgo; lat = 2 * path_y(30.) / 900. * v * v
+      trace.append(f"{now:.2f} v {v*3.6:.0f} latacc {lat:+.1f} y30 {path_y(30.):+.1f} y_obj {o.y_right:+.2f} path {path_y(o.d):+.2f} d {o.d:.1f} intr {o.intr:+.2f} tw {o.toward:+.2f} kind {o.kind} strict {o.strict} lead {ld}")
   return out
 
 
