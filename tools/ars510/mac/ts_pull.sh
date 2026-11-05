@@ -19,9 +19,12 @@ HOST=comma-ts                       # ssh alias over Tailscale (see the ~/.ssh/c
 O="-n -o ConnectTimeout=20 -o BatchMode=yes"   # -n: never read the loop stdin
 # 11/05: one shared ssh connection for the whole run (every burst + offroad check used to be a new ssh handshake on the comma)
 O="$O -o ControlMaster=auto -o ControlPath=$HOME/.ssh/cm-ars510-%C -o ControlPersist=60"
-RATE_ONROAD=250000                  # bytes/s within a burst while driving
-CHUNK_ONROAD=2000000                # bytes per burst while driving (11/05), then PAUSE_ONROAD s of nothing
-PAUSE_ONROAD=20
+RATE_ONROAD=400000                  # bytes/s within a burst while driving
+CHUNK_ONROAD=3000000                # bytes per burst while driving (11/05), then PAUSE_ONROAD s of nothing
+PAUSE_ONROAD=5
+# Throughput while driving (11/05 driver: keep up even on an 8 h day without changing the device): ~2.8 bursts in the ~35 s per
+# minute outside the uploader's window = ~8 MB/min. The comma keeps ~5.4 h of driving (243 MB/min, ~79 GB) before its deleter
+# removes the oldest segments, rlog included; rlog + qlog are ~12.4 MB/min, so 8 MB/min keeps every rlog for drives up to ~15 h.
 CAT=/data/openpilot/tools/ars510/cat_nocache.py
 FILES="rlog.zst qlog.zst qcamera.ts"
 FILES_ONROAD="rlog.zst qlog.zst"    # 11/05: the low-res video waits until the car is off (it is on comma connect anyway)
