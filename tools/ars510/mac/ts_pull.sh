@@ -71,7 +71,8 @@ IONICE=$(ssh $O $HOST 'command -v ionice >/dev/null && echo "ionice -c3" || echo
 # 11/05 offroad: one rsync over the shared ssh connection per BATCH segments (was one rsync = new ssh + file list per segment:
 # over the phone hotspot, ~220 ms latency, the speed fell to a few kB/s between segments). The car may be started during a
 # long run: offroad is re-checked between batches. The per-segment loop below then only verifies, frees, and retries misses.
-BATCH=10
+BATCH=5
+PAR=3
 if [ "$mode" = offroad ]; then
   todo=$(while read -r s r_sz q_sz c_sz; do
     [ -n "$s" ] || continue
@@ -84,13 +85,17 @@ if [ "$mode" = offroad ]; then
   if [ -n "$todo" ]; then
     nseg=$(echo "$todo" | cut -d/ -f1 | uniq | wc -l | tr -d ' ')
     echo "batch rsync: $(echo "$todo" | wc -l | tr -d ' ') files in $nseg segments"
+    # 11/05: PAR rsyncs at once, each its own ssh connection (not the shared one: that is a single TCP flow): one TCP flow over the hotspot (~200 ms RTT under load) reached ~15 Mbit/s of a 28 Mbit/s uplink
+    k=0
     for segs in $(echo "$todo" | cut -d/ -f1 | uniq | awk -v b=$BATCH '{printf "%s%s", $0, (NR % b ? "," : "\n")} END {print ""}'); do
-      offroad || { echo "car went onroad: stopping batch rsync"; break; }
-      echo "$todo" | grep -E "^($(echo "$segs" | sed 's/,$//; s/,/|/g'))/" > "$DEST/.batch"
-      rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" -e "ssh ${O#-n }" --files-from="$DEST/.batch" \
-            "$HOST:/data/media/0/realdata/" "$DEST/" < /dev/null || echo "batch rsync failed (per-segment retry below)"
+      if [ $((k % PAR)) = 0 ]; then wait; offroad || { echo "car went onroad: stopping batch rsync"; break; }; fi
+      echo "$todo" | grep -E "^($(echo "$segs" | sed 's/,$//; s/,/|/g'))/" > "$DEST/.batch$k"
+      rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" -e "ssh -o ConnectTimeout=20 -o BatchMode=yes -o ControlPath=none" --files-from="$DEST/.batch$k" \
+            "$HOST:/data/media/0/realdata/" "$DEST/" < /dev/null || echo "batch rsync failed (per-segment retry below)" &
+      k=$((k + 1))
     done
-    rm -f "$DEST/.batch"
+    wait
+    rm -f "$DEST"/.batch*
   fi
 fi
 n=0; freed=0
