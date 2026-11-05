@@ -58,6 +58,10 @@ CUTIN_MAX_VREL = 1.5         # m/s, lane-crossing code: slower or about my speed
 LC_CUTIN = (2, 5)
 SLOW_TOWARD = 0.4
 SLOW_HOLD_RECORDS = 17
+# 11/05 route 53 (75 km/h, a car from the next lane in at 17 m, 1.2 m/s sideways): the slow counter needs ~0.9 s, the car
+# was the lead before it was marked. A fast sideways move toward me needs fewer records.
+FAST_TOWARD = 0.8
+FAST_HOLD_RECORDS = 6
 CLOSE_D = (5.0, 40.0)
 CLOSE_OFF = (0.9, 4.0)
 # Confirmed cut-in: within CONFIRM_OFF of my path, CONFIRM_D, slower by CONFIRM_VREL, CONFIRM_FROM m or more out within CONFIRM_WIN s.
@@ -119,6 +123,7 @@ class CutinRule:
     self._confirm_t: dict[int, tuple[float, int]] = {}
     self._side: dict[int, int] = {}
     self._slow: dict[int, int] = {}
+    self._fast: dict[int, int] = {}
     self._release: dict[int, int] = {}
     self._qual_t: dict[int, float] = {}
 
@@ -208,7 +213,7 @@ class CutinRule:
         o.strict = (line == line and line >= BRAKE_LINE_M) or lc in LC_CUTIN
     if fresh:
       for tid in [k for k in self._hist if k not in seen]:
-        for store in (self._hist, self._hold, self._release, self._slow, self._out_t,
+        for store in (self._hist, self._hold, self._release, self._slow, self._fast, self._out_t,
                       self._confirm_t, self._side, self._qual_t):
           store.pop(tid, None)
     return out
@@ -269,9 +274,11 @@ class CutinRule:
     close = CLOSE_OFF[0] < off < CLOSE_OFF[1] and CLOSE_D[0] <= d <= CLOSE_D[1]
     if fresh:
       self._slow[tid] = self._slow.get(tid, 0) + 1 if (close and toward == toward and toward > SLOW_TOWARD) else 0
+      self._fast[tid] = self._fast.get(tid, 0) + 1 if (close and toward == toward and toward > FAST_TOWARD) else 0
     # the radar's own lane-crossing code (2 / 5)
     lc_ok = lc in LC_CUTIN and LC_OFF[0] < off < LC_OFF[1] and LC_D[0] <= d <= LC_D[1] and vrel < CUTIN_MAX_VREL
-    if lc_ok or (close and self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS and self._motion_ok(h, frame, d)):
+    moving_in = self._slow.get(tid, 0) >= SLOW_HOLD_RECORDS or self._fast.get(tid, 0) >= FAST_HOLD_RECORDS
+    if lc_ok or (close and moving_in and self._motion_ok(h, frame, d)):
       ok = True
       if fresh:
         self._hold[tid] = max(self._hold.get(tid, 0), CUTIN_HOLD_FRAMES - 1)
@@ -298,6 +305,15 @@ RESP_LIFT_MAX = 0.35       # the highest of RESP_LIFT_V
 RESP_BRAKE_MAX = 1.0       # m/s^2: light braking, only for strict / confirmed objects; harder is the MPC's job once it is the lead
 RESP_MIN = 0.05            # m/s^2: below this, nothing
 RESP_ACC_WIN_S = 1.0       # s: relative-speed history for the object's relative acceleration
+# 11/05 route 53 (driver: "several merges felt close"): at 80 km/h a car cut in at 19 m (0.9 s) but slightly faster than me,
+# so nothing was "closing" and nothing happened; the MPC then kept the 20 m gap for 5 s. Gap term: an object inside the
+# desired gap (t_follow x its speed + stop distance) asks for the relative speed that opens the gap in GAP_OPEN_S, reached
+# in GAP_RESP_S. Not closing, it only gets a lift-off (lift_max). It also keeps acting for POST_HOLD_S after the marked object
+# became my lead (the rule stops marking leads; the MPC alone was soft with an opening lead).
+GAP_TERM = True
+GAP_OPEN_S = 8.0
+GAP_RESP_S = 2.0
+POST_HOLD_S = 3.0
 
 
 def lift_max(v_ego: float) -> float:
@@ -309,6 +325,7 @@ class CutinResponse:
   less what its own relative acceleration (it speeding up) gives back; capped by confidence."""
   def __init__(self):
     self._vrel: dict[int, list[tuple[float, float]]] = {}
+    self._marked: dict[int, tuple[float, bool]] = {}   # tid -> (last time marked, strict)
 
   def update(self, objs: list[CutObj], v_ego: float, t_follow: float, now: float):
     best = None  # (a_req capped, obj, a_req raw)
@@ -321,23 +338,35 @@ class CutinResponse:
       h.append((now, o.vrel))
       while h and now - h[0][0] > RESP_ACC_WIN_S:
         h.pop(0)
-      if o.kind is None:
+      if o.kind is not None:
+        self._marked[o.tid] = (now, bool(o.strict))
+      elif not (GAP_TERM and o.tid in self._marked and now - self._marked[o.tid][0] < POST_HOLD_S and o.in_lane):
         continue
+      strict = bool(o.strict) or (o.kind is None and self._marked[o.tid][1])
       closing = -o.vrel
-      if closing <= 0. or v_ego + o.vrel < CUTIN_MIN_V_GROUND:   # not closing, or not moving forward (oncoming / crossing)
+      if v_ego + o.vrel < CUTIN_MIN_V_GROUND:   # not moving forward (oncoming / crossing)
         continue
       a_rel = 0.
       if len(h) >= 5 and h[-1][0] - h[0][0] > 0.5:
         a_rel = float(np.polyfit([x[0] - h[0][0] for x in h], [x[1] for x in h], 1)[0])  # + = it is pulling away
       v_obj = max(v_ego + o.vrel, 0.)
-      room = o.d - (t_follow * v_obj + RESP_STOP_DISTANCE)
-      a_req = closing ** 2 / (2. * room) if room > 1. else RESP_BRAKE_MAX * 2
-      a_req = max(a_req - max(a_rel, 0.), 0.)
+      d_des = t_follow * v_obj + RESP_STOP_DISTANCE
+      room = o.d - d_des
+      a_close = 0.
+      if closing > 0.:
+        a_close = closing ** 2 / (2. * room) if room > 1. else RESP_BRAKE_MAX * 2
+        a_close = max(a_close - max(a_rel, 0.), 0.)
+      a_gap = 0.
+      if GAP_TERM and room < 0.:
+        a_gap = max((-room / GAP_OPEN_S - o.vrel - max(a_rel, 0.) * GAP_RESP_S) / GAP_RESP_S, 0.)
+      a_req = max(a_close, a_gap)
       if a_req < RESP_MIN:
         continue
-      cap = min(a_req, RESP_BRAKE_MAX if o.strict else lift_max(v_ego))
+      lim = RESP_BRAKE_MAX if (strict and closing > 0.) else lift_max(v_ego)
+      cap = min(a_req, lim)
       if best is None or cap > best[0]:
         best = (cap, o, a_req)
     for tid in [k for k in self._vrel if k not in live]:
       self._vrel.pop(tid, None)
+      self._marked.pop(tid, None)
     return best
