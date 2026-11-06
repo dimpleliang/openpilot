@@ -12,6 +12,7 @@ sys.path[:0] = [os.path.join(ROOT, 'op'), os.path.join(ROOT, 'op', 'opendbc_repo
 from openpilot.cereal import log
 
 MARKS = (30, 20, 10, 5)
+ALL = '--all' in sys.argv
 
 
 def load(seg):
@@ -31,7 +32,7 @@ def scan(route):
 
 
 def main():
-  for route in sys.argv[1:]:
+  for route in [a for a in sys.argv[1:] if not a.startswith('--')]:
     st = dict(en=False, lead=False, plan=None, at=0., src='', gas=0, brk=0)
     run = None
     for seg, evs in scan(route):
@@ -70,8 +71,8 @@ def main():
               run['marks'][mk] = (run['dist'], st['plan'])
           if v * 3.6 <= 10:
             run['err'].append(c.aEgo - st['at'])
-          if v < 0.1 and c.standstill:
-            if not run['lead'] and not run['gas']:
+          if v < 0.1:
+            if (ALL or not run['lead']) and not run['gas']:
               total = run['dist']
               parts = []
               for mk in MARKS:
@@ -80,7 +81,7 @@ def main():
                   parts.append(f"{mk}km/h plan {plan:5.1f} went {total - d0:5.1f} over {total - d0 - plan:+5.1f}" if plan is not None
                                else f"{mk}km/h plan -")
               err = np.mean(run['err']) if run['err'] else float('nan')
-              print(f"{route} seg {seg:3d} | driver brake {run['brk']} | src {sorted(run['src'])} | a - target (<10 km/h) {err:+.2f}")
+              print(f"{route} seg {seg:3d} | lead {int(run['lead'])} | driver brake {run['brk']} | src {sorted(run['src'])} | a - target (<10 km/h) {err:+.2f}")
               print('    ' + ' | '.join(parts))
             run = None
 
