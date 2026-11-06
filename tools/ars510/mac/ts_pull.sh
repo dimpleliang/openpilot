@@ -86,15 +86,21 @@ if [ "$mode" = offroad ]; then
     nseg=$(echo "$todo" | cut -d/ -f1 | uniq | wc -l | tr -d ' ')
     echo "batch rsync: $(echo "$todo" | wc -l | tr -d ' ') files in $nseg segments"
     # 11/05: PAR rsyncs at once, each its own ssh connection (not the shared one: that is a single TCP flow): one TCP flow over the hotspot (~200 ms RTT under load) reached ~15 Mbit/s of a 28 Mbit/s uplink
+    # 11/06: if the car is started during the batch, a watcher stops the full-speed rsyncs within ~5 s (they would otherwise run
+    # on to the end of their batches while driving, the 11/02 page-cache problem); the next run streams gently.
+    ( while sleep 5; do offroad || { echo "car went onroad: stopping batch rsyncs"; pkill -f "[r]sync .*files-from=$DEST/.batch"; break; }; done ) &
+    watcher=$!
+    wait_batch() { local p; p=$(jobs -p | grep -v "^$watcher$"); [ -z "$p" ] || wait $p 2>/dev/null; }
     k=0
     for segs in $(echo "$todo" | cut -d/ -f1 | uniq | awk -v b=$BATCH '{printf "%s%s", $0, (NR % b ? "," : "\n")} END {print ""}'); do
-      if [ $((k % PAR)) = 0 ]; then wait; offroad || { echo "car went onroad: stopping batch rsync"; break; }; fi
+      if [ $((k % PAR)) = 0 ]; then wait_batch; offroad || { echo "car went onroad: stopping batch rsync"; break; }; fi
       echo "$todo" | grep -E "^($(echo "$segs" | sed 's/,$//; s/,/|/g'))/" > "$DEST/.batch$k"
       rsync -a --partial --timeout=120 --rsync-path="nice -n 10 rsync" -e "ssh -o ConnectTimeout=20 -o BatchMode=yes -o ControlPath=none" --files-from="$DEST/.batch$k" \
             "$HOST:/data/media/0/realdata/" "$DEST/" < /dev/null || echo "batch rsync failed (per-segment retry below)" &
       k=$((k + 1))
     done
-    wait
+    wait_batch
+    kill $watcher 2>/dev/null
     rm -f "$DEST"/.batch*
   fi
 fi
