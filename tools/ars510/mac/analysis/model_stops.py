@@ -6,7 +6,6 @@ Planned stop = distance along the model's plan where its speed first falls below
 """
 import glob, os, sys, zstandard
 import numpy as np
-from multiprocessing import Pool
 ROOT = os.path.expanduser('~/ars510_rlogs')
 sys.path[:0] = [os.path.join(ROOT, 'op'), os.path.join(ROOT, 'op', 'opendbc_repo')]
 from openpilot.cereal import log
@@ -26,9 +25,8 @@ def load(seg):
 
 def scan(route):
   segs = sorted(glob.glob(os.path.join(ROOT, 'raw', route + '--*')), key=lambda s: int(s.rsplit('--', 1)[1]))
-  with Pool(6) as pool:
-    for seg, evs in zip(segs, pool.imap(load, segs)):
-      yield int(seg.rsplit('--', 1)[1]), evs
+  for seg in segs:   # (capnp readers do not pickle: no Pool)
+    yield int(seg.rsplit('--', 1)[1]), load(seg)
 
 
 def main():
