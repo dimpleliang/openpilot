@@ -13,7 +13,7 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.selfdrive.hwyalert.hwyalertd import STATE_FILE, DISPLAY_CHARS, MAX_ALERTS
 from openpilot.system.ui.lib.application import FONT_DIR
-from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.selfdrive.ui.sunnypilot.onroad import raw_text
 
 FONT_SIZE = 50
 STRIP_FONT_SIZE = 40
@@ -38,10 +38,10 @@ class HwyAlertRenderer:
     self._chars: set[str] = set()
     self._failed = False
 
-  def _load_font(self, extra: set[str] = frozenset()):
-    # 11/07 garbled characters: the atlas held only the fixed DISPLAY_CHARS, but lane / tag / event texts from the feed can
-    # carry others (e.g. 內側). Any character not yet in the atlas now reloads it with the union (a handful of times a drive).
-    chars = sorted(set(map(chr, range(32, 127))) | set(GLYPHS) | set(self._chars) | set(extra))
+  def _load_font(self, need: set[str]):
+    # Atlas of ASCII + the characters on screen, rebuilt when a new one appears (11/07; the "?" in the photo that day were the
+    # app swapping this font for its Noto subset under the zh-CHT UI, see raw_text).
+    chars = sorted(set(map(chr, range(32, 127))) | need)
     cps = rl.ffi.new("int[]", [ord(c) for c in chars])
     with as_file(FONT_DIR) as fspath:
       font = rl.load_font_ex((fspath / "unifont.otf").as_posix(), FONT_SIZE, rl.ffi.cast("int *", cps), len(chars))
@@ -49,8 +49,6 @@ class HwyAlertRenderer:
     if self._font is not None:
       rl.unload_font(self._font)
     self._font, self._chars = font, set(chars)
-    if extra:
-      cloudlog.info(f"hwyalert font: added {''.join(sorted(extra))}")
 
   def update(self):
     now = time.monotonic()
@@ -78,18 +76,18 @@ class HwyAlertRenderer:
 
   def _pill(self, rect: rl.Rectangle, text: str, size: int, y_bottom: float, bg: rl.Color, fg: rl.Color) -> float:
     """Draw a centred pill whose bottom edge is at y_bottom; return its top edge."""
-    sz = measure_text_cached(self._font, text, size, 0)
+    sz = raw_text.measure_text(self._font, text, size, 0)   # not the app's Noto-fallback swap (zh-CHT UI)
     w, h = sz.x + 48, size + 24
     r = rl.Rectangle(rect.x + rect.width / 2 - w / 2, y_bottom - h, w, h)
     rl.draw_rectangle_rounded(r, 0.3, 10, bg)
-    rl.draw_text_ex(self._font, text, rl.Vector2(r.x + 24, r.y + 12), size, 0, fg)
+    raw_text.draw_text(self._font, text, rl.Vector2(r.x + 24, r.y + 12), size, 0, fg)
     return r.y
 
   def _render(self, rect: rl.Rectangle):
     strip = (self._where + (f"　｜　{self._next}" if self._next else "")) if self._where else ""
     missing = set(strip + "".join(a.get("text", "") for a in self._alerts[:MAX_ALERTS])) - self._chars
     if self._font is None or missing:
-      self._load_font(missing - set(GLYPHS))
+      self._load_font(set(strip + "".join(a.get("text", "") for a in self._alerts[:MAX_ALERTS])))
     y = rect.y + rect.height - BOTTOM_MARGIN
     if self._where:
       y = self._pill(rect, strip, STRIP_FONT_SIZE, y, BG_STRIP, FG_STRIP) - 10

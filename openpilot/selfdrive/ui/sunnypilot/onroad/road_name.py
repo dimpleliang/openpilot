@@ -12,6 +12,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_DIR
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.selfdrive.ui.sunnypilot.onroad import raw_text
 from openpilot.system.ui.widgets import Widget
 
 
@@ -45,6 +46,9 @@ class RoadNameRenderer(Widget):
         return self.font_demi if self._cjk_font is None else self._cjk_font
     return self._cjk_font
 
+  def _measure(self, font, text: str, size: int):
+    return raw_text.measure_text(font, text, size) if font is self._cjk_font else measure_text_cached(font, text, size)
+
   def update(self):
     sm = ui_state.sm
     if sm.recv_frame["carState"] < ui_state.started_frame:
@@ -62,7 +66,7 @@ class RoadNameRenderer(Widget):
 
     text = self.road_name
     font = self._font_for(text)
-    text_size = measure_text_cached(font, text, 46)
+    text_size = self._measure(font, text, 46)
 
     padding = 40
     rect_width = max(200, min(text_size.x + padding, rect.width - 40))
@@ -75,9 +79,12 @@ class RoadNameRenderer(Widget):
     if text_size.x > max_text_width:
       while text_size.x > max_text_width and len(text) > 3:
         text = text[:-1]
-        text_size = measure_text_cached(font, text + "...", 46)
+        text_size = self._measure(font, text + "...", 46)
       text = text + "..."
 
-    sz = measure_text_cached(font, text, 46)
+    sz = self._measure(font, text, 46)
     origin = rl.Vector2(road_rect.x + road_rect.width / 2 - sz.x / 2, road_rect.y + road_rect.height / 2 - sz.y / 2)
-    rl.draw_text_ex(font, text, origin, 46, 0, rl.Color(255, 255, 255, 200))
+    if font is self._cjk_font:   # our own unifont atlas: no Noto-fallback swap (zh-CHT UI), see raw_text
+      raw_text.draw_text(font, text, origin, 46, 0, rl.Color(255, 255, 255, 200))
+    else:
+      rl.draw_text_ex(font, text, origin, 46, 0, rl.Color(255, 255, 255, 200))
