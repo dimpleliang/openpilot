@@ -35,14 +35,22 @@ class HwyAlertRenderer:
     self._next = ""
     self._t_read = 0.
     self._font = None
+    self._chars: set[str] = set()
     self._failed = False
 
-  def _load_font(self):
-    chars = sorted(set(map(chr, range(32, 127))) | set(GLYPHS))
+  def _load_font(self, extra: set[str] = frozenset()):
+    # 11/07 garbled characters: the atlas held only the fixed DISPLAY_CHARS, but lane / tag / event texts from the feed can
+    # carry others (e.g. 內側). Any character not yet in the atlas now reloads it with the union (a handful of times a drive).
+    chars = sorted(set(map(chr, range(32, 127))) | set(GLYPHS) | set(self._chars) | set(extra))
     cps = rl.ffi.new("int[]", [ord(c) for c in chars])
     with as_file(FONT_DIR) as fspath:
-      self._font = rl.load_font_ex((fspath / "unifont.otf").as_posix(), FONT_SIZE, rl.ffi.cast("int *", cps), len(chars))
-    rl.set_texture_filter(self._font.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+      font = rl.load_font_ex((fspath / "unifont.otf").as_posix(), FONT_SIZE, rl.ffi.cast("int *", cps), len(chars))
+    rl.set_texture_filter(font.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+    if self._font is not None:
+      rl.unload_font(self._font)
+    self._font, self._chars = font, set(chars)
+    if extra:
+      cloudlog.info(f"hwyalert font: added {''.join(sorted(extra))}")
 
   def update(self):
     now = time.monotonic()
@@ -78,11 +86,12 @@ class HwyAlertRenderer:
     return r.y
 
   def _render(self, rect: rl.Rectangle):
-    if self._font is None:
-      self._load_font()
+    strip = (self._where + (f"　｜　{self._next}" if self._next else "")) if self._where else ""
+    missing = set(strip + "".join(a.get("text", "") for a in self._alerts[:MAX_ALERTS])) - self._chars
+    if self._font is None or missing:
+      self._load_font(missing - set(GLYPHS))
     y = rect.y + rect.height - BOTTOM_MARGIN
     if self._where:
-      strip = self._where + (f"　｜　{self._next}" if self._next else "")
       y = self._pill(rect, strip, STRIP_FONT_SIZE, y, BG_STRIP, FG_STRIP) - 10
     for a in reversed(self._alerts[:MAX_ALERTS]):   # nearest event ends up lowest, right above the strip
       red = a.get("name") in RED or "火" in a.get("name", "")
