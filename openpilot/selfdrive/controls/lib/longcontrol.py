@@ -117,7 +117,11 @@ PRE_RELEASE_TRIGGER = 0.45      # s, predicted v_est / decel at which the releas
 WHEEL_OVERREAD = 0.12           # m/s, wheel speed over-read taken off v_est as the reading approaches drop-out
 WHEEL_OVERREAD_V = 0.5          # m/s, the correction fades in below this
 PRE_RELEASE_LEAD = 0.4          # s, ramp duration (the driver's own release took ~0.4 s)
-PRE_RELEASE_ACCEL = -0.05       # m/s^2, released to here linearly over PRE_RELEASE_LEAD (the driver's ramp)
+PRE_RELEASE_ACCEL = -0.35       # m/s^2, released to here linearly over PRE_RELEASE_LEAD. 10/28-11/07 at -0.05: the release
+                                # let go of the friction brake entirely (PCM gives nothing above ~-0.31), and with the
+                                # wheel speed reading 0 below 0.22 m/s the car was sometimes still rolling: 11/07 raw IMU,
+                                # 2 of 19 stops rolled on (+0.27/+0.42) and were grabbed again (-0.35/-0.44) ~0.8 s later.
+                                # -0.35 keeps the brake just engaged through the stop (Codex round 4: test from -0.35, not -0.30)
 PRE_RELEASE_MAX_V = 0.45        # m/s, only in the very last stretch
 PRE_RELEASE_MIN_DECEL = 0.12    # m/s^2, need a real deceleration to predict the stop
 PRE_RELEASE_FAIL_T = 0.3        # s without deceleration -> give up (brake again)
