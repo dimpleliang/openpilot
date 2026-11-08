@@ -79,6 +79,14 @@ STRICT_TOWARD = 1.2
 SHOW_AFTER_S = 0.0
 LINE_PATH_EXTRA_M = 0.3
 LINE_MIN_PROB = 0.5
+# 11/08 23:51 (route 63, 45-50 km/h, straight road): my lead moved out to the right where the lane lines faded (prob 0.2-0.5);
+# my predicted path, which had followed it ~0.4 m, swung back, and the departing car (steady 1.3 m right of me) was marked as
+# a predicted cut-in 2.8 s after it stopped being my lead. A car that was my radar lead within LEAD_DEPART_S is not marked
+# as a predicted cut-in (a confirmed one - back out past CONFIRM_FROM and in again - still is). Without both lane lines the
+# offsets come from the swinging path: a predicted mark there also needs the radar's own sideways speed toward me
+# >= NO_LINE_MIN_TOWARD (None: off).
+LEAD_DEPART_S = 5.0
+NO_LINE_MIN_TOWARD = 0.4
 TREND_REF_LANE = False   # 11/04 replay: offsets from the lane centre instead of my path, no gain (55 vs 54 false / 100 km)
 # 11/04 response: braking (beyond a lift-off) only for an object this close to / past a reliable lane line (or the radar's
 # own cut-in code, or confirmed)
@@ -114,6 +122,9 @@ class CutObj:
 
 class CutinRule:
   def __init__(self):
+    # tid -> last time it was my radar lead; aged out after LEAD_DEPART_S, NOT cleared by reset() (11/08: one empty radar
+    # frame made the UI reset the rule, the departing lead was forgotten and marked the same frame)
+    self._lead_t: dict[int, float] = {}
     self.reset()
     self._ego_lc = EgoLaneChange()
     self._lane_w = 3.5
@@ -202,6 +213,8 @@ class CutinRule:
           seen.add(tid)
           continue
       if any(abs(d - ld) < LEAD_MATCH_D_M and abs(y - ly) < LEAD_MATCH_Y_M for ld, ly in leads):
+        if tid >= 0:
+          self._lead_t[tid] = now
         continue   # (not "seen": a lead's rule state is cleared, as in the UI since 10/31)
       if tid >= 0:
         seen.add(tid)
@@ -209,8 +222,13 @@ class CutinRule:
         if (tid >= 0 and v_ego > CUTIN_MIN_V_EGO and v + v_ego > CUTIN_MIN_V_GROUND) else False
       qual = False
       if cutin:
+        lines_ok = lanes is not None and lanes[0][2] >= LINE_MIN_PROB and lanes[1][2] >= LINE_MIN_PROB
         if ego_lc or intr < LINE_GATE_M or beyond or d > d_trust:
           cutin = False   # the rule's own state above keeps running
+        elif now - self._lead_t.get(tid, -99.) < LEAD_DEPART_S:
+          cutin = False   # my lead leaving (11/08)
+        elif not lines_ok and NO_LINE_MIN_TOWARD is not None and not (toward == toward and toward >= NO_LINE_MIN_TOWARD):
+          cutin = False   # no lane lines: the offset trend may be my path swinging (11/08)
         elif intr >= LINE_STRICT_M or (toward == toward and toward >= STRICT_TOWARD):
           qual = True
           cutin = now - self._qual_t.setdefault(tid, now) >= SHOW_AFTER_S
@@ -225,6 +243,8 @@ class CutinRule:
         line = self._line_intr(lanes, d, y_right, off_signed)
         o.strict = (line == line and line >= BRAKE_LINE_M) or lc in LC_CUTIN
     if fresh:
+      for tid in [k for k, t in self._lead_t.items() if now - t > LEAD_DEPART_S]:
+        self._lead_t.pop(tid, None)
       for tid in [k for k in self._hist if k not in seen]:
         for store in (self._hist, self._hold, self._release, self._slow, self._fast, self._out_t,
                       self._confirm_t, self._side, self._qual_t):
