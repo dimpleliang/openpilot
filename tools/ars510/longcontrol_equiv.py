@@ -91,6 +91,7 @@ def _install_stubs():
   mod("opendbc.car.structs", car=car)
   mod("openpilot.common.realtime", DT_CTRL=0.01)
   mod("openpilot.common.pid", PIDController=_StubPID)
+  mod("openpilot.common.swaglog", cloudlog=SimpleNamespace(info=lambda *a, **k: None, event=lambda *a, **k: None))
   mod("openpilot.selfdrive.controls.lib.drive_helpers", CONTROL_N=17)
   t_idxs = [10.0 * (i / 32) ** 2 for i in range(33)]
   mod("openpilot.selfdrive.modeld.constants", ModelConstants=SimpleNamespace(T_IDXS=t_idxs))

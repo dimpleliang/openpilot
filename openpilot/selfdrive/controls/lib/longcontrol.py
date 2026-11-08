@@ -5,6 +5,7 @@ from enum import IntEnum
 import numpy as np
 from opendbc.car.structs import car
 from openpilot.common.realtime import DT_CTRL
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
@@ -258,6 +259,7 @@ class LongControl:
     self._release_end_reason = ""
     self._brake_hold_clear_reason = ""
     self._entry_reason = ""      # why LongCtrlState changed this frame ("" if it did not)
+    self._frame_transitions = []  # phase changes of this frame, logged at the end of update() (diagnostics only)
     self._reset_stop_latches()
 
   # --- compatibility views of the estimator --------------------------------------------------------------------------
@@ -298,6 +300,7 @@ class LongControl:
       if self._entry_reason:
         reason = f"{self._entry_reason}; {reason}"
       self.last_transition = (self.stop_phase, phase, reason)
+      self._frame_transitions.append(self.last_transition)
       self.stop_phase = phase
 
   def reset(self):
@@ -594,4 +597,18 @@ class LongControl:
       self._reset_stop_latches()
     self.prev_v_ego = CS.vEgo
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
+    if self._frame_transitions:
+      self._log_transitions(CS, a_target)
     return self.last_output_accel
+
+  def _log_transitions(self, CS, a_target):
+    """11/08: one rlog line per stop sub-state change (a few per stop) for the per-stop report
+    (tools/ars510/mac/analysis/stop_report.py). Diagnostics only: never affects the control output."""
+    for frm, to, reason in self._frame_transitions:
+      try:
+        cloudlog.info(f"ARS510 stop phase {frm.name}->{to.name} | {reason} | v={CS.vEgo:.3f} vraw={CS.vEgoRaw:.3f} "
+                      f"v_est={self.est.v_est:.3f} pose_a_f={self.est.pose_a_f:.3f} a_target={a_target:.3f} "
+                      f"out={float(self.last_output_accel):.3f} brake_added={int(self.brake_added)}")
+      except Exception:
+        pass
+    self._frame_transitions = []
