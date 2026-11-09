@@ -168,3 +168,8 @@ class CarStateExt:
     # Update traffic signals and speed limit
     self.update_traffic_signals(cp_cam)
     ret_sp.speedLimit = self.calculate_speed_limit()
+
+    # ars510: wiper state (0x2F9), 0 until the message is seen
+    wiper = cp.vl.get("WIPER_STATE", {})
+    ret_sp.wiperLevel = int(wiper.get("WIPER_LEVEL", 0))
+    ret_sp.wiperMist = bool(wiper.get("WIPER_MIST", 0))

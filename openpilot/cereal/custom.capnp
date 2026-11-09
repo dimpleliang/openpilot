@@ -450,6 +450,8 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+  wiperLevel @1 :UInt8;  # ars510: 0 off / AUTO idle, 1 INT/AUTO wiping, 2 LO, 3 HI (Toyota 0x2F9)
+  wiperMist @2 :Bool;
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {

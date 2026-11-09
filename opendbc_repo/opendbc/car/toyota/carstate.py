@@ -238,6 +238,7 @@ class CarState(CarStateBase, CarStateExt):
   def get_can_parsers(CP, CP_SP):
     pt_messages = [
       ("BLINKERS_STATE", float('nan')),
+      ("WIPER_STATE", float('nan')),  # ars510: rain mode input; nan = optional, never blocks canValid
     ]
 
     cam_messages = [
