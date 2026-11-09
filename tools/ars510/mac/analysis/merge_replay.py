@@ -194,6 +194,10 @@ def score(segres):
     extra[f'brake_{nm}'] = sum(1 for e in es if e[8] < -0.36)
     extra[f'lift_{nm}'] = sum(1 for e in es if -0.36 <= e[8] < 0.)
     extra[f'maxdec_{nm}'] = min([e[8] for e in es], default=0.)
+  # every response frame, including the POST_HOLD_S after the object became my lead (outside the mark episodes)
+  tg = [f[6][0] for r in segres for f in r[1] if f[6] is not None and f[2]]   # engaged frames only
+  extra['resp_s'] = len(tg) * 0.05; extra['resp_brake_s'] = sum(1 for x in tg if x < -0.36) * 0.05
+  extra['resp_hard_s'] = sum(1 for x in tg if x < -0.7) * 0.05
   return dict(**extra, km=km, episodes=len(eps), true=tp, false=fp, false_per_100km=fp / max(km, 1e-3) * 100,
               real=len(real), recall=caught / max(len(real), 1), warn_med=float(np.median(warn)) if warn else float('nan')), eps
 
@@ -220,7 +224,8 @@ def main():
         f"({sc['false_per_100km']:.0f}/100 km: hugger {sc['hug']} noise {sc['noise']}) | coast s true/hug/noise "
         f"{sc['coast_s_true']:.0f}/{sc['coast_s_hug']:.0f}/{sc['coast_s_noise']:.0f} | response lift/brake (max) true "
         f"{sc['lift_true']}/{sc['brake_true']} ({sc['maxdec_true']:.2f}) hug {sc['lift_hug']}/{sc['brake_hug']} ({sc['maxdec_hug']:.2f}) "
-        f"noise {sc['lift_noise']}/{sc['brake_noise']} ({sc['maxdec_noise']:.2f}) | real cut-ins {sc['real']} recall {sc['recall']*100:.0f}% warn median {sc['warn_med']:.1f} s")
+        f"noise {sc['lift_noise']}/{sc['brake_noise']} ({sc['maxdec_noise']:.2f}) | response s {sc['resp_s']:.0f} "
+        f"< -0.36: {sc['resp_brake_s']:.1f} < -0.7: {sc['resp_hard_s']:.1f} | real cut-ins {sc['real']} recall {sc['recall']*100:.0f}% warn median {sc['warn_med']:.1f} s")
   if '--list' in a:
     for e in sorted(eps, key=lambda e: (e[0], e[2])):
       print(f"  {e[0]} tid {e[1]} {e[3]-e[2]:4.1f}s v {e[4]*3.6:3.0f} {'TRUE' if e[5] else ('hug' if e[7] == e[7] and e[7] <= HUG_LINE_M else 'noise')} line {e[7]:.1f} resp {e[8]:+.2f}")

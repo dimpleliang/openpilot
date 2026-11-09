@@ -347,6 +347,12 @@ GAP_TERM = True
 GAP_OPEN_S = 8.0
 GAP_RESP_S = 2.0
 POST_HOLD_S = 3.0
+# 11/09 route 62 19:38:40 (driver: the merge rules also slow me early): a car merged 14.6 m ahead at 25 km/h, closing only
+# 0.7 m/s, already at my desired gap (room -1.3 m). room <= 1 m took an emergency branch (need 2.0 whatever the closing
+# speed) and braked -1.0 for a car I was hardly closing on. The closing term now uses room >= ROOM_FLOOR_M instead
+# (closing^2 / 2 x 3 m: 0.7 m/s -> 0.08, the gap term then asks a lift; 2.8 m/s -> 1.3, still -1.0), continuous with the
+# outside-gap formula. A car far inside the gap still gets the gap term. 0.0 = the old emergency branch.
+ROOM_FLOOR_M = 3.0
 
 
 def lift_max(v_ego: float) -> float:
@@ -387,7 +393,10 @@ class CutinResponse:
       room = o.d - d_des
       a_close = 0.
       if closing > 0.:
-        a_close = closing ** 2 / (2. * room) if room > 1. else RESP_BRAKE_MAX * 2
+        if ROOM_FLOOR_M > 0.:
+          a_close = closing ** 2 / (2. * max(room, ROOM_FLOOR_M))
+        else:
+          a_close = closing ** 2 / (2. * room) if room > 1. else RESP_BRAKE_MAX * 2
         a_close = max(a_close - max(a_rel, 0.), 0.)
       a_gap = 0.
       if GAP_TERM and room < 0.:
