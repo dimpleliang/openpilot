@@ -39,6 +39,9 @@ MATCH_HDG = 45.            # heading vs polyline direction (deg)
 MATCH_MIN_V = 5.           # heading is only trusted above this speed (m/s)
 STACK_M = 8.               # a second road this close to the best match is ambiguous: show its events too, tagged
 DR_MAX_KM = 15.            # no GPS (tunnels, 雪山隧道 12.9 km): carry the last match forward by speed this far
+REACQ_S = 15.              # back out of a tunnel the first fixes can sit 50-90 m off the road (11/09 雪山隧道 south exit
+                           # 28.1K: 85 m -> 32 m over 10 s, nearer the northbound line); while dead-reckoning, unmatched fixes
+                           # keep the dead-reckoned match for up to this long instead of dropping it (the alerts went blank 11 s)
 JUMP_M = 50.               # a fix that moved this much more (or less) than speed x time is ignored (no GPS this second);
 JUMP_MAX_REJECT = 3        # ... at most this many in a row, then the new position is taken (11/01: 8 such jumps in 5.2 h,
                            # all 2-40 km/h at a car park, none on a freeway; comma 3X horizontalAccuracy is always 0)
@@ -359,6 +362,7 @@ class Tracker:
     self.provincial: set[str] = set()                        # ordinary province roads: confirmed at CONFIRM_V_PROVINCIAL
     self.held, self.held_dist, self.last_t = [], 0., None   # last good match, metres driven since (no GPS)
     self.last_fix, self.rejects = None, 0                     # (t, x, y) of the last accepted fix
+    self.unmatched_s = 0.                                     # seconds of fixes that matched nothing while dead-reckoning
     self.spoken: dict[str, float] = {}   # event id -> distance (km) at the first announcement
     self.reminded: set[str] = set()
     self.last_say_t = -1e9
@@ -385,8 +389,13 @@ class Tracker:
         m = self.S.match(lon, lat, None, only={(r, d) for _, r, d, _, _ in self.held})
       else:
         m = []
-      self.held, self.held_dist = m, 0.
-      return m
+      if not m and self.held and self.held_dist > 0. and self.held_dist < DR_MAX_KM * 1000 and self.unmatched_s < REACQ_S:
+        self.unmatched_s += dt   # just back from a tunnel: keep dead-reckoning until the fixes settle onto the road
+        fix = None
+      else:
+        self.unmatched_s = 0.
+        self.held, self.held_dist = m, 0.
+        return m
     if self.held and self.held_dist < DR_MAX_KM * 1000:   # no GPS: carry the last match forward by speed
       self.held_dist += v * dt
       return [(dist, r, d, km + (1 if inc else -1) * self.held_dist / 1000., inc) for dist, r, d, km, inc in self.held]
