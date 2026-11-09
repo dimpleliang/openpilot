@@ -6,7 +6,9 @@
 Columns
   scene     lead = a radar/vision lead within 40 m in the last 3 s before the stop, e2e = no lead (red light / stop line)
   v0        km/h where the stop started (last time above 15 km/h)
-  pitch     deg, deviceMotion orientationNED pitch at the stop (sign as logged; check against a known slope)
+  pitch     deg, deviceMotion orientationNED pitch at the stop minus the device mounting pitch (median of
+            liveLocationKalman orientationNED - calibratedOrientationNED; 11/09: about -1.26 deg on this car, which
+            otherwise read as a -1.2 deg downhill everywhere)
   gap_v/gap_t/gap_a   regen -> friction hand-over gap: first stretch >= 0.2 s below 1.5 m/s where the sent ACCEL_CMD
             is < -0.3 but the real deceleration (raw IMU) is weaker than 0.15 m/s^2: speed at its start, length, weakest decel
   rel_v     speed where the pre-release started (from the 'ARS510 stop phase' log, else '')
@@ -46,7 +48,7 @@ def read(p):
 
 def load_route(route):
   segs = sorted(glob.glob(os.path.join(ROOT, 'raw', route + '--*')), key=lambda s: int(s.rsplit('--', 1)[1]))
-  d = {k: [] for k in ('cs', 'en', 'imu', 'dm', 'cmd', 'bp', 'lead', 'plan', 'lm')}
+  d = {k: [] for k in ('cs', 'en', 'imu', 'dm', 'cmd', 'bp', 'lead', 'plan', 'lm', 'mount')}
   for seg in segs:
     p = seg + '/rlog.zst'
     if not os.path.exists(p):
@@ -65,6 +67,10 @@ def load_route(route):
           a = e.accelerometer
           if a.which() == 'acceleration':
             d['imu'].append((t, -a.acceleration.v[2]))
+        elif w == 'liveLocationKalman':
+          L = e.liveLocationKalman
+          if L.orientationNED.valid and L.calibratedOrientationNED.valid:
+            d['mount'].append(L.orientationNED.value[1] - L.calibratedOrientationNED.value[1])
         elif w == 'deviceMotion':
           m = e.deviceMotion
           d['dm'].append((t, m.accelerationDevice.x, m.orientationNED.y if hasattr(m.orientationNED, 'y') else 0.))
@@ -172,7 +178,8 @@ def analyse(R, t_start, ts, v0):
     else:
       row['off'] = ''
   # pitch
-  row['pitch'] = round(np.degrees(at(R['dm'], 2, ts)), 1) if len(R['dm']) else ''
+  mount = float(np.median(R['mount'])) if len(R.get('mount', [])) else 0.
+  row['pitch'] = round(np.degrees(at(R['dm'], 2, ts) - mount), 1) if len(R['dm']) else ''
   # IMU
   imu = R['imu']
   wb = (imu[:, 0] > ts + 2.5) & (imu[:, 0] < ts + 3.5)

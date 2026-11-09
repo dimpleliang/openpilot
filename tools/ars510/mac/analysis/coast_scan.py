@@ -4,7 +4,8 @@ gas / brake)? (Mac)
 Frames: carState gasPressed / brakePressed both off for >= SETTLE_S, openpilot longitudinal not active (carControl.longActive;
 11/09: lateral-only MADS driving is real coasting too and is now included, tagged "lat"; fully manual is "man") and not
 active for SETTLE_S either, not standstill, |steering angle| < 30 deg. aEgo is corrected for the road's slope with the pitch
-of liveLocationKalman (a_flat = aEgo + g sin(pitch), pitch nose-up positive). Drive mode from GEAR_PACKET (0x3BC, 1 Hz):
+of liveLocationKalman calibratedOrientationNED (car frame; 11/09: the device-frame pitch carried the -1.26 deg mounting
+pitch, -0.2 m/s^2 on every band) (a_flat = aEgo + g sin(pitch), pitch nose-up positive). Drive mode from GEAR_PACKET (0x3BC, 1 Hz):
 SPORT_ON / ECON_ON / B_GEAR_ENGAGED (bit positions from the Toyota DBC, not yet confirmed on this car by toggling the
 modes). Reports the median per 10 km/h band, per tag and per drive mode.
 """
@@ -42,7 +43,7 @@ def scan(seg):
             bgear = bool((b[5] >> 1) & 1)
       elif w == 'liveLocationKalman':
         try:
-          o = e.liveLocationKalman.orientationNED
+          o = e.liveLocationKalman.calibratedOrientationNED   # car frame: the device mounting pitch (-1.26 deg) removed
           if o.valid: pitch = float(o.value[1])
         except Exception:
           pass
