@@ -54,6 +54,15 @@ BRAKE_HOLD_ACCEL = -0.5        # m/s^2. 10/28 16:51 the driver's own stop: -0.9 
                                # over the last 0.4 s, no pitch at the stop (+0.16 rebound). A firm, continuous
                                # deceleration makes the stop time predictable for the pre-release below; -0.5 is a
                                # compromise with stopping distance (the planner asks ~-0.13 at 0.6 m/s).
+# 11/09 13:01:47 (route 68): a gentle approach behind a stopped lead (plan -0.22, pose -0.21..-0.29) and the hold at
+# 0.6 m/s stepped the request to -0.50; the last 1.3 s decelerated at -0.40..-0.49 (driver: "the last bit is still too
+# hard"). The floor only has to keep the friction brake engaged (the PCM lets it go at about -0.31, SOFT_STOP_BAND_A):
+# the hold now asks BRAKE_HOLD_MARGIN more than the plan, between BRAKE_HOLD_MIN (-0.35, = PRE_RELEASE_ACCEL, which held
+# the brake through every stop since 11/08) and BRAKE_HOLD_ACCEL. A firmer plan still gets up to -0.50.
+BRAKE_HOLD_MIN = -0.35         # m/s^2
+BRAKE_HOLD_MARGIN = 0.1        # m/s^2
+BRAKE_HOLD_ONSET_RATE = 0.5    # m/s^3: the hold builds up gradually from the current request (driver: "progressively
+                               # heavier", 11/09) instead of stepping to the floor; -0.22 -> -0.35 in 0.26 s, -> -0.50 in 0.56 s
 BRAKE_HOLD_CLEAR_A_TARGET = 0.1  # m/s^2, the hold is latched until the planner wants to move again (same as should_stop)
 # The stopping state ignores the plan. With the gentle rate, follow the plan when it asks for clearly more braking than
 # the current request (lead closer than expected), so the soft logic never brakes less than an urgent plan.
@@ -154,7 +163,7 @@ LongCtrlState = car.CarControl.Actuators.LongControlState
 class StopPhase(IntEnum):
   OFF = 0         # long control not active                                                  (LongCtrlState.off)
   DRIVE = 1       # PID on the plan                                                          (LongCtrlState.pid)
-  BRAKE_HOLD = 2  # PID with the request floored at BRAKE_HOLD_ACCEL (latched, see BRAKE_HOLD_*) (LongCtrlState.pid)
+  BRAKE_HOLD = 2  # PID with the request floored at plan - BRAKE_HOLD_MARGIN in [BRAKE_HOLD_ACCEL, BRAKE_HOLD_MIN] (latched, see BRAKE_HOLD_*) (LongCtrlState.pid)
   APPROACH = 3    # stopping, wheels report rolling: soft-stop closed loop on aEgo / pose     (LongCtrlState.stopping)
   CAPTURE = 4     # stopping, wheel speed reads standstill, pose valid: hold until the pose says stopped
   HOLD = 5        # stopping, true stop recognised on the pose path: brake to BRAKE_HOLD_ACCEL, then stopAccel
@@ -246,6 +255,7 @@ class LongControl:
     self.stall_v_hist = deque(maxlen=int(round(STALL_WINDOW / DT_CTRL)) + 1)
     self.stall_stop = False
     self.brake_hold = False
+    self.hold_floor = None       # ramped brake-hold floor (BRAKE_HOLD_ONSET_RATE), None outside a hold
     self.pre_release_enabled = not os.path.exists(PRE_RELEASE_OFF_FILE)
     # BEHAVIOUR KEPT (G1): these three are only set when a pre-release triggers and are never reset between stops;
     # pre_release_start is read by the release-failed recovery (also after an urgent plan cancelled a stop that never
@@ -556,7 +566,11 @@ class LongControl:
     if CS.vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET:
       self.brake_hold = True
     if self.brake_hold:
-      output_accel = min(output_accel, BRAKE_HOLD_ACCEL)
+      target = float(np.clip(a_target - BRAKE_HOLD_MARGIN, BRAKE_HOLD_ACCEL, BRAKE_HOLD_MIN))
+      if self.hold_floor is None:
+        self.hold_floor = min(float(output_accel), 0.)
+      self.hold_floor = target if target > self.hold_floor else max(target, self.hold_floor - BRAKE_HOLD_ONSET_RATE * DT_CTRL)
+      output_accel = min(output_accel, self.hold_floor)
       self._set_phase(StopPhase.BRAKE_HOLD, "v < BRAKE_HOLD_V and plan < BRAKE_HOLD_A_TARGET"
                       if self.stop_phase == StopPhase.DRIVE else "pid")
     else:
@@ -593,6 +607,8 @@ class LongControl:
                                          else "plan > BRAKE_HOLD_CLEAR_A_TARGET" if a_target > BRAKE_HOLD_CLEAR_A_TARGET
                                          else "v > BRAKE_HOLD_V + 0.2")
       self.brake_hold = False
+    if not self.brake_hold:
+      self.hold_floor = None
     if self.long_control_state != LongCtrlState.stopping:
       self._reset_stop_latches()
     self.prev_v_ego = CS.vEgo
