@@ -23,7 +23,7 @@ NOLEAD = NS(present=False, radar=False, dRel=0., vLead=0., aLeadK=0., aLeadTau=1
 PCM_DELAY, PCM_TAU = 0.15, 0.35
 
 
-def near_stop(lead, v):  # copy of longitudinal_planner.near_stop_accel_floor
+def near_stop(lead, v):  # copy of ars510_long_rules.near_stop_accel_floor
   if not (lead.present and lead.radar) or lead.dRel > 20. or lead.vLead > 1.0:
     return None
   if lead.dRel < 3.5 and lead.vLead < 0.3:

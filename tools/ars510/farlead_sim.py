@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ars510 closed-loop sim of the far-lead floor + early ease-off with the real long MPC (run on the device, offroad).
-PYTHONPATH=/data/openpilot /usr/local/venv/bin/python3 farlead_sim.py [planner.py]"""
+PYTHONPATH=/data/openpilot /usr/local/venv/bin/python3 farlead_sim.py [ars510_long_rules.py]"""
 import sys, types, importlib.util
 sys.path.insert(0, "/data/openpilot")
 import numpy as np
@@ -9,7 +9,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, T_IDXS as T_IDXS_MPC, get_T_FOLLOW
-path = sys.argv[1] if len(sys.argv) > 1 else "/data/openpilot/openpilot/selfdrive/controls/lib/longitudinal_planner.py"
+path = sys.argv[1] if len(sys.argv) > 1 else "/data/openpilot/openpilot/selfdrive/controls/lib/ars510_long_rules.py"
 spec = importlib.util.spec_from_file_location("lp_sim", path); LP = importlib.util.module_from_spec(spec); spec.loader.exec_module(LP)
 CT = ModelConstants.T_IDXS[:CONTROL_N]
 STD = log.LongitudinalPersonality.standard

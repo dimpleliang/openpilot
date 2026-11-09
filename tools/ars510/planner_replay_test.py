@@ -36,7 +36,7 @@ def main():
   CP = messaging.log_from_bytes(params.get("CarParamsPersistent") or params.get("CarParams"), car.CarParams)
   CP_SP = messaging.log_from_bytes(params.get("CarParamsSPPersistent") or params.get("CarParamsSP"), custom.CarParamsSP)
   pl = lp.LongitudinalPlanner(CP, CP_SP)
-  pl.cr_off = False
+  pl.ars510['cutin_resp'].off = False
   dat = zstandard.ZstdDecompressor().decompressobj().decompress(open(sys.argv[1], 'rb').read())
   sm = SM(); pend = set(); n = 0; acted = 0; mn = 0.
   for e in log.Event.read_multiple_bytes(dat, traversal_limit_in_words=2**61):
@@ -52,8 +52,9 @@ def main():
     pend = set()
     pl.update(sm)
     n += 1
-    if pl.cr_cap is not None:
-      acted += 1; mn = min(mn, pl.cr_cap)
+    cap = pl.ars510['cutin_resp'].cap
+    if cap is not None:
+      acted += 1; mn = min(mn, cap)
   print(f"planner cycles {n}, cut-in response active {acted} cycles ({acted / 20:.1f} s), deepest cap {mn:.2f} m/s^2, no errors")
 
 

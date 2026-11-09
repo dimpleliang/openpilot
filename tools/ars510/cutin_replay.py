@@ -4,8 +4,8 @@ SP="/home/claude/sp"
 log=capnp.load(f"{SP}/openpilot/cereal/log.capnp",imports=[f"{SP}/openpilot/cereal",f"{SP}/opendbc_repo/opendbc/car",f"{SP}/openpilot",SP])
 from opendbc.car import structs
 import opendbc.car.toyota.ars510_radar_interface as A
-src=open(f"{SP}/openpilot/selfdrive/controls/lib/longitudinal_planner.py").read()
-ns={"np":np,"types":types,"STOP_DISTANCE":6.0}; exec(src[src.index("FAR_LEAD_K ="):src.index("def get_cruise_accel")],ns)
+src=open(f"{SP}/openpilot/selfdrive/controls/lib/ars510_long_rules.py").read()
+ns={"np":np,"types":types,"os":__import__("os"),"STOP_DISTANCE":6.0,"STOP_GAP_LOW":4.5}; exec(src[src.index("FAR_LEAD_K ="):src.index("class Ctx")],ns)
 files=sys.argv[1].split(","); before=float(sys.argv[2]); after=float(sys.argv[3])
 msgs=[]
 for f in files:

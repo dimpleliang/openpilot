@@ -405,6 +405,29 @@ rav4kumar 的 PR（源自 dragonpilot，感謝 AlexandreSato、cydia2020）：D 
 廣角／一般鏡頭的切換是原設計：< 18 km/h 廣角、> 36 km/h 一般，中間維持。mici（comma four）介面未改，本車不用。
 
 
+## 規劃器規則總表（11/09 整理，`ars510_long_rules.py`）
+
+本分支加在原廠規劃器上的所有縱向規則集中在 `openpilot/selfdrive/controls/lib/ars510_long_rules.py`，規劃器先算原廠候選
+（MPC／定速／模型取最小），再依固定順序跑以下規則；每條拿到目前的加速度、回傳新的，最後改到數值的那條就是「決定者」
+（`LongitudinalPlanner.decider`，換人且持續 0.5 s 時 cloudlog「ARS510 decider …」）。
+
+| # | 名稱 | 類型 | 作用 | 關閉／開啟檔（/data/…） |
+|---|---|---|---|---|
+| 0 | e2e_fill | 候選 | 模型沒意見時把模型候選拉成溫和追設定速度（仍與 MPC／定速取最小） | ars510_no_e2e_fill |
+| 1 | far_soft | **減輕煞車** | 遠方剛出現的雷達前車，限制 MPC 煞太重（只在 lead0 決定時） | ars510_no_far_lead_soft |
+| 2 | far_early | 上限 | 遠方較慢前車／雷達遠車提早收油（最多 −0.8，雷達單獨 −0.3） | 同上 |
+| 3 | near_stop | 煞車底線 | 停住的雷達前車，夠停在後方 4.5 m | ars510_no_near_stop |
+| 4 | lead_stop | 煞車底線 | 前車減速要停，均勻煞到它停點後 4.5 m | ars510_no_lead_stop |
+| 5 | ci_confirm | 上限 ≥ −0.3 | 確認切入收油門 | ars510_no_cutin_coast |
+| 6 | cutin_resp | 上限 ≥ −1.0 | 匯入車收油門／輕煞 | 有 ars510_cutin_predict 才開 |
+| 7 | hazard | 上限 −0.5 | 雷達危險目標收油門 | ars510_no_hazard_coast |
+| 8 | turn_hold | 上限 0 | 打方向燈 < 50 km/h 或大角度轉彎不加速 | — |
+| 9 | a_pos | 上限 ≥ 0 | 平緩加速上限（車速、設定速度、前車） | ars510_accel_scale（0＝關） |
+
+規則：只有 far_soft 能讓煞車變輕，而且排在底線與上限之前，所以底線／上限永遠蓋過它；其他規則都只能往下壓（取最小，不疊加），
+仲裁器會強制這點。每條自己做起落斜坡。關閉檔每秒讀一次。新增規則：在 `Rules.__init__` 的清單放到正確位置並補表。
+整理前後以 `tools/ars510/planner_equiv.py` 在車機上逐幀比對（全部規則開、切入反應強制開），輸出完全相同。
+
 ## 遠距前車煞車變柔和（10/30）
 
 - 起因：10/30 13:27，118 km/h 時雷達在 118 m 才看到前方約 75 km/h 的車（接近速度 12 m/s；ACC 目標與物件清單同時出現，是雷達距離極限，不是濾波延遲）。MPC 在 2 秒內煞到 −1.9 m/s²，實際只需約 −0.9。
