@@ -39,9 +39,9 @@ MATCH_HDG = 45.            # heading vs polyline direction (deg)
 MATCH_MIN_V = 5.           # heading is only trusted above this speed (m/s)
 STACK_M = 8.               # a second road this close to the best match is ambiguous: show its events too, tagged
 DR_MAX_KM = 15.            # no GPS (tunnels, 雪山隧道 12.9 km): carry the last match forward by speed this far
-REACQ_S = 15.              # back out of a tunnel the first fixes can sit 50-90 m off the road (11/09 雪山隧道 south exit
+REACQ_S = 30.              # back out of a tunnel the first fixes can sit 50-90 m off the road (11/09 雪山隧道 south exit
                            # 28.1K: 85 m -> 32 m over 10 s, nearer the northbound line); while dead-reckoning, unmatched fixes
-                           # keep the dead-reckoned match for up to this long instead of dropping it (the alerts went blank 11 s)
+                           # keep the dead-reckoned match for up to this long instead of dropping it (the alerts went blank 11 s); 15 -> 30 s 11/09 (driver)
 JUMP_M = 50.               # a fix that moved this much more (or less) than speed x time is ignored (no GPS this second);
 JUMP_MAX_REJECT = 3        # ... at most this many in a row, then the new position is taken (11/01: 8 such jumps in 5.2 h,
                            # all 2-40 km/h at a car park, none on a freeway; comma 3X horizontalAccuracy is always 0)
