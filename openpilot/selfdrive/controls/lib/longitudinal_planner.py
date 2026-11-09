@@ -19,6 +19,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
 from openpilot.selfdrive.controls.lib import ars510_cutin
+from openpilot.selfdrive.controls.lib import ars510_lead_stop
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
@@ -298,6 +299,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.far_lead_active = False  # ars510: far-lead braking limit in effect, see FAR_LEAD_K
     self.near_stop_active = False  # ars510: near-stop braking floor in effect, see NEAR_STOP_K
     self.near_stop_off = False
+    self.lead_stop = ars510_lead_stop.LeadStopFloor(DT_MDL)  # ars510: even braking behind a stopping lead
+    self.lead_stop_off = False
     self.ci_out_t: dict[int, float] = {}   # ars510 confirmed cut-in: track id -> last time far off the path
     self.hz_cnt, self.hz_until, self.hz_cap, self.hz_off, self.hz_on = 0, 0., None, False, False
     self.ego_lc = EgoLaneChange()
@@ -511,6 +514,23 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.near_stop_active = ns_active
       lead = sm['radarState'].leadOne
       cloudlog.info(f"ARS510 near stop {'on' if ns_active else 'off'} d={lead.dRel:.1f} vLead={lead.vLead:.1f} v={v_ego*3.6:.1f} a={output_a_target:.2f}")
+
+    # ars510: lead-stop floor (see ars510_lead_stop.py); braking only gets firmer
+    if self.far_lead_cnt == 0:
+      self.lead_stop_off = os.path.exists(ars510_lead_stop.OFF_FILE)
+    ls_was = self.lead_stop.active
+    if self.CP.openpilotLongitudinalControl and not self.lead_stop_off and not reset_state:
+      lead = sm['radarState'].leadOne
+      ls = self.lead_stop.update(lead, v_ego, sm.logMonoTime['radarState'] / 1e9, output_a_target)
+      if ls is not None and output_a_target > ls:
+        output_a_target = ls
+    else:
+      self.lead_stop.reset()
+    if self.lead_stop.active != ls_was:
+      lead = sm['radarState'].leadOne
+      a_lead, x_stop = self.lead_stop.dbg or (0., 0.)
+      cloudlog.info(f"ARS510 lead stop {'on' if self.lead_stop.active else 'off'} d={lead.dRel:.1f} vLead={lead.vLead:.1f} "
+                    f"aLeadK={lead.aLeadK:.2f} a_lead={a_lead:.2f} x_stop={x_stop:.1f} v={v_ego*3.6:.1f} a={output_a_target:.2f}")
 
     # ars510: confirmed cut-in lift-off (see CONFIRM_*)
     if self.far_lead_cnt == 0:
