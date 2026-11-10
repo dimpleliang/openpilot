@@ -53,6 +53,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_a_target = init_a
     self.output_should_stop = False
     self.ars510 = ars510.Rules(dt)   # ars510: all fork rules, in order (see ars510_long_rules.py)
+    self.wiper_src = lambda sm: (sm['carStateSP'].wiperLevel, sm['carStateSP'].wiperMist)   # replaced in replays
     self.decider = "none"
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
@@ -90,12 +91,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # Get new v_cruise and a_target from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.output_a_target = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.output_a_target, v_cruise)
 
+    # ars510: rain mode (ars510_rain.py) from the wipers: longer following time for the MPC and the rules
+    rain = self.ars510.rain
+    rain.update(*self.wiper_src(sm))
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     if self.CP.openpilotLongitudinalControl:
       self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
     else:
       self.mpc.set_cur_state(v_ego, sm['carState'].aEgo)
-    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality)
+    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality, t_follow_extra=rain.t_follow_extra)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -126,9 +130,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # ars510: all fork rules (ars510_long_rules.py): the e2e fill on the model candidate, then the rules in fixed order
     self.ars510.tick()
     c = ars510.Ctx(sm=sm, long=self.CP.openpilotLongitudinalControl, v_ego=v_ego, v_cruise=v_cruise, reset_state=reset_state,
-                   a_prev=a_prev, t_follow=get_T_FOLLOW(sm['selfdriveState'].personality),
+                   a_prev=a_prev, t_follow=get_T_FOLLOW(sm['selfdriveState'].personality) + rain.t_follow_extra,
                    now=sm.logMonoTime['modelV2'] / 1e9 if 'modelV2' in sm.logMonoTime else 0., fcw=self.fcw, mpc=self.mpc,
-                   dt=self.dt)
+                   dt=self.dt, rain=rain)
     target = self.ars510.e2e_fill.candidate(c, output_a_target_e2e, output_should_stop_e2e)
     candidates.append((target, LongitudinalPlanSource.e2e, output_should_stop_e2e))
 

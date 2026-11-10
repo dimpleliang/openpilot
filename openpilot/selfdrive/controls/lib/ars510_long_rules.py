@@ -23,6 +23,8 @@ Invariants (checked by the arbiter):
   * each rule ramps its own onset (its *_JERK constants); the release of the lift-off caps is ramped by the arbiter
     (RELEASE_RULES, RELEASE_JERK).
 Off files are polled once a second (every POLL_CYCLES).
+Rain mode (ars510_rain.py, from the wipers) is not a rule: it lengthens t_follow (MPC, far_soft, far_early, cutin_resp),
+scales the a_pos ceiling and the e2e fill, and lets far_early ease off harder for a camera-only lead.
 
 Shared distances: STOP_DISTANCE (6 m, long_mpc) is the MPC's following stop distance; the low-speed stop gap behind a
 stopped / stopping lead is STOP_GAP_LOW (4.5 m, = long_mpc get_stop_distance at <= 10 m/s), used by near_stop and
@@ -38,6 +40,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
 from openpilot.selfdrive.controls.lib import ars510_cutin
 from openpilot.selfdrive.controls.lib import ars510_lead_stop
+from openpilot.selfdrive.controls.lib import ars510_rain
 
 # 11/10: the lift-off caps of far_early / ci_confirm / hazard used to vanish in one step when their condition ended (plan
 # from e.g. -0.5 straight back to the MPC's value). The arbiter now lets the value rise from the last capped one at
@@ -140,7 +143,7 @@ FAR_EARLY_ALLOW_TTC_BP = [15., 40.]  # s, time to reach the lead
 FAR_EARLY_ALLOW_V = [0., 0.4]       # m/s^2 of acceleration still allowed
 
 
-def far_lead_accel_ceil(lead, t_follow):
+def far_lead_accel_ceil(lead, t_follow, vision_max_decel=FAR_EARLY_MAX_DECEL_VISION):
   """Highest acceleration allowed for a far, slower lead, and how much of it applies (0..1). None when not applicable."""
   if not lead.present:
     return None
@@ -156,7 +159,7 @@ def far_lead_accel_ceil(lead, t_follow):
     return None
   a_req = closing ** 2 / (2. * gap)
   ceil = min(lead.aLeadK, 0.) - FAR_EARLY_K * a_req + float(np.interp(ttc, FAR_EARLY_ALLOW_TTC_BP, FAR_EARLY_ALLOW_V))
-  return max(ceil, FAR_EARLY_MAX_DECEL if lead.radar else FAR_EARLY_MAX_DECEL_VISION), w
+  return max(ceil, FAR_EARLY_MAX_DECEL if lead.radar else vision_max_decel), w
 
 
 def fuse_far_object(lead, fo):
@@ -333,7 +336,7 @@ def read_accel_scale() -> float:
 
 class Ctx:
   """Per-cycle inputs shared by the rules."""
-  __slots__ = ("sm", "long", "v_ego", "v_cruise", "reset_state", "a_prev", "t_follow", "now", "fcw", "mpc", "dt")
+  __slots__ = ("sm", "long", "v_ego", "v_cruise", "reset_state", "a_prev", "t_follow", "now", "fcw", "mpc", "dt", "rain")
 
   def __init__(self, **kw):
     for k in self.__slots__:
@@ -375,7 +378,8 @@ class E2EFill(Rule):
     fill = None
     if c.long and not self.off and not c.reset_state and c.v_ego > E2E_FILL_MIN_V and \
        a_e2e > E2E_FILL_INDIFFERENT and not stop_e2e and c.v_cruise > c.v_ego:
-      fill = min(E2E_FILL_K * (c.v_cruise - c.v_ego), float(np.interp(c.v_ego, E2E_FILL_A_MAX_BP, E2E_FILL_A_MAX_V)))
+      fill = min(E2E_FILL_K * (c.v_cruise - c.v_ego),
+                 float(np.interp(c.v_ego, E2E_FILL_A_MAX_BP, E2E_FILL_A_MAX_V)) * (c.rain.accel_scale if c.rain is not None else 1.))
     target = max(a_e2e, fill) if fill is not None else a_e2e
     # ramp: the filled value approaches its target at E2E_FILL_JERK from where the e2e candidate was last cycle
     if fill is not None and target > self.filled:
@@ -451,7 +455,8 @@ class FarLeadEarly(Rule):
       lead_one = sm['radarState'].leadOne
       fo = self.far_object(sm, v_ego)
       fused = fuse_far_object(lead_one, fo)
-      res = far_lead_accel_ceil(fused, t_follow)
+      # rain mode: a camera-only lead may ease off harder (the radar sees less in rain, 11/09 18:12)
+      res = far_lead_accel_ceil(fused, t_follow, c.rain.vision_max_decel if c.rain is not None else FAR_EARLY_MAX_DECEL_VISION)
       if fo is not None and not getattr(fused, "fused", False):
         # radar-only coast: no lead, or a lead the radar object does not match (another car)
         res_obj = far_lead_accel_ceil(fo, t_follow)
@@ -801,7 +806,7 @@ class PosAccelCeiling(Rule):
   def apply(self, c, a):
     if c.long and not c.reset_state and self.scale > 0.:
       v_ego = c.v_ego
-      cap = float(np.interp(v_ego, A_POS_MAX_BP, A_POS_MAX_V)) * self.scale
+      cap = float(np.interp(v_ego, A_POS_MAX_BP, A_POS_MAX_V)) * self.scale * (c.rain.accel_scale if c.rain is not None else 1.)
       # first-order approach to the set speed: a <= (v_set - v) / tau, so the speed settles exponentially with no overshoot
       cap = min(cap, max(c.v_cruise - v_ego, 0.) / A_POS_TAU)
       lead = c.sm['radarState'].leadOne
@@ -823,6 +828,7 @@ class Rules:
     self.rules: list[Rule] = [FarLeadSoft(), FarLeadEarly(), NearStop(), LeadStop(dt), CutinConfirm(), CutinResponse(),
                               HazardCoast(), TurnHold(), PosAccelCeiling()]
     self.by_name = {r.name: r for r in [self.e2e_fill] + self.rules}
+    self.rain = ars510_rain.RainMode(dt)   # not a rule: scales t_follow / acceleration for the rules and the MPC
     self.cycle = 0
     self.decider = "none"
     self._pending, self._pending_n, self._logged = "none", 0, "none"
@@ -838,6 +844,7 @@ class Rules:
       self.cycle = 0
       for r in self.by_name.values():
         r.poll()
+      self.rain.poll()
 
   def apply(self, c: Ctx, a: float, base: str) -> float:
     decider = base

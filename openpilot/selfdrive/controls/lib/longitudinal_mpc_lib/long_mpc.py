@@ -317,8 +317,8 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, personality=log.LongitudinalPersonality.standard):
-    t_follow = get_T_FOLLOW(personality)
+  def update(self, radarstate, personality=log.LongitudinalPersonality.standard, t_follow_extra=0.):
+    t_follow = get_T_FOLLOW(personality) + t_follow_extra   # ars510: + rain mode (ars510_rain.py)
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)

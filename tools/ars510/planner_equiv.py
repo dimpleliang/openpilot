@@ -64,15 +64,29 @@ def dump(root, out, rlogs):
     print('CarParams from', os.environ['ARS510_CP_RLOG'], flush=True)
   CP = messaging.log_from_bytes(cp_b, car.CarParams)
   CP_SP = messaging.log_from_bytes(cpsp_b, custom.CarParamsSP)
-  rows, deciders = [], []
+  rows, deciders, rain_lv = [], [], []
+  # ARS510_WIPER=can: the wiper state for the rain mode from raw CAN 0x2F9 (logs from before carStateSP.wiperLevel);
+  # ARS510_WIPER=<n>: forced level. Unset: whatever carStateSP carries. The state carries over between segments.
+  wiper_mode = os.environ.get('ARS510_WIPER', '')
+  wiper = [int(wiper_mode) if wiper_mode.isdigit() else 0, False]
+  rain_keep = None
   for f in rlogs:
     pl = lp.LongitudinalPlanner(CP, CP_SP)
+    if wiper_mode and hasattr(pl, 'wiper_src'):
+      pl.wiper_src = lambda sm: (wiper[0], wiper[1])
+      if rain_keep is not None:
+        pl.ars510.rain = rain_keep   # the rain state is minutes long: keep it across the per-segment planner
+      rain_keep = pl.ars510.rain
     try:
       dat = zstandard.ZstdDecompressor().decompressobj().decompress(open(f, 'rb').read())
       evs = log.Event.read_multiple_bytes(dat, traversal_limit_in_words=2**61)
       sm = SM(); pend = set()
       for e in evs:
         w = e.which()
+        if w == 'can' and wiper_mode == 'can':
+          for c in e.can:
+            if c.address == 0x2F9 and c.src == 0:
+              wiper[0], wiper[1] = (c.dat[0] >> 5) & 3, bool(c.dat[0] & 0x10)
         if w not in services:
           continue
         sm.data[w] = getattr(e, w); sm.logMonoTime[w] = e.logMonoTime; pend.add(w)
@@ -86,10 +100,11 @@ def dump(root, out, rlogs):
         rows.append((e.logMonoTime / 1e9, float(pl.output_a_target), float(pl.output_should_stop), int(pl.mpc.source),
                      float(pl.v_desired_filter.x)))
         deciders.append(getattr(pl, 'decider', ''))
+        rain_lv.append(pl.ars510.rain.level if hasattr(getattr(pl, 'ars510', None), 'rain') else 0)
     except Exception as ex:
       print('segment error', f, repr(ex), flush=True)
     print(f, len(rows), flush=True)
-  np.savez_compressed(out, d=np.array(rows), dec=np.array(deciders))
+  np.savez_compressed(out, d=np.array(rows), dec=np.array(deciders), rain=np.array(rain_lv, dtype=np.int8))
 
 
 def cmp(a, b):
