@@ -14,6 +14,7 @@ from opendbc.can import CANPacker
 
 from opendbc.sunnypilot.car.toyota.enhanced_bsm import EnhancedBsmCarController
 from opendbc.sunnypilot.car.toyota.tbt_test import TbtTest
+from opendbc.sunnypilot.car.toyota.brake_probe import BrakeProbe
 from opendbc.sunnypilot.car.toyota.gas_interceptor import GasInterceptorCarController
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
 
@@ -93,6 +94,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     self.enhanced_bsm = EnhancedBsmCarController(CP, CP_SP)
     self.tbt_test = TbtTest()  # dimpleliang/ars510: cluster TBT bench test, off unless /data/ars510_tbt_test exists
+    self.brake_probe = BrakeProbe()  # dimpleliang/ars510: read-only UDS logging, off unless /data/ars510_brake_probe exists
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -389,6 +391,7 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     if self.CP.openpilotLongitudinalControl and not self.CP.flags & ToyotaFlags.SECOC.value:
       can_sends.extend(self.tbt_test.update(self.packer, CC, CS, self.frame))
+      can_sends.extend(self.brake_probe.update(self.frame))
 
     new_actuators = actuators.as_builder()
     new_actuators.torque = apply_torque / self.params.STEER_MAX

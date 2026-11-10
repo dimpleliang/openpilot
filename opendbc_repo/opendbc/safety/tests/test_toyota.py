@@ -19,7 +19,8 @@ TOYOTA_COMMON_LONG_TX_MSGS = [[0x283, 0], [0x2E6, 0], [0x2E7, 0], [0x33E, 0], [0
                               [0x128, 1], [0x141, 1], [0x160, 1], [0x161, 1], [0x470, 1],  # DSU bus 1
                               [0x411, 0],  # PCS_HUD
                               [0x750, 0],  # radar diagnostic address
-                              [0x3A5, 0]]  # dimpleliang/ars510: AVN1S13 turn-by-turn guidance (cluster TBT test)
+                              [0x3A5, 0],  # dimpleliang/ars510: AVN1S13 turn-by-turn guidance (cluster TBT test)
+                              [0x7B0, 0], [0x7D2, 0]]  # dimpleliang/ars510: brake probe (read-only UDS)
 GAS_INTERCEPTOR_TX_MSGS = [[0x200, 0]]
 
 UNSUPPORTED_DSU = [
@@ -141,6 +142,37 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     for msg in invalid_msgs:
       pkt = libsafety_py.make_CANPacket(0x750, 0, msg)
       self.assertFalse(self._tx(pkt), msg.hex())
+
+  def test_brake_probe(self):
+    # dimpleliang/ars510: read-only UDS to the brake ECU (0x7B0) and the hybrid / cruise ECU (0x7D2)
+    for addr in (0x7B0, 0x7D2):
+      addr_allowed = any(a == addr for a, _ in self.TX_MSGS)
+      valid_msgs = [
+        b"\x03\x22\x10\x22\x00\x00\x00\x00",  # read 0x1022
+        b"\x03\x22\x15\xed\x00\x00\x00\x00",  # read 0x15ED
+        b"\x03\x22\x10\x04\x00\x00\x00\x00",  # read 0x1004
+        b"\x30\x00\x00\x00\x00\x00\x00\x00",  # flow control
+      ]
+      for msg in valid_msgs:
+        self.assertEqual(addr_allowed, self._tx(libsafety_py.make_CANPacket(addr, 0, msg)), msg.hex())
+      if not addr_allowed:
+        continue
+      invalid_msgs = [
+        b"\x02\x10\x03\x00\x00\x00\x00\x00",  # session control
+        b"\x02\x3e\x00\x00\x00\x00\x00\x00",  # tester present
+        b"\x03\x22\x28\x04\x00\x00\x00\x00",  # other identifier range
+        b"\x03\x22\xf1\x90\x00\x00\x00\x00",  # VIN
+        b"\x04\x2e\x10\x22\x00\x00\x00\x00",  # write
+        b"\x06\x2f\x10\x22\x03\x01\x80\x00",  # IO control
+        b"\x04\x31\x01\x10\x22\x00\x00\x00",  # routine control
+        b"\x02\x11\x01\x00\x00\x00\x00\x00",  # ECU reset
+        b"\x03\x22\x10\x22\x01\x00\x00\x00",  # non-zero trailing bytes
+        b"\x05\x22\x10\x22\x10\x04\x00\x00",  # two identifiers in one request
+        b"\x30\x00\x0a\x00\x00\x00\x00\x00",  # flow control with a separation time
+        b"\x30\x01\x00\x00\x00\x00\x00\x00",  # flow control with a block size
+      ]
+      for msg in invalid_msgs:
+        self.assertFalse(self._tx(libsafety_py.make_CANPacket(addr, 0, msg)), msg.hex())
 
   def test_block_aeb(self, stock_longitudinal: bool = False):
     for controls_allowed in (True, False):

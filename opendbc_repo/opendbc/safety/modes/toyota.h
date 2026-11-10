@@ -30,6 +30,8 @@
   {0x750, 0, 8, .check_relay = false}, \
   /* dimpleliang/ars510: head unit turn-by-turn guidance (AVN1S13), cluster TBT test */ \
   {0x3A5, 0, 8, .check_relay = false}, \
+  /* dimpleliang/ars510: brake probe, read-only UDS to the brake ECU (0x7B0) and the hybrid / cruise ECU (0x7D2) */ \
+  {0x7B0, 0, 8, .check_relay = false}, {0x7D2, 0, 8, .check_relay = false}, \
   /* ACC */                            \
   {0x343, 0, 8, .check_relay = true},  \
 
@@ -417,6 +419,20 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
                             (uds_msg == 0x00800011282F0540ULL);    // 2F 2811 00 80 return control
 
     if (invalid_uds_msg && !sp_valid_uds_msg) {
+      tx = false;
+    }
+  }
+
+  // dimpleliang/ars510 brake probe (11/10): read-only diagnostics to the brake ECU and the hybrid / cruise ECU, default
+  // session. Only a single-frame ReadDataByIdentifier (0x22) of a 0x10xx / 0x15xx data identifier
+  // ("\x03\x22\x10\x22\x00\x00\x00\x00") and the ISO-TP flow control for a multi-frame answer
+  // ("\x30\x00\x00\x00\x00\x00\x00\x00"). No session change, no write, no IO control.
+  if ((msg->addr == 0x7B0U) || (msg->addr == 0x7D2U)) {
+    const uint64_t probe_msg = GET_BYTES_64_LE(msg, 0, 8);
+    const uint8_t did_hi = msg->data[2];
+    bool probe_read = ((probe_msg & 0xFFFFFFFF0000FFFFULL) == 0x0000000000002203ULL) && ((did_hi == 0x10U) || (did_hi == 0x15U));
+    bool probe_flow_control = probe_msg == 0x0000000000000030ULL;
+    if (!probe_read && !probe_flow_control) {
       tx = false;
     }
   }

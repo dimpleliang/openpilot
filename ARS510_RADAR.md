@@ -139,6 +139,20 @@ sunnypilot/panda 8a16e08、去掉 .git（版本字串才會是 `DEV-unknown-DEBU
 （本車 73 %）的值：panda 2000 ≈ 原始 2740、2500 ≈ 原始 3425，所以 panda 門檻一向比控制端寬，舊韌體不會擋 LTA，
 但會擋 eBSM 的 0x750 診斷訊息。
 
+## 煞車探針（brake probe，11/10）
+
+為了弄清楚「同樣的煞車要求，停住瞬間有時 0.14、有時 0.34 m/s²」以及駕駛自己煞停時的油壓長什麼樣，行駛中以 UDS
+ReadDataByIdentifier（0x22，預設工作階段，只讀）向煞車 ECU（0x7B0→0x7B8）與油電 / 巡航 ECU（0x7D2→0x7DA）各以 10 Hz
+讀取：四輪目標油壓 0x1022、主缸壓力 0x1004、踏板行程 0x104C、前後 G 0x1008、回生 0x1055；巡航目標加速度 / 要求驅動力
+0x15ED、車輛加速度 / 路面坡度 / 輸出驅動力 0x15EC、目標馬達扭力 0x10A1、主缸控制扭力 0x1067、狀態位元 0x15FE。
+識別碼與換算取自 4piu/toyota-telemetry-XA50 `signals.csv`，11/10 在本車 P 檔實測全部有回應（5–15 ms）。回應是一般 CAN 訊框，
+直接進 rlog；不參與任何控制。
+- 開關：`touch /data/ars510_brake_probe`（每秒檢查，不需重開）；沒有此檔就完全不送。
+- panda `toyota.h`：0x7B0、0x7D2 加入縱向 TX 白名單，只放行 `03 22 10|15 xx 00 00 00 00` 與流量控制 `30 00 …`，其餘（工作階段、
+  寫入、IO 控制、例行程序、重置）一律擋下；`test_toyota.py::test_brake_probe`。韌體已依上節步驟重建（先以未修改規則重建，
+  與版控中的檔案位元相同，再建新版）。
+- 程式：`opendbc/sunnypilot/car/toyota/brake_probe.py`、`carcontroller.py`；解碼：`tools/ars510/mac/analysis/brake_probe.py`。
+
 ## 儀表 TBT（轉向導航）測試
 
 12.3 吋儀表有「設定 → 計量設定 → 彈出顯示 → TbT 導航」，但台灣 Garmin 主機（原廠導航與 iOS 27 CarPlay）都不會讓儀表跳出箭頭。
