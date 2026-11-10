@@ -218,11 +218,23 @@ class Plant:
       a_cmd = min(a_cmd, -2.0)
     if gas:
       a_cmd = max(a_cmd, 1.0)
-    band = self.v < 0.6 and p["band"] < a_cmd < 0.0
-    a_brake = 0.0 if band else a_cmd
-    creep = p["creep"] * max(0.0, 1.0 - self.v / 2.0) if a_cmd > -0.6 else 0.0
-    drive = a_brake + creep + p["grade"]
-    self.a_true = drive if (self.v > 0.0 or drive > 0.0) else 0.0   # at standstill: held unless the push wins
+    if p.get("track"):
+      # 11/10 measured plant (0x0A6 BRAKE_FORCE, 24k engaged frames below 3 m/s + IMU at the stop): the PCM does brake
+      # for light requests; friction decel = |request| + its own creep compensation (about 0.25 at rest, 0 from 2.2 m/s),
+      # the real creep is about 0.28 at rest (so a -0.35 request gives -0.32 at the stop, IMU: -0.30..-0.34). At
+      # standstill the car is held while the friction covers creep + grade, else it rolls with the difference.
+      fr = (-a_cmd + p.get("comp", 0.25) * max(0.0, 1.0 - self.v / 2.2)) if a_cmd < -0.02 else 0.0
+      push = p["creep"] * max(0.0, 1.0 - self.v / 2.0) + p["grade"] + max(a_cmd, 0.0)
+      if self.v > 0.0:
+        self.a_true = push - fr
+      else:
+        self.a_true = max(push - fr, 0.0)
+    else:
+      band = self.v < 0.6 and p["band"] < a_cmd < 0.0
+      a_brake = 0.0 if band else a_cmd
+      creep = p["creep"] * max(0.0, 1.0 - self.v / 2.0) if a_cmd > -0.6 else 0.0
+      drive = a_brake + creep + p["grade"]
+      self.a_true = drive if (self.v > 0.0 or drive > 0.0) else 0.0   # at standstill: held unless the push wins
     self.v = max(0.0, self.v + self.a_true * DT)
     self.x += self.v * DT
     vraw = self.v + self.rng.normal(0, p["wnoise"]) if self.v >= p["drop_v"] else 0.0

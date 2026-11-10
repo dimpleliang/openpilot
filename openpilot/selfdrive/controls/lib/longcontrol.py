@@ -60,6 +60,22 @@ BRAKE_HOLD_ACCEL = -0.5        # m/s^2. 10/28 16:51 the driver's own stop: -0.9 
 # the hold now asks BRAKE_HOLD_MARGIN more than the plan, between BRAKE_HOLD_MIN (-0.35, = PRE_RELEASE_ACCEL, which held
 # the brake through every stop since 11/08) and BRAKE_HOLD_ACCEL. A firmer plan still gets up to -0.50.
 BRAKE_HOLD_MIN = -0.35         # m/s^2
+# 11/10 (driver: the stop still ends with a small jolt). 15 stops of 11/09: over the last second the plan asked only
+# -0.10..-0.22, the request sent was -0.35..-0.52 (this floor + margin + PID) and the IMU showed -0.34 at the stop: the
+# floor, not the plan, sets the jolt. Whether the PCM keeps the brake on for a lighter request at crawl is not settled
+# (0x0A6 BRAKE_FORCE says it does at 0.6-1.5 m/s; below 0.6 m/s there are too few frames), and -0.05 rolled on 11/07.
+# So the floor is tried on the car without a new build: a number in STOP_FLOOR_FILE (m/s^2, clipped to STOP_FLOOR_RANGE)
+# replaces BRAKE_HOLD_MIN and PRE_RELEASE_ACCEL; no file = the constants. Read once a second.
+STOP_FLOOR_FILE = "/data/ars510_stop_floor"
+STOP_FLOOR_RANGE = (-0.40, -0.15)
+
+
+def read_stop_floor():
+  try:
+    with open(STOP_FLOOR_FILE) as f:
+      return float(np.clip(float(f.read().strip()), *STOP_FLOOR_RANGE))
+  except Exception:
+    return None
 BRAKE_HOLD_MARGIN = 0.1        # m/s^2
 BRAKE_HOLD_ONSET_RATE = 0.5    # m/s^3: the hold builds up gradually from the current request (driver: "progressively
                                # heavier", 11/09) instead of stepping to the floor; -0.22 -> -0.35 in 0.26 s, -> -0.50 in 0.56 s
@@ -257,6 +273,8 @@ class LongControl:
     self.brake_hold = False
     self.hold_floor = None       # ramped brake-hold floor (BRAKE_HOLD_ONSET_RATE), None outside a hold
     self.pre_release_enabled = not os.path.exists(PRE_RELEASE_OFF_FILE)
+    self.stop_floor = read_stop_floor()   # None = BRAKE_HOLD_MIN / PRE_RELEASE_ACCEL (see STOP_FLOOR_FILE)
+    self.stop_floor_poll = 0
     # BEHAVIOUR KEPT (G1): these three are only set when a pre-release triggers and are never reset between stops;
     # pre_release_start is read by the release-failed recovery (also after an urgent plan cancelled a stop that never
     # released, i.e. with the value of an earlier stop)
@@ -484,7 +502,8 @@ class LongControl:
   def _release(self, output_accel):
     # linear release from the request at the trigger to PRE_RELEASE_ACCEL over PRE_RELEASE_LEAD
     frac = min(1.0, (self.pre_release_frames + 1) * DT_CTRL / PRE_RELEASE_LEAD)
-    return max(output_accel, self.pre_release_start + (PRE_RELEASE_ACCEL - self.pre_release_start) * frac)
+    end = PRE_RELEASE_ACCEL if self.stop_floor is None else self.stop_floor
+    return max(output_accel, self.pre_release_start + (end - self.pre_release_start) * frac)
 
   def _rebrake_after_release(self, output_accel):
     # released too early: back to the request that was braking, at the gentle add rate (not in one frame: the review
@@ -566,7 +585,8 @@ class LongControl:
     if CS.vEgo < BRAKE_HOLD_V and a_target < BRAKE_HOLD_A_TARGET:
       self.brake_hold = True
     if self.brake_hold:
-      target = float(np.clip(a_target - BRAKE_HOLD_MARGIN, BRAKE_HOLD_ACCEL, BRAKE_HOLD_MIN))
+      target = float(np.clip(a_target - BRAKE_HOLD_MARGIN, BRAKE_HOLD_ACCEL,
+                             BRAKE_HOLD_MIN if self.stop_floor is None else self.stop_floor))
       if self.hold_floor is None:
         self.hold_floor = min(float(output_accel), 0.)
       self.hold_floor = target if target > self.hold_floor else max(target, self.hold_floor - BRAKE_HOLD_ONSET_RATE * DT_CTRL)
@@ -581,6 +601,13 @@ class LongControl:
     """Update longitudinal control. This updates the state machine and runs a PID loop.
     pose_accel: calibrated longitudinal acceleration from locationd (m/s^2), None if not valid."""
     self.pid.neg_limit = accel_limits[0]
+    self.stop_floor_poll += 1
+    if self.stop_floor_poll >= int(1. / DT_CTRL):
+      self.stop_floor_poll = 0
+      floor = read_stop_floor()
+      if floor != self.stop_floor:
+        cloudlog.info(f"ARS510 stop floor {self.stop_floor} -> {floor}")
+        self.stop_floor = floor
     self.pid.pos_limit = accel_limits[1]
     self.est.update(CS.vEgoRaw, CS.aEgo, pose_accel)
 

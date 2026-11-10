@@ -48,14 +48,18 @@ def run(mod, over, rng):
     a_f[i] = a_f[i - 1] + (h[i, 2] - a_f[i - 1]) * E.DT / 0.08
   steps = np.abs(np.diff(a_f[(h[:, 0] > t_stop - 2.0) & (h[:, 0] <= t_stop)]) / E.DT) if last.any() else np.array([0.])
   creep = float(h[-1, 3] - h[i_stop, 3])
+  # a_stop: felt decel at the instant the wheels stop (the jolt: it drops to 0 right after), like stop_report's a_stop
   return dict(peak=float(a_f[last].min()) if last.any() else 0., jerk=float(steps.max()) if len(steps) else 0.,
-              x=float(h[i_stop, 3] - p["stop_x"]), creep=creep)
+              x=float(h[i_stop, 3] - p["stop_x"]), creep=creep, a_stop=float(a_f[max(i_stop - 1, 0)]),
+              rolled=float(creep > 0.02))
 
 
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument("--old"); ap.add_argument("--old-rev", default="HEAD"); ap.add_argument("--new")
   ap.add_argument("--n-rand", type=int, default=20); ap.add_argument("--seed", type=int, default=1)
+  ap.add_argument("--plant", default="band", help="band = the 10/28 crawl plant; track = the 11/10 measured plant "
+                  "(the PCM brakes for light requests, see longcontrol_equiv.Plant) with creep 0.28 / comp 0.25 +- spread")
   a = ap.parse_args()
   E.setup_deps(True)
   old_src = open(a.old).read() if a.old else subprocess.check_output(["git", "-C", E.REPO, "show", f"{a.old_rev}:{E.LC_PATH}"], text=True)
@@ -64,9 +68,15 @@ def main():
   print(f"{'scenario':24s} {'peak decel last 1 s':>22s} {'max jerk (felt)':>18s} {'stop pos vs plan':>18s} {'creep after':>13s}")
   allr = {"old": [], "new": []}
   for si, name in enumerate(STOP_SCENARIOS):
-    over = E.SCENARIOS[name]
+    over = dict(E.SCENARIOS[name])
+    if a.plant == "track":
+      # creep in the scenarios was tuned for the band plant (0.3 base, 0.6 strong): rescale to the measured 0.28 at rest
+      over = dict(over, track=True, creep=over.get("creep", 0.3) * 0.28 / 0.3)
     prng = np.random.default_rng(a.seed * 1000 + si + 500)
     runs = [over] + [E.perturb(over, prng) for _ in range(a.n_rand)]
+    if a.plant == "track":
+      for r in runs[1:]:
+        r["comp"] = float(np.clip(prng.normal(0.25, 0.05), 0.12, 0.38))   # PCM creep compensation spread
     res = {"old": [], "new": []}
     for r, o in enumerate(runs):
       for k, m in (("old", old), ("new", new)):
@@ -77,6 +87,9 @@ def main():
     print(f"{name:24s} {f('old','peak'):+6.2f} -> {f('new','peak'):+6.2f}       {f('old','jerk'):5.2f} -> {f('new','jerk'):5.2f}"
           f"      {f('old','x'):+5.2f} -> {f('new','x'):+5.2f} m   {f('old','creep'):4.2f} -> {f('new','creep'):4.2f}")
   g = lambda k, q, fn: fn([x[q] for x in allr[k]])
+  print(f"a_stop (jolt) median {g('old','a_stop',np.median):+.2f} -> {g('new','a_stop',np.median):+.2f}, strongest "
+        f"{g('old','a_stop',np.min):+.2f} -> {g('new','a_stop',np.min):+.2f}; runs that rolled > 2 cm after the stop: "
+        f"{int(g('old','rolled',np.sum))} -> {int(g('new','rolled',np.sum))}")
   print(f"\nALL ({len(allr['new'])} runs) median peak {g('old','peak',np.median):+.2f} -> {g('new','peak',np.median):+.2f}, "
         f"worst {g('old','peak',np.min):+.2f} -> {g('new','peak',np.min):+.2f}; median felt jerk {g('old','jerk',np.median):.2f} -> "
         f"{g('new','jerk',np.median):.2f}; stop pos median {g('old','x',np.median):+.2f} -> {g('new','x',np.median):+.2f} m, "
