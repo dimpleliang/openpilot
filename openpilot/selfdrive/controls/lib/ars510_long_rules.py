@@ -20,7 +20,8 @@ the value is the "decider" (LongitudinalPlanner.decider, cloudlog "ARS510 decide
 Invariants (checked by the arbiter):
   * only far_soft may make braking lighter; it runs before the floors and caps, so a floor / cap always wins over it.
   * every other rule only lowers the acceleration (min); two rules never add up, the firmest one decides.
-  * each rule ramps its own onset / release (its *_JERK constants).
+  * each rule ramps its own onset (its *_JERK constants); the release of the lift-off caps is ramped by the arbiter
+    (RELEASE_RULES, RELEASE_JERK).
 Off files are polled once a second (every POLL_CYCLES).
 
 Shared distances: STOP_DISTANCE (6 m, long_mpc) is the MPC's following stop distance; the low-speed stop gap behind a
@@ -38,6 +39,11 @@ from openpilot.selfdrive.controls.lib.ars510_ego_lc import EgoLaneChange
 from openpilot.selfdrive.controls.lib import ars510_cutin
 from openpilot.selfdrive.controls.lib import ars510_lead_stop
 
+# 11/10: the lift-off caps of far_early / ci_confirm / hazard used to vanish in one step when their condition ended (plan
+# from e.g. -0.5 straight back to the MPC's value). The arbiter now lets the value rise from the last capped one at
+# RELEASE_JERK until it meets the plan again (cutin_resp already did this itself). Only ever slows a rise.
+RELEASE_RULES = ("far_early", "ci_confirm", "hazard")
+RELEASE_JERK = 1.0        # m/s^3
 POLL_CYCLES = 20          # off / on files and the accel scale are re-read once a second
 DECIDER_HOLD = 10         # cycles a new decider must hold before it is logged
 STOP_GAP_LOW = 4.5        # m, see above
@@ -447,6 +453,8 @@ class FarLeadEarly(Rule):
         if a > self.cap:
           a = self.cap
           early = ceil
+    else:
+      self.far_obj, self.far_obj_age = None, 0   # 11/10: nothing kept across a pause (it was not aged while paused)
     if early is None:
       self.cap = None
     state = None if early is None else (getattr(fo, "src", "radar-only") if radar_only else "lead")
@@ -472,9 +480,12 @@ class FarLeadEarly(Rule):
         p = cands[0]
         pos = sm['modelV2'].position
         path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 and p.dRel <= pos.x[-1] else 0.
-        if abs(p.yRel - path_y) < float(np.interp(p.dRel, FAR_OBJ_PATH_Y_BP, FAR_OBJ_PATH_Y_V)):
+        # 11/10: radar yRel is left-positive, model y right-positive (as in radard / ci_confirm / hazard); this used
+        # yRel - path_y, which in a curve dropped in-path cars and could accept the adjacent lane's
+        path_off = -float(p.yRel) - path_y
+        if abs(path_off) < float(np.interp(p.dRel, FAR_OBJ_PATH_Y_BP, FAR_OBJ_PATH_Y_V)):
           self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
-                                               vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y),
+                                               vLead=float(v_ego + p.vRel), aLeadK=0., path_off=path_off,
                                                src="obj" if p.trackId == FAR_OBJ_TRACK_ID else "acc")
           self.far_obj_age = 0
     if self.far_obj is not None:
@@ -492,13 +503,13 @@ class FarLeadEarly(Rule):
         p = pts[0]
         pos = sm['modelV2'].position
         path_y = float(np.interp(p.dRel, pos.x, pos.y)) if len(pos.x) > 1 and p.dRel <= pos.x[-1] else 0.
-        off = abs(p.yRel - path_y)
+        off = abs(-float(p.yRel) - path_y)   # 11/10: sign as in far_object
         closer_than_lead = not lead.present or p.dRel < lead.dRel - 6.  # a car beyond the lead cannot cut in front of us
         if CUTIN_PATH_Y_M[0] < off < CUTIN_PATH_Y_M[1] and closer_than_lead:
           ok = True
           self.cutin_cnt += 1
           self.cutin = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
-                                             vLead=float(v_ego + p.vRel), aLeadK=0., path_off=float(p.yRel - path_y), src="cut-in")
+                                             vLead=float(v_ego + p.vRel), aLeadK=0., path_off=-float(p.yRel) - path_y, src="cut-in")
     if not ok:
       self.cutin_cnt = max(self.cutin_cnt - 2, 0)  # a missed cycle or two does not reset the hold
       if self.cutin_cnt == 0:
@@ -786,6 +797,7 @@ class Rules:
     self.cycle = 0
     self.decider = "none"
     self._pending, self._pending_n, self._logged = "none", 0, "none"
+    self._rel: dict[str, float] = {}   # rule name -> value its cap is being released from
 
   def __getitem__(self, name):
     return self.by_name[name]
@@ -804,6 +816,15 @@ class Rules:
       a2 = r.apply(c, a)
       if not r.softens and a2 > a:   # invariant: only far_soft may lighten braking
         a2 = a
+      if r.name in RELEASE_RULES:
+        if a2 < a:
+          self._rel[r.name] = a2
+        elif r.name in self._rel:
+          rel = self._rel[r.name] + RELEASE_JERK * c.dt
+          if rel >= a or c.reset_state:
+            del self._rel[r.name]
+          else:
+            self._rel[r.name] = a2 = rel
       if a2 != a:
         decider = r.name
       a = a2
