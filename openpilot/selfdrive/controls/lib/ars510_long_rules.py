@@ -48,17 +48,26 @@ POLL_CYCLES = 20          # off / on files and the accel scale are re-read once 
 DECIDER_HOLD = 10         # cycles a new decider must hold before it is logged
 STOP_GAP_LOW = 4.5        # m, see above
 
-# ars510: no acceleration while a turn signal is on at low speed (turning / preparing to turn).
-# 10/27: raised from 30 km/h; at 21:41 the car was at 31-32 km/h in a left turn when the lead left the view and it
-# accelerated toward the set speed.
-BLINKER_NO_ACCEL_V = 50. * CV.KPH_TO_MS
-# ars510: no acceleration while the wheel is turned far (turning at a junction), with or without a signal, so losing
-# the lead mid-turn does not make the car speed up. Enters above TURN_NO_ACCEL_ANGLE, leaves below TURN_NO_ACCEL_EXIT_ANGLE.
-# Not below TURN_NO_ACCEL_MIN_V, so the car still pulls away from a stop with the wheel turned.
-TURN_NO_ACCEL_ANGLE = 45.        # deg, steering wheel
-TURN_NO_ACCEL_EXIT_ANGLE = 30.   # deg
-TURN_NO_ACCEL_MIN_V = 3.         # m/s
 
+# --- 0 e2e_fill ---------------------------------------------------------------------------------------------
+# see the E2EFill docstring
+E2E_FILL_MIN_V = 40. / 3.6          # m/s
+E2E_FILL_INDIFFERENT = -0.15        # m/s^2: the model asking for less than this wants to slow -> untouched
+E2E_FILL_K = 0.07                   # m/s^2 per m/s of speed deficit (12 km/h short -> 0.23)
+E2E_FILL_A_MAX_BP = [15., 25., 35.]  # m/s
+E2E_FILL_A_MAX_V = [0.3, 0.22, 0.18]  # m/s^2, unhurried (10/30 evening: 0.4/0.3/0.25 still felt too strong)
+E2E_FILL_JERK = 0.2                 # m/s^3
+# 11/10: the fill used to be dropped in one step when the model turned to slowing (below E2E_FILL_INDIFFERENT) or the set
+# speed changed: 85 releases in 177 min, 11 with a plan step > 0.2 m/s^2, largest -0.41 (tools/ars510/mac/analysis/
+# rule_toggles.py). It now ramps down at E2E_FILL_RELEASE_JERK. No ramp when the model asks for E2E_FILL_RELEASE_FLOOR or
+# harder, or plans a stop: real braking is never delayed (the MPC lead candidate is in the min regardless).
+E2E_FILL_RELEASE_JERK = 1.0         # m/s^3
+E2E_FILL_RELEASE_FLOOR = -0.5       # m/s^2
+E2E_FILL_LOG_HOLD = 20              # planner cycles (1 s) the fill must stay off before "off" is logged
+E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
+
+
+# --- 1 far_soft ---------------------------------------------------------------------------------------------
 # ars510: gentler braking for a far, newly-seen slower lead. 10/30 13:27: radar first saw a car 118 m ahead closing at
 # 12 m/s (118 km/h vs 75 km/h); the MPC went to -1.9 m/s^2 within 2 s although about -0.9 m/s^2 would close the gap.
 # While the radar lead is far and time to reach it is long, braking is limited to FAR_LEAD_K times the constant
@@ -94,6 +103,7 @@ def far_lead_accel_floor(lead, t_follow):
   return floor, w
 
 
+# --- 2 far_early (+ the radar-only far object and the logging-only cut-in coast candidate) ------------------
 # ars510: ease off early like an experienced driver (10/30 15:04: the camera saw a car 120 m ahead closing at 7 m/s,
 # the MPC kept 107 km/h for 2 s more and then braked -0.5 m/s^2 for 12 s; about -0.35 from the first sight was enough).
 # While a slower lead is far, acceleration is capped at FAR_EARLY_K x the constant deceleration that removes the closing
@@ -118,136 +128,6 @@ FAR_ACC_TRACK_ID_MAX = 64
 FAR_ACC_MIN_D = 80.                 # m
 FAR_RADAR_ONLY_MIN_V = 70. / 3.6    # m/s, both radar-only sources
 FAR_RADAR_ONLY_MAX_CLOSING = 12.    # m/s
-# cut-in coast (10/30): a radar object-list car (radarTracks CUTIN_TRACK_ID, see ars510_radar_interface.py) 25-90 m ahead,
-# CUTIN_PATH_Y_M off the model's path (partly in the lane, not centred: that is the lead), slower by 2 m/s+, held CUTIN_HOLD
-# cycles, above CUTIN_MIN_V: lift off to at most CUTIN_MAX_DECEL. 35 highway minutes: 12 of 16 such cars did cut in, 0-8 s
-# later (median ~3 s); the 4 others cost a few seconds of coasting. The radar's own lane-crossing flag never fired.
-E2E_FILL_MIN_V = 40. / 3.6          # m/s
-E2E_FILL_INDIFFERENT = -0.15        # m/s^2: the model asking for less than this wants to slow -> untouched
-E2E_FILL_K = 0.07                   # m/s^2 per m/s of speed deficit (12 km/h short -> 0.23)
-E2E_FILL_A_MAX_BP = [15., 25., 35.]  # m/s
-E2E_FILL_A_MAX_V = [0.3, 0.22, 0.18]  # m/s^2, unhurried (10/30 evening: 0.4/0.3/0.25 still felt too strong)
-E2E_FILL_JERK = 0.2                 # m/s^3
-# 11/10: the fill used to be dropped in one step when the model turned to slowing (below E2E_FILL_INDIFFERENT) or the set
-# speed changed: 85 releases in 177 min, 11 with a plan step > 0.2 m/s^2, largest -0.41 (tools/ars510/mac/analysis/
-# rule_toggles.py). It now ramps down at E2E_FILL_RELEASE_JERK. No ramp when the model asks for E2E_FILL_RELEASE_FLOOR or
-# harder, or plans a stop: real braking is never delayed (the MPC lead candidate is in the min regardless).
-E2E_FILL_RELEASE_JERK = 1.0         # m/s^3
-E2E_FILL_RELEASE_FLOOR = -0.5       # m/s^2
-E2E_FILL_LOG_HOLD = 20              # planner cycles (1 s) the fill must stay off before "off" is logged
-E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
-# positive acceleration ceiling (see the block before the final clip)
-# ars510: near-stop floor (10/31 11:51, red light behind a stopping car from 51 km/h: the MPC / model eased the request
-# from -1.3 to -1.0 at 7 m and the PCM delivered less, the car stopped 2.3 m behind the lead and then crept to 1.8 m at a
-# -0.5 hold; the low-speed stop distance is 4.5 m). While a radar lead within NEAR_STOP_D_MAX is stopped or nearly so,
-# braking is floored at NEAR_STOP_K x the constant deceleration that stops the car NEAR_STOP_GAP behind it (never more
-# than NEAR_STOP_MAX_DECEL). Closer than NEAR_STOP_TOO_CLOSE a firm NEAR_STOP_HOLD_ACCEL is requested even when the wheel
-# speed reads 0 (Toyota wheel speed reads 0 while still creeping), which longcontrol follows as an urgent plan.
-# Off: /data/ars510_no_near_stop.
-NEAR_STOP_D_MAX = 20.          # m
-NEAR_STOP_GAP = STOP_GAP_LOW   # m, = ars510_lead_stop.GAP
-NEAR_STOP_VLEAD_MAX = 1.0      # m/s, lead (nearly) stopped
-NEAR_STOP_MIN_V = 0.3          # m/s
-NEAR_STOP_K = 1.15             # margin for actuator lag / PCM under-delivery
-NEAR_STOP_MAX_DECEL = -2.0     # m/s^2
-NEAR_STOP_TOO_CLOSE = 3.5      # m
-NEAR_STOP_HOLD_ACCEL = -1.5    # m/s^2
-NEAR_STOP_HOLD_VLEAD = 0.3     # m/s, the hold only behind a lead that has really stopped (not a crawling jam)
-NEAR_STOP_OFF_FILE = "/data/ars510_no_near_stop"
-
-
-def near_stop_accel_floor(lead, v_ego):
-  """Braking floor for a (nearly) stopped radar lead close ahead, or None."""
-  if not (lead.present and lead.radar) or lead.dRel > NEAR_STOP_D_MAX or lead.vLead > NEAR_STOP_VLEAD_MAX:
-    return None
-  if lead.dRel < NEAR_STOP_TOO_CLOSE and lead.vLead < NEAR_STOP_HOLD_VLEAD:
-    return NEAR_STOP_HOLD_ACCEL
-  if v_ego < NEAR_STOP_MIN_V:
-    return None
-  room = max(lead.dRel - NEAR_STOP_GAP, 0.5)
-  return max(-NEAR_STOP_K * v_ego ** 2 / (2. * room), NEAR_STOP_MAX_DECEL)
-
-
-# ars510: confirmed cut-in lift-off (10/31 driver: when a car has really cut in and is slower, ease off like a driver would).
-# A radar track that was CONFIRM_FROM m or more off the model path within CONFIRM_WIN s and is now within CONFIRM_OFF of it,
-# CONFIRM_D ahead and slower by CONFIRM_VREL (curves included since 10/31): acceleration is capped for CONFIRM_HOLD_S at a gentle lift-off,
-# CONFIRM_K x closing speed down to CONFIRM_MAX_DECEL, reached at CONFIRM_JERK. Never brakes harder; the MPC does that.
-# Same rule as the UI's flashing circle (ars510_tracks.py). Replay 241 km: 66 confirmations, 91 % really in my lane within
-# 4 s, 2.5 false per 100 km. Off: /data/ars510_no_cutin_coast.
-CONFIRM_OFF = 1.3
-CONFIRM_D = (10., 60.)
-CONFIRM_VREL = -0.5
-CONFIRM_FROM = 1.8
-CONFIRM_WIN = 3.0
-CONFIRM_HOLD_S = 3.0
-CONFIRM_K = 0.06                 # (m/s^2) per (m/s) of closing speed
-CONFIRM_MAX_DECEL = -0.3         # m/s^2
-CONFIRM_JERK = 0.5               # m/s^3
-CONFIRM_MIN_V = 20. / 3.6
-CONFIRM_SPECIAL_ID = 1 << 26     # HAZARD / CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
-CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
-# ars510 cut-in response (11/04 driver: "keep my distance from a merging car and get off the throttle sooner; by my speed,
-# the distance and its speed, sometimes only a lift-off, sometimes light braking"). The UI's amber-circle rule
-# (controls/lib/ars510_cutin.py, the same code) picks the object; ars510_cutin.CutinResponse turns it into the deceleration
-# needed to settle at my following distance behind it (closing^2 / 2 x room, less its own relative acceleration): at most a
-# lift-off (-0.3) for a prediction, light braking (-1.0) once it is on / past its lane line, moving in fast, or confirmed.
-# Harder braking stays with the MPC once the car is the lead. A line-hugging car counts (driver: a hazard too).
-# Onset at CR_JERK_DOWN, release at CR_JERK_UP; nothing while the driver presses the gas.
-# Until validated on replay and enabled by the driver: on only while /data/ars510_cutin_predict exists.
-CR_ON_FILE = "/data/ars510_cutin_predict"
-CR_JERK_DOWN = 0.8               # m/s^3
-CR_JERK_UP = 1.0                 # m/s^3
-CR_STALE_FRAMES = 10             # planner cycles without a radar display record: drop the objects
-# ars510: hazard coast (11/01, driver: "at least lift off"). The radar interface's hazard candidate (radarTracks
-# HAZARD_TRACK_ID, see ars510_radar_interface.py HAZARD_*: a tracked car closing fast on a short time-to-collision that
-# the camera has not made the lead) within HAZARD_PATH_M of the model path, or within HAZARD_CROSS_M and moving toward
-# my path faster than HAZARD_CROSS_VY (that check lives in the interface: RadarPoint carries no lateral speed here), for HAZARD_HOLD cycles -> acceleration capped at HAZARD_ACCEL (lift-off, no
-# braking: the MPC brakes once radard takes the car), reached at HAZARD_JERK, kept HAZARD_KEEP_S after the candidate
-# drops. Off: /data/ars510_no_hazard_coast. cloudlog "ARS510 hazard coast on/off".
-HAZARD_TRACK_ID = 1 << 26
-HAZARD_CROSS_M = 3.5
-HAZARD_HOLD = 10                 # planner cycles (0.5 s)
-HAZARD_FAST_TTC_S = 2.0          # closer than this (time-to-collision) the hold is skipped
-HAZARD_ACCEL = -0.5
-HAZARD_JERK = 1.0
-HAZARD_KEEP_S = 1.0
-HAZARD_OFF_FILE = "/data/ars510_no_hazard_coast"
-# 11/01: no confirmation while I change lanes myself (ars510_ego_lc.py): the cars of the lane I move into are not cutting in
-
-
-A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
-A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
-A_POS_JERK_BP = [10., 25.]                  # m/s
-A_POS_JERK_V = [0.5, 0.15]                  # m/s^3, how fast the ceiling lets acceleration build (10/30: 0.25 -> 0.15, PCM still overshot 0.26 -> 0.80 for a second)
-ACCEL_SCALE_FILE = "/data/ars510_accel_scale"  # 0.3-1.0 multiplier, 0 disables the ceiling; default 1.0
-A_POS_TAU = 10.                            # s, time constant of the approach to the set speed (deficit shrinks to 37 % per tau)
-# ars510 (10/31 driver: "like a magnet" -- with a lead pulling away the MPC accelerated to win the gap back, caught up
-# in no time and then had to brake). With a lead ahead, positive acceleration is also capped by a speed-matching law,
-# like the set-speed approach above: a <= (vLead - v) / LEAD_TAU(v) + LEAD_A_GAIN x max(aLead, 0) + a slow gap term, so
-# the car only matches the lead's speed and lets a widening gap close slowly instead of chasing it. Braking is untouched.
-LEAD_TAU_BP = [0., 8., 20.]                # m/s
-LEAD_TAU_V = [3., 6., 10.]                 # s: quicker at a light (lead pulling away from a stop), unhurried at speed
-LEAD_A_GAIN = 0.5                          # share of the lead's own acceleration that is followed
-LEAD_GAP_K = 0.003                         # m/s^2 per m of gap beyond the desired one ...
-LEAD_GAP_MAX = 0.1                         # m/s^2 ... at most (a 100 m gap at equal speed closes in about a minute)
-LEAD_MAX_D = 150.                          # m
-
-
-def read_accel_scale() -> float:
-  try:
-    with open(ACCEL_SCALE_FILE) as f:
-      v = float(f.read().strip())
-    return 0. if v <= 0. else float(np.clip(v, 0.3, 1.0))
-  except Exception:
-    return 1.0
-CUTIN_TRACK_ID = 1 << 27
-CUTIN_PATH_Y_M = (1.0, 2.6)
-CUTIN_HOLD = 20                     # planner cycles (1 s)
-CUTIN_MIN_V = 60. / 3.6
-CUTIN_MAX_DECEL = -0.3
-# 10/30 19:23-20:16 (54 min): 13 cut-in coasts, 1 real cut-in; the rest were adjacent-lane cars hugging the line (up to
-# 6 s / -8 km/h). Logging only until a discriminator (lateral motion, duration) is found in the reports' clips.
-CUTIN_COAST_ENABLED = False
 # 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
 # too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
 # radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
@@ -279,6 +159,28 @@ def far_lead_accel_ceil(lead, t_follow):
   return max(ceil, FAR_EARLY_MAX_DECEL if lead.radar else FAR_EARLY_MAX_DECEL_VISION), w
 
 
+def fuse_far_object(lead, fo):
+  """A camera-only lead with a radar far object at about its range (FAR_FUSE_D_M or 15 % of range, the camera's
+  distance error grows with range): the lead with the radar's closing speed if faster, and treated as radar-confirmed."""
+  if fo is None or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > max(FAR_FUSE_D_M, 0.15 * lead.dRel) or fo.vRel >= lead.vRel:
+    return lead
+  return types.SimpleNamespace(present=True, radar=True, dRel=lead.dRel, vRel=fo.vRel, vLead=fo.vLead, aLeadK=min(lead.aLeadK, 0.), fused=True)
+
+
+# cut-in coast (10/30): a radar object-list car (radarTracks CUTIN_TRACK_ID, see ars510_radar_interface.py) 25-90 m ahead,
+# CUTIN_PATH_Y_M off the model's path (partly in the lane, not centred: that is the lead), slower by 2 m/s+, held CUTIN_HOLD
+# cycles, above CUTIN_MIN_V: lift off to at most CUTIN_MAX_DECEL. 35 highway minutes: 12 of 16 such cars did cut in, 0-8 s
+# later (median ~3 s); the 4 others cost a few seconds of coasting. The radar's own lane-crossing flag never fired.
+CUTIN_TRACK_ID = 1 << 27
+CUTIN_PATH_Y_M = (1.0, 2.6)
+CUTIN_HOLD = 20                     # planner cycles (1 s)
+CUTIN_MIN_V = 60. / 3.6
+CUTIN_MAX_DECEL = -0.3
+# 10/30 19:23-20:16 (54 min): 13 cut-in coasts, 1 real cut-in; the rest were adjacent-lane cars hugging the line (up to
+# 6 s / -8 km/h). Logging only until a discriminator (lateral motion, duration) is found in the reports' clips.
+CUTIN_COAST_ENABLED = False
+
+
 def cutin_accel_ceil(obj, t_follow):
   """Coast cap for a cut-in candidate: the constant deceleration that would settle behind it, never below CUTIN_MAX_DECEL."""
   closing = -obj.vRel
@@ -289,14 +191,137 @@ def cutin_accel_ceil(obj, t_follow):
   return max(-a_req, CUTIN_MAX_DECEL), 1.0
 
 
-def fuse_far_object(lead, fo):
-  """A camera-only lead with a radar far object at about its range (FAR_FUSE_D_M or 15 % of range, the camera's
-  distance error grows with range): the lead with the radar's closing speed if faster, and treated as radar-confirmed."""
-  if fo is None or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > max(FAR_FUSE_D_M, 0.15 * lead.dRel) or fo.vRel >= lead.vRel:
-    return lead
-  return types.SimpleNamespace(present=True, radar=True, dRel=lead.dRel, vRel=fo.vRel, vLead=fo.vLead, aLeadK=min(lead.aLeadK, 0.), fused=True)
+# --- 3 near_stop --------------------------------------------------------------------------------------------
+# ars510: near-stop floor (10/31 11:51, red light behind a stopping car from 51 km/h: the MPC / model eased the request
+# from -1.3 to -1.0 at 7 m and the PCM delivered less, the car stopped 2.3 m behind the lead and then crept to 1.8 m at a
+# -0.5 hold; the low-speed stop distance is 4.5 m). While a radar lead within NEAR_STOP_D_MAX is stopped or nearly so,
+# braking is floored at NEAR_STOP_K x the constant deceleration that stops the car NEAR_STOP_GAP behind it (never more
+# than NEAR_STOP_MAX_DECEL). Closer than NEAR_STOP_TOO_CLOSE a firm NEAR_STOP_HOLD_ACCEL is requested even when the wheel
+# speed reads 0 (Toyota wheel speed reads 0 while still creeping), which longcontrol follows as an urgent plan.
+# Off: /data/ars510_no_near_stop.
+NEAR_STOP_D_MAX = 20.          # m
+NEAR_STOP_GAP = STOP_GAP_LOW   # m, = ars510_lead_stop.GAP
+NEAR_STOP_VLEAD_MAX = 1.0      # m/s, lead (nearly) stopped
+NEAR_STOP_MIN_V = 0.3          # m/s
+NEAR_STOP_K = 1.15             # margin for actuator lag / PCM under-delivery
+NEAR_STOP_MAX_DECEL = -2.0     # m/s^2
+NEAR_STOP_TOO_CLOSE = 3.5      # m
+NEAR_STOP_HOLD_ACCEL = -1.5    # m/s^2
+NEAR_STOP_HOLD_VLEAD = 0.3     # m/s, the hold only behind a lead that has really stopped (not a crawling jam)
+NEAR_STOP_OFF_FILE = "/data/ars510_no_near_stop"
 
 
+def near_stop_accel_floor(lead, v_ego):
+  """Braking floor for a (nearly) stopped radar lead close ahead, or None."""
+  if not (lead.present and lead.radar) or lead.dRel > NEAR_STOP_D_MAX or lead.vLead > NEAR_STOP_VLEAD_MAX:
+    return None
+  if lead.dRel < NEAR_STOP_TOO_CLOSE and lead.vLead < NEAR_STOP_HOLD_VLEAD:
+    return NEAR_STOP_HOLD_ACCEL
+  if v_ego < NEAR_STOP_MIN_V:
+    return None
+  room = max(lead.dRel - NEAR_STOP_GAP, 0.5)
+  return max(-NEAR_STOP_K * v_ego ** 2 / (2. * room), NEAR_STOP_MAX_DECEL)
+
+
+# --- 4 lead_stop --------------------------------------------------------------------------------------------
+# constants and logic in ars510_lead_stop.py
+
+
+# --- 5 ci_confirm -------------------------------------------------------------------------------------------
+# ars510: confirmed cut-in lift-off (10/31 driver: when a car has really cut in and is slower, ease off like a driver would).
+# A radar track that was CONFIRM_FROM m or more off the model path within CONFIRM_WIN s and is now within CONFIRM_OFF of it,
+# CONFIRM_D ahead and slower by CONFIRM_VREL (curves included since 10/31): acceleration is capped for CONFIRM_HOLD_S at a gentle lift-off,
+# CONFIRM_K x closing speed down to CONFIRM_MAX_DECEL, reached at CONFIRM_JERK. Never brakes harder; the MPC does that.
+# Same rule as the UI's flashing circle (ars510_tracks.py). Replay 241 km: 66 confirmations, 91 % really in my lane within
+# 4 s, 2.5 false per 100 km. Off: /data/ars510_no_cutin_coast.
+CONFIRM_OFF = 1.3
+CONFIRM_D = (10., 60.)
+CONFIRM_VREL = -0.5
+CONFIRM_FROM = 1.8
+CONFIRM_WIN = 3.0
+CONFIRM_HOLD_S = 3.0
+CONFIRM_K = 0.06                 # (m/s^2) per (m/s) of closing speed
+CONFIRM_MAX_DECEL = -0.3         # m/s^2
+CONFIRM_JERK = 0.5               # m/s^3
+CONFIRM_MIN_V = 20. / 3.6
+CONFIRM_SPECIAL_ID = 1 << 26     # HAZARD / CUTIN_TRACK_ID / FAR_OBJ_TRACK_ID / VRU ids are synthetic, not radar cars
+CONFIRM_OFF_FILE = "/data/ars510_no_cutin_coast"
+# 11/01: no confirmation while I change lanes myself (ars510_ego_lc.py): the cars of the lane I move into are not cutting in
+
+
+# --- 6 cutin_resp -------------------------------------------------------------------------------------------
+# ars510 cut-in response (11/04 driver: "keep my distance from a merging car and get off the throttle sooner; by my speed,
+# the distance and its speed, sometimes only a lift-off, sometimes light braking"). The UI's amber-circle rule
+# (controls/lib/ars510_cutin.py, the same code) picks the object; ars510_cutin.CutinResponse turns it into the deceleration
+# needed to settle at my following distance behind it (closing^2 / 2 x room, less its own relative acceleration): at most a
+# lift-off (-0.3) for a prediction, light braking (-1.0) once it is on / past its lane line, moving in fast, or confirmed.
+# Harder braking stays with the MPC once the car is the lead. A line-hugging car counts (driver: a hazard too).
+# Onset at CR_JERK_DOWN, release at CR_JERK_UP; nothing while the driver presses the gas.
+# Until validated on replay and enabled by the driver: on only while /data/ars510_cutin_predict exists.
+CR_ON_FILE = "/data/ars510_cutin_predict"
+CR_JERK_DOWN = 0.8               # m/s^3
+CR_JERK_UP = 1.0                 # m/s^3
+CR_STALE_FRAMES = 10             # planner cycles without a radar display record: drop the objects
+
+
+# --- 7 hazard -----------------------------------------------------------------------------------------------
+# ars510: hazard coast (11/01, driver: "at least lift off"). The radar interface's hazard candidate (radarTracks
+# HAZARD_TRACK_ID, see ars510_radar_interface.py HAZARD_*: a tracked car closing fast on a short time-to-collision that
+# the camera has not made the lead) in my lane or moving toward
+# it (those checks, HAZARD_PATH_M / HAZARD_CROSS_VY, live in the interface: RadarPoint carries no lateral speed here) and
+# within HAZARD_CROSS_M of the model path, for HAZARD_HOLD cycles -> acceleration capped at HAZARD_ACCEL (lift-off, no
+# braking: the MPC brakes once radard takes the car), reached at HAZARD_JERK, kept HAZARD_KEEP_S after the candidate
+# drops. Off: /data/ars510_no_hazard_coast. cloudlog "ARS510 hazard coast on/off".
+HAZARD_TRACK_ID = 1 << 26
+HAZARD_CROSS_M = 3.5
+HAZARD_HOLD = 10                 # planner cycles (0.5 s)
+HAZARD_FAST_TTC_S = 2.0          # closer than this (time-to-collision) the hold is skipped
+HAZARD_ACCEL = -0.5
+HAZARD_JERK = 1.0
+HAZARD_KEEP_S = 1.0
+HAZARD_OFF_FILE = "/data/ars510_no_hazard_coast"
+
+
+# --- 8 turn_hold --------------------------------------------------------------------------------------------
+# ars510: no acceleration while a turn signal is on at low speed (turning / preparing to turn).
+# 10/27: raised from 30 km/h; at 21:41 the car was at 31-32 km/h in a left turn when the lead left the view and it
+# accelerated toward the set speed.
+BLINKER_NO_ACCEL_V = 50. * CV.KPH_TO_MS
+# ars510: no acceleration while the wheel is turned far (turning at a junction), with or without a signal, so losing
+# the lead mid-turn does not make the car speed up. Enters above TURN_NO_ACCEL_ANGLE, leaves below TURN_NO_ACCEL_EXIT_ANGLE.
+# Not below TURN_NO_ACCEL_MIN_V, so the car still pulls away from a stop with the wheel turned.
+TURN_NO_ACCEL_ANGLE = 45.        # deg, steering wheel
+TURN_NO_ACCEL_EXIT_ANGLE = 30.   # deg
+TURN_NO_ACCEL_MIN_V = 3.         # m/s
+
+
+# --- 9 a_pos ------------------------------------------------------------------------------------------------
+# an unhurried ceiling on positive acceleration, see the PosAccelCeiling docstring
+A_POS_MAX_BP = [0., 10., 20., 30., 35.]     # m/s
+A_POS_MAX_V = [1.2, 0.8, 0.45, 0.28, 0.22]  # m/s^2
+A_POS_JERK_BP = [10., 25.]                  # m/s
+A_POS_JERK_V = [0.5, 0.15]                  # m/s^3, how fast the ceiling lets acceleration build (10/30: 0.25 -> 0.15, PCM still overshot 0.26 -> 0.80 for a second)
+ACCEL_SCALE_FILE = "/data/ars510_accel_scale"  # 0.3-1.0 multiplier, 0 disables the ceiling; default 1.0
+A_POS_TAU = 10.                            # s, time constant of the approach to the set speed (deficit shrinks to 37 % per tau)
+# ars510 (10/31 driver: "like a magnet" -- with a lead pulling away the MPC accelerated to win the gap back, caught up
+# in no time and then had to brake). With a lead ahead, positive acceleration is also capped by a speed-matching law,
+# like the set-speed approach above: a <= (vLead - v) / LEAD_TAU(v) + LEAD_A_GAIN x max(aLead, 0) + a slow gap term, so
+# the car only matches the lead's speed and lets a widening gap close slowly instead of chasing it. Braking is untouched.
+LEAD_TAU_BP = [0., 8., 20.]                # m/s
+LEAD_TAU_V = [3., 6., 10.]                 # s: quicker at a light (lead pulling away from a stop), unhurried at speed
+LEAD_A_GAIN = 0.5                          # share of the lead's own acceleration that is followed
+LEAD_GAP_K = 0.003                         # m/s^2 per m of gap beyond the desired one ...
+LEAD_GAP_MAX = 0.1                         # m/s^2 ... at most (a 100 m gap at equal speed closes in about a minute)
+LEAD_MAX_D = 150.                          # m
+
+
+def read_accel_scale() -> float:
+  try:
+    with open(ACCEL_SCALE_FILE) as f:
+      v = float(f.read().strip())
+    return 0. if v <= 0. else float(np.clip(v, 0.3, 1.0))
+  except Exception:
+    return 1.0
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -304,7 +329,7 @@ def fuse_far_object(lead, fo):
 
 class Ctx:
   """Per-cycle inputs shared by the rules."""
-  __slots__ = ("sm", "long", "v_ego", "v_cruise", "reset_state", "a_prev", "t_follow", "now", "fcw", "mpc", "dt", "poll")
+  __slots__ = ("sm", "long", "v_ego", "v_cruise", "reset_state", "a_prev", "t_follow", "now", "fcw", "mpc", "dt")
 
   def __init__(self, **kw):
     for k in self.__slots__:
@@ -760,7 +785,6 @@ class PosAccelCeiling(Rule):
 
   def __init__(self):
     self.scale = read_accel_scale()
-    self.capped = False
 
   def poll(self):
     self.scale = read_accel_scale()
@@ -778,11 +802,7 @@ class PosAccelCeiling(Rule):
                     LEAD_A_GAIN * max(lead.aLeadK, 0.) + min(LEAD_GAP_K * max(lead.dRel - desired, 0.), LEAD_GAP_MAX))
         cap = min(cap, lead_cap)
       cap = min(cap, max(c.a_prev, 0.) + float(np.interp(v_ego, A_POS_JERK_BP, A_POS_JERK_V)) * c.dt)
-      if a > cap:
-        a = cap
-        self.capped = True
-      elif self.capped and a < cap - 0.05:
-        self.capped = False
+      a = min(a, cap)
     return a
 
 
