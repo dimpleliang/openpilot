@@ -11,6 +11,8 @@ the value is the "decider" (LongitudinalPlanner.decider, cloudlog "ARS510 decide
   2  far_early   cap            ease off early for a far slower lead / radar-only object    (same as far_soft)
   3  near_stop   brake floor    firm enough to stop 4.5 m behind a stopped radar lead       ars510_no_near_stop
   4  lead_stop   brake floor    even braking to 4.5 m behind a lead slowing to a stop       ars510_no_lead_stop
+  4b landing     SOFTENS        one steady light brake over the last metres to a stopped    ars510_no_landing
+                                radar lead instead of a request that follows every wobble
   5  ci_confirm  cap >= -0.3    lift-off for a confirmed cut-in                             ars510_no_cutin_coast
   6  cutin_resp  cap >= -1.0    lift-off / light braking for a merging car                  ON only with ars510_cutin_predict
   7  hazard      cap = -0.5     lift-off for the radar's fast-closing hazard candidate      ars510_no_hazard_coast
@@ -18,7 +20,8 @@ the value is the "decider" (LongitudinalPlanner.decider, cloudlog "ARS510 decide
   9  a_pos       cap >= 0       unhurried positive acceleration (speed, set speed, lead)    ars510_accel_scale (0 = off)
 
 Invariants (checked by the arbiter):
-  * only far_soft may make braking lighter; it runs before the floors and caps, so a floor / cap always wins over it.
+  * only far_soft and landing may make braking lighter. far_soft runs before the floors and caps, so a floor / cap
+    always wins over it; landing holds a latched value within LAND_URGENT of the plan and gives way to anything firmer.
   * every other rule only lowers the acceleration (min); two rules never add up, the firmest one decides.
   * each rule ramps its own onset (its *_JERK constants); the release of the lift-off caps is ramped by the arbiter
     (RELEASE_RULES, RELEASE_JERK).
@@ -239,6 +242,37 @@ def near_stop_cap(floor):
   if floor <= NEAR_STOP_FREE:
     return floor
   return floor + (floor - NEAR_STOP_FREE) / -NEAR_STOP_FREE * NEAR_STOP_FREE_ACCEL
+
+
+# --- 4b landing ---------------------------------------------------------------------------------------------
+# 11/10 parking lot (driver: "your stop still has a jolt, mine has none"). Closing up to a parked car at 4-5 km/h the
+# plan wobbled -0.30 -> -0.17 -> -0.36 -> -0.20 -> -0.47 in 4 s (the MPC re-solves from the measured speed, the PCM
+# answers a request with ~0.4 s lag and overshoot: 0.55 for -0.30, nothing for -0.17), so the brake went on, off and on
+# again and the car stopped on the second grab at -0.40..-0.46 (raw IMU). The driver's own stops over the same metres:
+# friction force flat (0x0A6: 0.27-0.33 the whole way), deceleration fading 0.4 -> 0.15, -0.14 / -0.22 at the stop.
+# 0x0A6 vs wheel speed, 935 half-second windows below 6 km/h: the same friction gives the same deceleration for the
+# driver and for the PCM, and the PCM follows a steady request well (median: -0.22 -> -0.14, -0.27 -> -0.28, -0.33 ->
+# -0.23); a request above about -0.2 does not slow the car against the creep torque at all.
+# So for the last metres to a stopped radar lead the request is latched: the constant deceleration that stops the car
+# NEAR_STOP_GAP behind it x LAND_K (the PCM delivers about 0.8 of a light request), taken once when it reaches LAND_ON,
+# never lighter than LAND_MIN (the PCM needs that much), approached at LAND_JERK and then held. It is only re-taken when the car would clearly stop long (needed deceleration
+# more than LAND_BAND_UP above the latch) or short (more than LAND_BAND_DOWN below). A plan firmer than the latch by
+# LAND_URGENT, a lead that moves off, or more than LAND_MAX needed ends it at once (near_stop / the MPC take over).
+# Off: /data/ars510_no_landing. cloudlog "ARS510 landing on/off".
+LAND_V_MAX = 2.0               # m/s (7 km/h): only the last, slow stretch
+LAND_VLEAD_MAX = 0.5           # m/s, |vLead|: the lead stands
+LAND_ON = 0.22                 # m/s^2, needed deceleration at which the landing starts
+LAND_K = 1.15
+LAND_LAG = 0.6                 # s
+LAND_MIN = 0.28                # m/s^2, lightest latch (11/10 17:43:58: a steady -0.30 gave 0.2 fading to 0.14 at the stop,
+                               # like the driver; the driver wants exactly that pattern)
+LAND_MAX = 0.5                 # m/s^2 needed: beyond this it is not a gentle landing any more
+LAND_ROOM_MIN = 0.3            # m
+LAND_BAND_UP = 0.10            # m/s^2
+LAND_BAND_DOWN = 0.12          # m/s^2
+LAND_JERK = 0.5                # m/s^3, onset and re-latch
+LAND_URGENT = 0.3              # m/s^2
+LAND_OFF_FILE = "/data/ars510_no_landing"
 
 
 # --- 4 lead_stop --------------------------------------------------------------------------------------------
@@ -625,6 +659,60 @@ class LeadStop(Rule):
     return a
 
 
+class Landing(Rule):
+  """4b: latched steady brake over the last metres to a stopped radar lead (see LAND_*). May brake lighter than the
+  plan by at most LAND_URGENT; anything firmer than that wins and ends the landing."""
+  name = "landing"
+  softens = True
+
+  def __init__(self):
+    self.off = os.path.exists(LAND_OFF_FILE)
+    self.latch = None     # m/s^2 > 0, the held deceleration
+    self.out = 0.         # the ramped request
+
+  def poll(self):
+    self.off = os.path.exists(LAND_OFF_FILE)
+
+  def _end(self, lead, c, why):
+    if self.latch is not None:
+      cloudlog.info(f"ARS510 landing off ({why}) d={lead.dRel:.1f} v={c.v_ego*3.6:.1f} latch={self.latch:.2f}")
+    self.latch = None
+
+  def apply(self, c, a):
+    lead = c.sm['radarState'].leadOne
+    if not c.long or self.off or c.reset_state or c.fcw:
+      self._end(lead, c, "off")
+      return a
+    if not (lead.present and lead.radar) or abs(lead.vLead) > LAND_VLEAD_MAX:
+      self._end(lead, c, "lead")
+      return a
+    room = lead.dRel - NEAR_STOP_GAP
+    if c.v_ego < NEAR_STOP_MIN_V or c.v_ego > LAND_V_MAX + (0.3 if self.latch is not None else 0.) or room < LAND_ROOM_MIN:
+      # below NEAR_STOP_MIN_V longcontrol's stop logic has the car; the last request stays until then
+      self._end(lead, c, "speed / room")
+      return a
+    need = c.v_ego ** 2 / (2. * room)
+    if self.latch is None:
+      # the brake answers LAND_LAG late: what will be needed by then is latched, so it does not have to be raised again
+      need_l = c.v_ego ** 2 / (2. * max(room - c.v_ego * LAND_LAG, LAND_ROOM_MIN))
+      if need_l < LAND_ON or need > LAND_MAX:
+        return a
+      self.latch = max(need_l * LAND_K, LAND_MIN)
+      self.out = min(c.a_prev, 0.)
+      cloudlog.info(f"ARS510 landing on d={lead.dRel:.1f} v={c.v_ego*3.6:.1f} need={need:.2f} latch={self.latch:.2f} plan={a:.2f}")
+    elif need > LAND_MAX:
+      self._end(lead, c, "need")
+      return a
+    elif need * LAND_K > self.latch + LAND_BAND_UP or need * LAND_K < self.latch - LAND_BAND_DOWN:
+      self.latch = max(need * LAND_K, LAND_MIN)
+    if a < -self.latch - LAND_URGENT:
+      self._end(lead, c, "plan firmer")
+      return a
+    step = LAND_JERK * c.dt
+    self.out += min(max(-self.latch - self.out, -step), step)
+    return self.out
+
+
 class CutinConfirm(Rule):
   """5: confirmed cut-in lift-off (see CONFIRM_*). Detection runs while engaged or not (track history)."""
   name = "ci_confirm"
@@ -851,7 +939,7 @@ class Rules:
 
   def __init__(self, dt):
     self.e2e_fill = E2EFill()
-    self.rules: list[Rule] = [FarLeadSoft(), FarLeadEarly(), NearStop(), LeadStop(dt), CutinConfirm(), CutinResponse(),
+    self.rules: list[Rule] = [FarLeadSoft(), FarLeadEarly(), NearStop(), LeadStop(dt), Landing(), CutinConfirm(), CutinResponse(),
                               HazardCoast(), TurnHold(), PosAccelCeiling()]
     self.by_name = {r.name: r for r in [self.e2e_fill] + self.rules}
     self.rain = ars510_rain.RainMode(dt)   # not a rule: scales t_follow / acceleration for the rules and the MPC

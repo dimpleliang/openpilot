@@ -76,7 +76,10 @@ def read_stop_floor():
       return float(np.clip(float(f.read().strip()), *STOP_FLOOR_RANGE))
   except Exception:
     return None
-BRAKE_HOLD_MARGIN = 0.1        # m/s^2
+BRAKE_HOLD_MARGIN = 0.0        # m/s^2. 11/10: was 0.1. With the landing rule (ars510_long_rules LAND_*) the plan over the last
+                               # metres is already a steady -0.28..-0.5; another 0.1 on top at 0.6 m/s is the late extra brake
+                               # the driver feels (stops with -0.41..-0.50 sent in the last second: -0.40..-0.46 at the stop,
+                               # the one with a steady -0.30: -0.14). A lighter plan is still floored at the stop floor.
 BRAKE_HOLD_ONSET_RATE = 0.5    # m/s^3: the hold builds up gradually from the current request (driver: "progressively
                                # heavier", 11/09) instead of stepping to the floor; -0.22 -> -0.35 in 0.26 s, -> -0.50 in 0.56 s
 BRAKE_HOLD_CLEAR_A_TARGET = 0.1  # m/s^2, the hold is latched until the planner wants to move again (same as should_stop)
