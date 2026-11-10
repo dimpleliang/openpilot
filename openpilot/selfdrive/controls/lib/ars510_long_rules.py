@@ -30,6 +30,7 @@ Shared distances: STOP_DISTANCE (6 m, long_mpc) is the MPC's following stop dist
 stopped / stopping lead is STOP_GAP_LOW (4.5 m, = long_mpc get_stop_distance at <= 10 m/s), used by near_stop and
 lead_stop (ars510_lead_stop.GAP).
 """
+import math
 import os
 import types
 import numpy as np
@@ -201,6 +202,10 @@ def cutin_accel_ceil(obj, t_follow):
 # braking is floored at NEAR_STOP_K x the constant deceleration that stops the car NEAR_STOP_GAP behind it (never more
 # than NEAR_STOP_MAX_DECEL). Closer than NEAR_STOP_TOO_CLOSE a firm NEAR_STOP_HOLD_ACCEL is requested even when the wheel
 # speed reads 0 (Toyota wheel speed reads 0 while still creeping), which longcontrol follows as an urgent plan.
+# 11/10 17:05 (parking lot, engaged at standstill 8-10 m behind a parked car): at 1 km/h the floor is about -0.01, and as
+# a plain "min" it turned every positive request into that, so the car could only creep and stopped 5.2-8.5 m back.
+# A floor weaker than NEAR_STOP_FREE therefore leaves room to close up: near_stop_cap() rises from the floor itself at
+# NEAR_STOP_FREE to +NEAR_STOP_FREE_ACCEL at 0, which also keeps the closing speed proportional to sqrt(room).
 # Off: /data/ars510_no_near_stop.
 NEAR_STOP_D_MAX = 20.          # m
 NEAR_STOP_GAP = STOP_GAP_LOW   # m, = ars510_lead_stop.GAP
@@ -211,6 +216,8 @@ NEAR_STOP_MAX_DECEL = -2.0     # m/s^2
 NEAR_STOP_TOO_CLOSE = 3.5      # m
 NEAR_STOP_HOLD_ACCEL = -1.5    # m/s^2
 NEAR_STOP_HOLD_VLEAD = 0.3     # m/s, the hold only behind a lead that has really stopped (not a crawling jam)
+NEAR_STOP_FREE = -0.3          # m/s^2, a floor weaker than this is no reason to hold the car back
+NEAR_STOP_FREE_ACCEL = 0.5     # m/s^2, acceleration allowed when no braking is needed at all
 NEAR_STOP_OFF_FILE = "/data/ars510_no_near_stop"
 
 
@@ -224,6 +231,14 @@ def near_stop_accel_floor(lead, v_ego):
     return None
   room = max(lead.dRel - NEAR_STOP_GAP, 0.5)
   return max(-NEAR_STOP_K * v_ego ** 2 / (2. * room), NEAR_STOP_MAX_DECEL)
+
+
+def near_stop_cap(floor):
+  """What the plan is limited to for a near-stop floor: the floor itself when it is a real braking need, more (up to
+  +NEAR_STOP_FREE_ACCEL) the weaker it is, so the car can close up to a stopped lead from further back."""
+  if floor <= NEAR_STOP_FREE:
+    return floor
+  return floor + (floor - NEAR_STOP_FREE) / -NEAR_STOP_FREE * NEAR_STOP_FREE_ACCEL
 
 
 # --- 4 lead_stop --------------------------------------------------------------------------------------------
@@ -320,6 +335,11 @@ LEAD_A_GAIN = 0.5                          # share of the lead's own acceleratio
 LEAD_GAP_K = 0.003                         # m/s^2 per m of gap beyond the desired one ...
 LEAD_GAP_MAX = 0.1                         # m/s^2 ... at most (a 100 m gap at equal speed closes in about a minute)
 LEAD_MAX_D = 150.                          # m
+# 11/10 17:05: behind a stopped lead the law above is ~0 (0.003 x 4 m = +0.01), the car only crept and stopped 5-8 m
+# back. A stopped / crawling lead (below LEAD_CLOSE_VLEAD) may be closed up to: the speed that a LEAD_CLOSE_A stop still
+# brings to rest STOP_GAP_LOW behind it, reached with the same LEAD_TAU.
+LEAD_CLOSE_A = 0.3                         # m/s^2
+LEAD_CLOSE_VLEAD = [1., 3.]                # m/s, full effect below / none above
 
 
 def read_accel_scale() -> float:
@@ -566,9 +586,11 @@ class NearStop(Rule):
     active = False
     if c.long and not self.off and not c.reset_state:
       ns = near_stop_accel_floor(c.sm['radarState'].leadOne, c.v_ego)
-      if ns is not None and a > ns:
-        a = ns
-        active = True
+      if ns is not None:
+        ns = near_stop_cap(ns)
+        if a > ns:
+          a = ns
+          active = True
     if active != self.active:
       self.active = active
       lead = c.sm['radarState'].leadOne
@@ -814,6 +836,10 @@ class PosAccelCeiling(Rule):
         desired = c.t_follow * max(lead.vLead, 0.) + STOP_DISTANCE
         lead_cap = (max(lead.vLead - v_ego, 0.) / float(np.interp(v_ego, LEAD_TAU_BP, LEAD_TAU_V)) +
                     LEAD_A_GAIN * max(lead.aLeadK, 0.) + min(LEAD_GAP_K * max(lead.dRel - desired, 0.), LEAD_GAP_MAX))
+        w_close = float(np.interp(lead.vLead, LEAD_CLOSE_VLEAD, [1., 0.]))
+        if w_close > 0.:
+          v_close = math.sqrt(2. * LEAD_CLOSE_A * max(lead.dRel - STOP_GAP_LOW, 0.))
+          lead_cap += w_close * max(v_close - v_ego, 0.) / float(np.interp(v_ego, LEAD_TAU_BP, LEAD_TAU_V))
         cap = min(cap, lead_cap)
       cap = min(cap, max(c.a_prev, 0.) + float(np.interp(v_ego, A_POS_JERK_BP, A_POS_JERK_V)) * c.dt)
       a = min(a, cap)

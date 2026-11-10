@@ -23,14 +23,15 @@ NOLEAD = NS(present=False, radar=False, dRel=0., vLead=0., aLeadK=0., aLeadTau=1
 PCM_DELAY, PCM_TAU = 0.15, 0.35
 
 
-def near_stop(lead, v):  # copy of ars510_long_rules.near_stop_accel_floor
+def near_stop(lead, v):  # copy of ars510_long_rules.near_stop_accel_floor + near_stop_cap
   if not (lead.present and lead.radar) or lead.dRel > 20. or lead.vLead > 1.0:
     return None
   if lead.dRel < 3.5 and lead.vLead < 0.3:
     return -1.5
   if v < 0.3:
     return None
-  return max(-1.15 * v ** 2 / (2. * max(lead.dRel - 4.5, 0.5)), -2.0)
+  f = max(-1.15 * v ** 2 / (2. * max(lead.dRel - 4.5, 0.5)), -2.0)
+  return f if f <= -0.3 else f + (f + 0.3) / 0.3 * 0.5   # near_stop_cap (11/10)
 
 
 def load(f):
