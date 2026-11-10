@@ -49,8 +49,21 @@ def dump(root, out, rlogs):
     def all_valid(self, *a): return True
 
   params = Params()
-  CP = messaging.log_from_bytes(params.get("CarParamsPersistent") or params.get("CarParams"), car.CarParams)
-  CP_SP = messaging.log_from_bytes(params.get("CarParamsSPPersistent") or params.get("CarParamsSP"), custom.CarParamsSP)
+  cp_b = params.get("CarParamsPersistent") or params.get("CarParams")
+  cpsp_b = params.get("CarParamsSPPersistent") or params.get("CarParamsSP")
+  if cp_b is None or cpsp_b is None:
+    # off the device (Mac container, tools/ars510/mac/replay.sh): take them from a segment-0 rlog (ARS510_CP_RLOG)
+    dat = zstandard.ZstdDecompressor().decompressobj().decompress(open(os.environ['ARS510_CP_RLOG'], 'rb').read())
+    for e in log.Event.read_multiple_bytes(dat, traversal_limit_in_words=2**61):
+      if e.which() == 'carParams' and cp_b is None:
+        cp_b = e.carParams.as_builder().to_bytes()
+      elif e.which() == 'carParamsSP' and cpsp_b is None:
+        cpsp_b = e.carParamsSP.as_builder().to_bytes()
+      if cp_b is not None and cpsp_b is not None:
+        break
+    print('CarParams from', os.environ['ARS510_CP_RLOG'], flush=True)
+  CP = messaging.log_from_bytes(cp_b, car.CarParams)
+  CP_SP = messaging.log_from_bytes(cpsp_b, custom.CarParamsSP)
   rows, deciders = [], []
   for f in rlogs:
     pl = lp.LongitudinalPlanner(CP, CP_SP)
@@ -96,6 +109,21 @@ def cmp(a, b):
     u, c = np.unique(B['dec'], return_counts=True)
     print('  deciders (b):', ', '.join(f"{x} {y / 20:.0f}s" for x, y in sorted(zip(u, c), key=lambda z: -z[1])))
   print('IDENTICAL' if not bad and len(da) == len(db) else 'DIFFERENT')
+  if bad and n:
+    # what an intended change did: signed aTarget difference (b - a), its stretches, and frame-to-frame plan steps
+    d = db[:n, 1] - da[:n, 1]
+    dif = np.abs(d) > 1e-9
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], dif.astype(int), [0]))))
+    runs = (edges[1::2] - edges[::2]) / 20.
+    print(f"  aTarget b-a: min {d.min():+.3f} max {d.max():+.3f}; b softer in {int((d > 1e-9).sum())} frames, firmer in {int((d < -1e-9).sum())}"
+          f" (firmer by > 0.02: {int((d < -0.02).sum())})")
+    if len(runs):
+      print(f"  {len(runs)} stretches, median {np.median(runs):.2f} s, longest {runs.max():.2f} s")
+    print(f"  differing frames where a asked <= -0.5: {int((dif & (da[:n, 1] <= -0.5)).sum())}; shouldStop differing: {int((diff[:, 2] > 0).sum())}")
+    same_seg = np.diff(da[:n, 0]) < 0.2
+    for nm, x in (('a', da), ('b', db)):
+      st = np.diff(x[:n, 1])[same_seg]
+      print(f"  plan steps per frame ({nm}): down > 0.2: {int((st < -0.2).sum())}, down > 0.3: {int((st < -0.3).sum())}, up > 0.2: {int((st > 0.2).sum())}, largest down {st.min():+.2f}")
 
 
 if __name__ == '__main__':

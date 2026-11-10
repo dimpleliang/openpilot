@@ -122,6 +122,13 @@ E2E_FILL_K = 0.07                   # m/s^2 per m/s of speed deficit (12 km/h sh
 E2E_FILL_A_MAX_BP = [15., 25., 35.]  # m/s
 E2E_FILL_A_MAX_V = [0.3, 0.22, 0.18]  # m/s^2, unhurried (10/30 evening: 0.4/0.3/0.25 still felt too strong)
 E2E_FILL_JERK = 0.2                 # m/s^3
+# 11/10: the fill used to be dropped in one step when the model turned to slowing (below E2E_FILL_INDIFFERENT) or the set
+# speed changed: 85 releases in 177 min, 11 with a plan step > 0.2 m/s^2, largest -0.41 (tools/ars510/mac/analysis/
+# rule_toggles.py). It now ramps down at E2E_FILL_RELEASE_JERK. No ramp when the model asks for E2E_FILL_RELEASE_FLOOR or
+# harder, or plans a stop: real braking is never delayed (the MPC lead candidate is in the min regardless).
+E2E_FILL_RELEASE_JERK = 1.0         # m/s^3
+E2E_FILL_RELEASE_FLOOR = -0.5       # m/s^2
+E2E_FILL_LOG_HOLD = 20              # planner cycles (1 s) the fill must stay off before "off" is logged
 E2E_FILL_OFF_FILE = "/data/ars510_no_e2e_fill"
 # positive acceleration ceiling (see the block before the final clip)
 # ars510: near-stop floor (10/31 11:51, red light behind a stopping car from 51 km/h: the MPC / model eased the request
@@ -323,6 +330,8 @@ class E2EFill(Rule):
     self.off = os.path.exists(E2E_FILL_OFF_FILE)
     self.active = False
     self.filled = 0.
+    self.lifted = False     # last cycle's candidate was above the model's (fill or release ramp)
+    self._logged, self._off_n = False, 0
 
   def poll(self):
     self.off = os.path.exists(E2E_FILL_OFF_FILE)
@@ -336,10 +345,17 @@ class E2EFill(Rule):
     # ramp: the filled value approaches its target at E2E_FILL_JERK from where the e2e candidate was last cycle
     if fill is not None and target > self.filled:
       target = min(target, self.filled + E2E_FILL_JERK * c.dt)
+    # release ramp: what was lifted above the model comes down at E2E_FILL_RELEASE_JERK instead of in one step
+    if self.lifted and c.long and not self.off and not c.reset_state and not stop_e2e and a_e2e > E2E_FILL_RELEASE_FLOOR:
+      target = max(target, self.filled - E2E_FILL_RELEASE_JERK * c.dt)
     self.filled = target
+    self.lifted = target > a_e2e + 1e-6
     active = fill is not None and target > a_e2e + 0.01
-    if active != self.active:
-      self.active = active
+    self.active = active
+    # log: "on" at once, "off" only after E2E_FILL_LOG_HOLD cycles off (it switched 4 times a minute)
+    self._off_n = 0 if active else self._off_n + 1
+    if (active and not self._logged) or (self._logged and self._off_n == E2E_FILL_LOG_HOLD):
+      self._logged = active
       cloudlog.info(f"ARS510 e2e fill {'on' if active else 'off'} v={c.v_ego*3.6:.0f} set={c.v_cruise*3.6:.0f} e2e={a_e2e:.2f} fill={target:.2f}")
     return target
 
