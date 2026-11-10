@@ -14,7 +14,7 @@ the value is the "decider" (LongitudinalPlanner.decider, cloudlog "ARS510 decide
   5  ci_confirm  cap >= -0.3    lift-off for a confirmed cut-in                             ars510_no_cutin_coast
   6  cutin_resp  cap >= -1.0    lift-off / light braking for a merging car                  ON only with ars510_cutin_predict
   7  hazard      cap = -0.5     lift-off for the radar's fast-closing hazard candidate      ars510_no_hazard_coast
-  8  turn_hold   cap = 0        no acceleration while signalling < 50 km/h or turning
+  8  turn_hold   cap >= 0       gentle start, no acceleration from 20 km/h, while signalling < 50 km/h or turning
   9  a_pos       cap >= 0       unhurried positive acceleration (speed, set speed, lead)    ars510_accel_scale (0 = off)
 
 Invariants (checked by the arbiter):
@@ -283,16 +283,20 @@ HAZARD_OFF_FILE = "/data/ars510_no_hazard_coast"
 
 
 # --- 8 turn_hold --------------------------------------------------------------------------------------------
-# ars510: no acceleration while a turn signal is on at low speed (turning / preparing to turn).
-# 10/27: raised from 30 km/h; at 21:41 the car was at 31-32 km/h in a left turn when the lead left the view and it
-# accelerated toward the set speed.
+# ars510: no surge while turning. Signalling below BLINKER_NO_ACCEL_V (10/27: raised from 30 km/h; at 21:41 the car was
+# at 31-32 km/h in a left turn when the lead left the view and it accelerated toward the set speed), or the wheel turned
+# past TURN_NO_ACCEL_ANGLE (leaves below TURN_NO_ACCEL_EXIT_ANGLE; losing the lead mid-turn must not speed the car up).
+# 11/10 (driver: the rule is against surging in a turn, the car should still pull away by itself on green): the cap is
+# now TURN_ACCEL(v) instead of 0 -- a gentle start from rest, fading to no acceleration at 20 km/h and above (as before
+# there). Before, a signal held the car at a green light, and the turned-wheel branch had no limit at all below 3 m/s.
+# The cap comes down at TURN_JERK_DOWN (it used to cut acceleration to 0 in one step); the rise after the turn is
+# a_pos's jerk limit.
 BLINKER_NO_ACCEL_V = 50. * CV.KPH_TO_MS
-# ars510: no acceleration while the wheel is turned far (turning at a junction), with or without a signal, so losing
-# the lead mid-turn does not make the car speed up. Enters above TURN_NO_ACCEL_ANGLE, leaves below TURN_NO_ACCEL_EXIT_ANGLE.
-# Not below TURN_NO_ACCEL_MIN_V, so the car still pulls away from a stop with the wheel turned.
 TURN_NO_ACCEL_ANGLE = 45.        # deg, steering wheel
 TURN_NO_ACCEL_EXIT_ANGLE = 30.   # deg
-TURN_NO_ACCEL_MIN_V = 3.         # m/s
+TURN_ACCEL_BP = [0., 10. / 3.6, 20. / 3.6]   # m/s
+TURN_ACCEL_V = [0.8, 0.5, 0.]                # m/s^2
+TURN_JERK_DOWN = 1.5             # m/s^3
 
 
 # --- 9 a_pos ------------------------------------------------------------------------------------------------
@@ -757,11 +761,12 @@ class HazardCoast(Rule):
 
 
 class TurnHold(Rule):
-  """8: hold speed (coast) instead of accelerating while signalling at low speed or turning at a junction."""
+  """8: no surge while signalling at low speed or turning at a junction: acceleration capped at TURN_ACCEL(v)."""
   name = "turn_hold"
 
   def __init__(self):
     self.turning = False
+    self.cap = None
 
   def apply(self, c, a):
     CS = c.sm['carState']
@@ -770,9 +775,13 @@ class TurnHold(Rule):
       self.turning = True
     elif steer_angle < TURN_NO_ACCEL_EXIT_ANGLE:
       self.turning = False
-    if ((CS.leftBlinker or CS.rightBlinker) and c.v_ego < BLINKER_NO_ACCEL_V) or \
-       (self.turning and c.v_ego > TURN_NO_ACCEL_MIN_V):
-      a = min(a, 0.0)
+    if ((CS.leftBlinker or CS.rightBlinker) and c.v_ego < BLINKER_NO_ACCEL_V) or self.turning:
+      target = float(np.interp(c.v_ego, TURN_ACCEL_BP, TURN_ACCEL_V))
+      start = max(c.a_prev if c.a_prev is not None else 0., target) if self.cap is None else self.cap
+      self.cap = target if c.reset_state else max(target, start - TURN_JERK_DOWN * c.dt)
+      a = min(a, self.cap)
+    else:
+      self.cap = None
     return a
 
 
