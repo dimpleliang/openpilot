@@ -21,6 +21,16 @@ Columns
   cmd       ACCEL_CMD actually sent on CAN at the stop (incl. the Toyota PID)
   bp_stop / bp_max    BRAKE_MODULE.BRAKE_PRESSURE (0x226) at the stop / max over -1..+2 s (raw units)
   d_stop / d_end      lead distance at the stop / 3 s later (lead scenes)
+  regen_v   km/h, regen end: last speed where the wheel drive force (0x127 FDRVREAL, hybrid) was still braking
+            (< -0.05 m/s^2) before the stop; below it friction alone stops the car against the rising creep force
+  ho_over   m/s^2, friction hand-over overshoot: largest (weakest ACCEL_CMD of the last 0.8 s - real decel) from 1 s
+            before regen end to 1 s before the stop; > 0 = braked harder than asked even allowing for the PCM lag
+            (13:01 11/09: cmd -0.29, real -0.56 at 6 km/h)
+  ho_v      km/h where that overshoot peaked
+  ho_rate   m/s^3, fastest friction brake force rise (0x0A6 BRAKE_FORCE) in the same window
+  a_last1   m/s^2, mean real decel over the last 1 s before the stop (raw IMU)
+  fric1 / drv1  m/s^2, mean friction (0x0A6) / wheel drive force (0x127, + = creep) over the last 1 s
+            (forces / MASS_KG; absolute values are approximate, 11/09 the sum was ~0.3 off the IMU at creep speed)
   off       m, lead: d_stop - 4.5 (low-speed stop distance); e2e: travelled - model's planned stop distance at 10 km/h
 """
 import csv
@@ -39,6 +49,10 @@ from openpilot.cereal import log  # noqa: E402
 STOP_DISTANCE_LOW = 4.5
 ACC_CONTROL = 0x343
 BRAKE_MODULE = 0x226
+BRAKE = 0xA6                # BRAKE_FORCE byte 2 * 40 N, friction brakes (driver or ACC)
+GEAR_PACKET_HYBRID = 0x127  # FDRVREAL 11-bit signed (byte 3 bits 2..0, byte 4) * 25 N, wheel drive force incl. regen
+MASS_KG = 1800.
+LAG_S = 0.8   # command -> real decel lag allowance for the hand-over overshoot
 
 
 def read(p):
@@ -48,7 +62,7 @@ def read(p):
 
 def load_route(route):
   segs = sorted(glob.glob(os.path.join(ROOT, 'raw', route + '--*')), key=lambda s: int(s.rsplit('--', 1)[1]))
-  d = {k: [] for k in ('cs', 'en', 'imu', 'dm', 'cmd', 'bp', 'lead', 'plan', 'lm', 'mount')}
+  d = {k: [] for k in ('cs', 'en', 'imu', 'dm', 'cmd', 'bp', 'lead', 'plan', 'lm', 'mount', 'fric', 'drv')}
   for seg in segs:
     p = seg + '/rlog.zst'
     if not os.path.exists(p):
@@ -84,6 +98,11 @@ def load_route(route):
             if m.address == BRAKE_MODULE and m.src == 0:
               b = m.dat
               d['bp'].append((t, ((b[0] & 1) << 8) | b[1]))
+            elif m.address == BRAKE and m.src == 0:
+              d['fric'].append((t, -m.dat[2] * 40. / MASS_KG))
+            elif m.address == GEAR_PACKET_HYBRID and m.src == 0:
+              r = ((m.dat[3] & 7) << 8) | m.dat[4]
+              d['drv'].append((t, (r - 2048 if r & 0x400 else r) * 25. / MASS_KG))
         elif w == 'radarState':
           l1 = e.radarState.leadOne
           d['lead'].append((t, float(l1.present), l1.dRel))
@@ -105,7 +124,7 @@ def load_route(route):
       print(f'  {os.path.basename(seg)}: {ex}', file=sys.stderr)
   out = {}
   for k, v in d.items():
-    if k == 'lm':
+    if k in ('lm', 'mount'):
       out[k] = v
     elif v:
       a = np.array(v, dtype=float)
@@ -242,12 +261,54 @@ def analyse(R, t_start, ts, v0):
     except Exception:
       pass
   row['rel_v'] = rel_v
+  row.update(blend(R, ts, bias))
   row['phases'] = ' '.join(seq)
   return row
 
 
+def blend(R, ts, bias):
+  """regen end / friction hand-over overshoot / last-second decel split (hybrid, raw CAN)."""
+  out = dict(regen_v='', ho_over='', ho_v='', ho_rate='', a_last1='', fric1='', drv1='')
+  fric, drv, cmd, cs, imu = R['fric'], R['drv'], R['cmd'], R['cs'], R['imu']
+  w = (imu[:, 0] > ts - 15.) & (imu[:, 0] <= ts)
+  if not w.any():
+    return out
+  ti = imu[w, 0]
+  ax = ema(ti, imu[w, 1] - bias)
+  last = ti > ts - 1.
+  out['a_last1'] = round(float(ax[last].mean()), 2) if last.any() else ''
+  if not len(fric) or not len(drv) or not len(cmd):
+    return out
+  f_i = np.interp(ti, fric[:, 0], fric[:, 1])
+  d_i = np.interp(ti, drv[:, 0], drv[:, 1])
+  out['fric1'] = round(float(f_i[last].mean()), 2) if last.any() else ''
+  out['drv1'] = round(float(d_i[last].mean()), 2) if last.any() else ''
+  braking = np.where(d_i < -0.05)[0]
+  if not len(braking):
+    return out
+  t_re = ti[braking[-1]]
+  out['regen_v'] = round(float(at(cs, 1, t_re)) * 3.6, 1)
+  hw = (ti > t_re - 1.) & (ti < ts - 1.)
+  if hw.sum() < 3:
+    return out
+  # PCM lag: the real decel trails the command by a few 100 ms, so only count decel deeper than ANY command of the
+  # last LAG_S (else a fast command release reads as overshoot)
+  over = np.min([np.interp(ti[hw] - lag, cmd[:, 0], cmd[:, 1]) for lag in np.arange(0., LAG_S + 1e-6, 0.1)], axis=0) - ax[hw]
+  k = int(np.argmax(over))
+  out['ho_over'] = round(float(over[k]), 2)
+  out['ho_v'] = round(float(at(cs, 1, ti[hw][k])) * 3.6, 1)
+  # friction force rise rate over 0.2 s steps (BRAKE frames are ~25 Hz)
+  fw = (fric[:, 0] > t_re - 1.) & (fric[:, 0] < ts - 1.)
+  if fw.sum() > 5:
+    tf = np.arange(fric[fw, 0][0], fric[fw, 0][-1], 0.2)
+    ff = np.interp(tf, fric[:, 0], fric[:, 1])
+    out['ho_rate'] = round(float(max(0., -np.diff(ff).min() / 0.2)), 2) if len(ff) > 1 else ''
+  return out
+
+
 COLS = ['route', 't', 'scene', 'v0', 'pitch', 'gap_v', 'gap_t', 'gap_a', 'rel_v', 'a_stop', 'a_stop_dm', 'bump', 't_bump',
-        'grab', 'verdict', 'cmd', 'bp_stop', 'bp_max', 'd_stop', 'd_end', 'off', 'phases']
+        'grab', 'verdict', 'cmd', 'bp_stop', 'bp_max', 'regen_v', 'ho_over', 'ho_v', 'ho_rate', 'a_last1', 'fric1', 'drv1',
+        'd_stop', 'd_end', 'off', 'phases']
 
 
 def main():
@@ -293,6 +354,12 @@ def main():
     g = [r for r in rows if cond(r)]
     if g:
       print(f'{lab:7} n={len(g):3}  a_stop median {np.median(f(r["a_stop"] for r in g)):+.2f}  bump {sum(r["verdict"] != "clean" for r in g)}')
+  hb = [r for r in rows if r['ho_over'] != '']
+  if hb:
+    ov = f(r['ho_over'] for r in hb)
+    print(f'hand-over n={len(hb):3}  regen end median {np.median(f(r["regen_v"] for r in hb)):.1f} km/h  overshoot median {np.median(ov):+.2f} '
+          f'P90 {np.percentile(ov, 90):+.2f} at {np.median(f(r["ho_v"] for r in hb)):.1f} km/h  (> +0.15: {int((ov > 0.15).sum())})  '
+          f'last 1 s decel median {np.median(f(r["a_last1"] for r in hb)):+.2f}, creep {np.median(f(r["drv1"] for r in hb)):+.2f}')
   p = f(r['pitch'] for r in rows)
   if len(p):
     for lab, lo, hi in (('pitch<-1', -90, -1), ('|pitch|<=1', -1, 1), ('pitch>1', 1, 90)):
