@@ -100,7 +100,7 @@ SOFT_STOP_SETTLE_RANGE = (0.3, 1.2) # s, min / max hold
 STALL_MAX_V = 0.6              # m/s
 STALL_A_TARGET = -0.05         # m/s^2, planner must ask for at least this much decel during the whole window
 STALL_WINDOW = 1.0             # s
-STALL_DROP = 0.1               # m/s
+STALL_DROP = 0.05              # m/s (11/10: 0.1 called a car slowing at 0.09 m/s^2 stalled and added brake: -0.35 at the stop)
 STALL_CLEAR_A_TARGET = 0.1     # m/s^2, same threshold as should_stop: the planner wants to move again
 # True stop detection (when locationd's calibrated pose is valid; otherwise the timer-based settle hold above).
 # 10/27 route 52 IMU: Toyota wheel speed stops updating at ~0.2 m/s, but the car kept rolling 0.45-1.3 s. In one stop
