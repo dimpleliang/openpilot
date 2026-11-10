@@ -20,6 +20,15 @@ SOFT_STOP_V = 0.05             # m/s, below this (or at standstill) ramp to stop
 SOFT_STOP_MAX_V = 1.0          # m/s, only soften the last metre: if stopping is requested faster (e.g. model shouldStop), brake as before
 SOFT_STOP_ACCEL = -0.5         # m/s^2, brake request to ease toward while still rolling (= BRAKE_HOLD_ACCEL)
 SOFT_STOP_RELEASE_RATE = 1.5   # m/s^3, how fast the brake is eased off
+# 11/10 (driver: "the stop still has a jolt; change all of it"). In every stop with a jolt the plan asked -0.12..-0.20
+# over the last second and the request sent was -0.41..-0.50: once in the stopping state (below 0.3 m/s, or creep
+# stall) the request was walked toward SOFT_STOP_ACCEL even while the car was slowing, and the car stopped at
+# -0.35..-0.46 (raw IMU). The one stop where it stayed at -0.30 ended at -0.14, like the driver's own (-0.14 / -0.22,
+# friction force flat to the stop). So while the car is slowing the request now goes to the stop floor (BRAKE_HOLD_MIN /
+# STOP_FLOOR_FILE) and stays there; from a firmer request it is eased at SOFT_STOP_EASE_RATE. If the car is not slowing,
+# brake is still added as before (add_brake_rate) and then kept.
+SOFT_STOP_EASE_RATE = 0.6      # m/s^3
+SOFT_STOP_HOLD_DELAY = 0.3     # s, see _hold()
 # The soft request is only kept while the car is really slowing down. At crawl speed the Toyota PCM barely brakes for
 # small requests (idle creep: 10/27 route 4f, -0.2..-0.35 commanded gave 0..-0.1 m/s^2 for 1-3 s), so a fixed soft
 # request can leave the car creeping. While rolling and not slowing, brake harder at the stock stopping rate instead.
@@ -323,6 +332,7 @@ class LongControl:
     self.pre_release = False
     self.pre_release_failed = False
     self.still_frames = 0
+    self.hold_frames = 0
     self.still_set = False       # true_stopped was set by update_still (undo-able while the wheels still read 0)
 
   def _set_phase(self, phase, reason):
@@ -470,8 +480,10 @@ class LongControl:
     rate = self.add_brake_rate(decel, output_accel)
     if CS.aEgo < SOFT_STOP_SLOWING_A or (pose_accel is not None and self.est.pose_a_f < SOFT_STOP_ONSET_A):
       if not self.brake_added:
-        # slowing down: ease the request toward SOFT_STOP_ACCEL (or brake gently toward it if coming from above)
-        output_accel += float(np.clip(SOFT_STOP_ACCEL - output_accel, -SOFT_STOP_ADD_RATE * DT_CTRL, SOFT_STOP_RELEASE_RATE * DT_CTRL))
+        # slowing down: bring the request to the stop floor and leave it there (11/10: it used to go on to
+        # SOFT_STOP_ACCEL -0.5 at 0.3 m/s^3 although the car was already slowing; see SOFT_STOP_EASE_RATE)
+        soft = BRAKE_HOLD_MIN if self.stop_floor is None else self.stop_floor
+        output_accel += float(np.clip(soft - output_accel, -SOFT_STOP_ADD_RATE * DT_CTRL, SOFT_STOP_EASE_RATE * DT_CTRL))
       # else: brake had to be added in this stop (creep / downhill): keep it, releasing it again would let the car
       # roll on and add it back, without ever stopping (simulated downhill + creep)
     else:
@@ -491,6 +503,12 @@ class LongControl:
   def _hold(self, output_accel):
     # stopped: engage the brake against the creep torque quickly (SOFT_STOP_STILL_RATE down to BRAKE_HOLD_ACCEL), then ramp
     # to stopAccel as before
+    # 11/10: the true stop is taken from the integrated pose speed and comes a touch early (11/10 logs: pose still
+    # -0.33..-0.44 at the verdict); the ramp then reached the brakes as the car stopped. Wait SOFT_STOP_HOLD_DELAY first:
+    # the request that stopped the car (>= the stop floor) holds it for that long.
+    self.hold_frames += 1
+    if self.hold_frames * DT_CTRL < SOFT_STOP_HOLD_DELAY:
+      return output_accel
     if output_accel > BRAKE_HOLD_ACCEL:
       return max(self.ramp_to_stop(output_accel, SOFT_STOP_STILL_RATE), BRAKE_HOLD_ACCEL)
     return self.ramp_to_stop(output_accel)
