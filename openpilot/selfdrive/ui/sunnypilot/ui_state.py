@@ -38,6 +38,7 @@ class UIStateSP:
       "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
       "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay",
       "customReservedRawData0",  # ARS510: radar objects for display (sunnypilot/onroad/ars510_tracks.py)
+      "radarTracks",             # ARS510: the radar-only far object for its dashed box (ars510_tracks.py)
     ]
 
     self.sunnylink_state = SunnylinkState()

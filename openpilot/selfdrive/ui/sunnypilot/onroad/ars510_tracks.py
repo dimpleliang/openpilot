@@ -45,6 +45,32 @@ LAMP_X = 30 + 192 + 40 + LAMP_R      # UI_BORDER_SIZE + driver-monitoring icon (
 LAMP_Y_FROM_BOTTOM = 30 + 192 // 2   # same height as the driver-monitoring icon's centre
 COLOR_LAMP_LIFT = (255, 190, 0)
 COLOR_LAMP_BRAKE = (255, 60, 40)
+# 11/11 driver: a box on the lead only while the radar has it (radarState.leadOne.radar), so no box = camera only (11/11
+# 15:48: 8 s without a radar lead after a double lane change, then the jam tail). The lead chevron stays as it is.
+# A thin dashed amber box marks the radar-only far object the planner may coast for (radarTracks FAR_OBJ_TRACK_ID; the
+# gate of ars510_long_rules.FarLeadEarly.far_object, copied here because that module pulls in the MPC).
+# Lead box colour: white; amber while the plan asks for BOX_LIFT or less; red for BOX_BRAKE or less (a colour is kept
+# BOX_COLOR_HOLD_S so it does not flicker). Only while engaged, like the merge marks.
+# The box is a car-sized rectangle (BOX_W_M x BOX_H_M) placed at the radar's range and lateral position, not a camera
+# detection: far away it can sit a little off the car, and it is never drawn narrower than BOX_MIN_W.
+# Display only. Off: /data/ars510_no_lead_box.
+BOX_OFF_FILE = "/data/ars510_no_lead_box"
+BOX_W_M, BOX_H_M = 1.9, 1.5
+BOX_MIN_W = 44.0               # px
+BOX_THICK = 5.0                # px
+BOX_LIFT, BOX_BRAKE = -0.25, -1.5   # m/s^2, longitudinalPlan.aTarget
+BOX_COLOR_HOLD_S = 0.6
+COLOR_BOX = (255, 255, 255)
+FAR_OBJ_TRACK_ID = 1 << 28     # = ars510_radar_interface.FAR_OBJ_TRACK_ID
+FAR_OBJ_MAX_CLOSING = 20.      # m/s, = ars510_long_rules.FAR_OBJ_MAX_CLOSING
+FAR_OBJ_MIN_V = 70. / 3.6      # = ars510_long_rules.FAR_RADAR_ONLY_MIN_V
+FAR_OBJ_PATH_Y_BP = [80., 150.]   # = ars510_long_rules.FAR_OBJ_PATH_Y_*
+FAR_OBJ_PATH_Y_V = [2.2, 3.0]
+FAR_OBJ_HOLD_FRAMES = 10       # ui frames (0.5 s), = ars510_long_rules.FAR_OBJ_HOLD
+FAR_OBJ_SAME_LEAD_M = 15.      # the far object within this range of the boxed radar lead is that car: no second box
+FAR_BOX_THICK = 3.0
+FAR_BOX_DASH, FAR_BOX_GAP = 12.0, 9.0
+
 T_FOLLOW_DEFAULT = 1.45
 T_FOLLOW_BY_PERSONALITY = {"relaxed": 1.75, "standard": 1.45, "aggressive": 1.25}   # = long_mpc.get_T_FOLLOW (not imported here)
 
@@ -81,8 +107,20 @@ class Ars510Tracks:
     self._resp = rule.CutinResponse()
     self._lamp_until = 0.
     self._lamp_brake = False
+    self._box_off = os.path.exists(BOX_OFF_FILE)
+    self._box_lvl = 0
+    self._box_lvl_until = 0.
+    self._far: tuple[float, float] | None = None   # (dRel, y right of the camera) of the radar-only far object
+    self._far_frame = 0
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
+    try:
+      if not self._box_off and "selfdriveState" in sm.data and sm["selfdriveState"].enabled:
+        self._draw_boxes(sm, map_to_screen, path_z, path_y, camera_offset, path_offset_z, radar_state)
+      else:
+        self._far = None
+    except Exception:
+      self._far = None
     try:
       if SERVICE not in sm.data:
         return
@@ -122,6 +160,74 @@ class Ars510Tracks:
         self._draw_lamp(rect, self._lamp_brake)
     except Exception:
       self._points = []
+
+  @staticmethod
+  def _box_rect(map_to_screen, d: float, y_right: float, z: float):
+    """Screen rectangle of a car-sized box standing on the road at (d, y_right), or None when it is off screen."""
+    p = map_to_screen(d, y_right, z)
+    if p is None:
+      return None
+    q = map_to_screen(d, y_right + 1.0, z) or map_to_screen(d, y_right - 1.0, z)
+    if q is None:
+      return None
+    w = max(BOX_W_M * abs(q[0] - p[0]), BOX_MIN_W)
+    h = w * BOX_H_M / BOX_W_M
+    return rl.Rectangle(p[0] - w / 2, p[1] - h, w, h)
+
+  @staticmethod
+  def _draw_box(r, rgb, thick: float, dashed: bool):
+    color = rl.Color(*rgb, 235)
+    shadow = rl.Color(0, 0, 0, 150)
+    if not dashed:
+      rl.draw_rectangle_lines_ex(rl.Rectangle(r.x - 2, r.y - 2, r.width + 4, r.height + 4), thick + 4, shadow)
+      rl.draw_rectangle_lines_ex(r, thick, color)
+      return
+    corners = [(r.x, r.y), (r.x + r.width, r.y), (r.x + r.width, r.y + r.height), (r.x, r.y + r.height)]
+    for i in range(4):
+      (x0, y0), (x1, y1) = corners[i], corners[(i + 1) % 4]
+      length = abs(x1 - x0) + abs(y1 - y0)
+      ux, uy = (x1 - x0) / length, (y1 - y0) / length
+      s = 0.
+      while s < length:
+        e = min(s + FAR_BOX_DASH, length)
+        a, b = rl.Vector2(x0 + ux * s, y0 + uy * s), rl.Vector2(x0 + ux * e, y0 + uy * e)
+        rl.draw_line_ex(a, b, thick + 3, shadow)
+        rl.draw_line_ex(a, b, thick, color)
+        s += FAR_BOX_DASH + FAR_BOX_GAP
+
+  def _draw_boxes(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state):
+    now = rl.get_time()
+    a_target = sm['longitudinalPlan'].aTarget if 'longitudinalPlan' in sm.data else 0.
+    lvl = 2 if a_target <= BOX_BRAKE else 1 if a_target <= BOX_LIFT else 0
+    if lvl >= self._box_lvl:
+      self._box_lvl, self._box_lvl_until = lvl, now + BOX_COLOR_HOLD_S
+    elif now >= self._box_lvl_until:
+      self._box_lvl = lvl
+    lead = radar_state.leadOne if radar_state is not None else None
+    lead_d = None
+    if lead is not None and lead.present and lead.radar:
+      lead_d = lead.dRel
+      r = self._box_rect(map_to_screen, lead.dRel, -lead.yRel + camera_offset, path_z(lead.dRel) + path_offset_z)
+      if r is not None:
+        self._draw_box(r, (COLOR_BOX, COLOR_CUTIN, COLOR_LAMP_BRAKE)[self._box_lvl], BOX_THICK, False)
+    if 'radarTracks' not in sm.data:
+      return
+    if sm.updated['radarTracks']:
+      v_ego = sm['carState'].vEgo
+      for p in sm['radarTracks'].points:
+        if p.trackId != FAR_OBJ_TRACK_ID:
+          continue
+        y_right = -p.yRel + camera_offset   # path_y() is in the same frame (model y + camera offset)
+        if v_ego > FAR_OBJ_MIN_V and -p.vRel <= FAR_OBJ_MAX_CLOSING and \
+           abs(y_right - path_y(p.dRel)) < float(np.interp(p.dRel, FAR_OBJ_PATH_Y_BP, FAR_OBJ_PATH_Y_V)):
+          self._far, self._far_frame = (float(p.dRel), y_right), sm.frame
+        break
+    if self._far is not None and sm.frame - self._far_frame > FAR_OBJ_HOLD_FRAMES:
+      self._far = None
+    if self._far is not None and (lead_d is None or abs(lead_d - self._far[0]) > FAR_OBJ_SAME_LEAD_M):
+      r = self._box_rect(map_to_screen, self._far[0], self._far[1], path_z(self._far[0]) + path_offset_z)
+      if r is not None:
+        self._draw_box(r, COLOR_CUTIN, FAR_BOX_THICK, True)
 
   def _draw_lamp(self, rect: rl.Rectangle, brake: bool):
     """Bottom-left lamp: a filled circle with a bold down chevron (slow down); red when light braking is needed."""
