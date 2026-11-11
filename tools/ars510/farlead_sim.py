@@ -16,13 +16,14 @@ STD = log.LongitudinalPersonality.standard
 TF = get_T_FOLLOW(STD)
 
 
-def run(d0, v0, vl0, mode, radar=True, t_end=30., lead_brake_at=None, lead_brake=0., seen_vrel=None, cam_delay=0.):
+def run(d0, v0, vl0, mode, radar=True, t_end=30., lead_brake_at=None, lead_brake=0., seen_vrel=None, cam_delay=0., lead_brake_until=0., lead_brake2_at=None, lead_brake2=0.):
   mpc = LongitudinalMpc(dt=DT_MDL)
   x, v, a = 0., v0, 0.; xl, vl = d0, vl0
   out_a = 0.; vf = v0; cap = None; res = []
   for i in range(int(t_end / DT_MDL)):
     t = i * DT_MDL
-    alc = lead_brake if (lead_brake_at is not None and t >= lead_brake_at and vl > 0) else 0.
+    alc = lead_brake if (lead_brake_at is not None and t >= lead_brake_at and vl > lead_brake_until) else 0.
+    if lead_brake2_at is not None and t >= lead_brake2_at and vl > 0: alc = lead_brake2
     rs = log.RadarState.new_message()
     l = rs.leadOne; l.present = True; l.radar = radar; l.dRel = xl - x
     l.vRel = (vl - v) if seen_vrel is None else max(vl - v, seen_vrel)  # camera-only: underestimated closing
@@ -73,7 +74,12 @@ if __name__ == "__main__":
            ("120m 110->80, lead brakes -3 at 3s", dict(d0=120, v0=30.6, vl0=22.2, lead_brake_at=3., lead_brake=-3.)),
            ("110m 110->70 camera only, vRel seen -5", dict(d0=110, v0=30.6, vl0=19.4, radar=False, seen_vrel=-5.)),
            ("130m 110->0 stopped car", dict(d0=130, v0=30.6, vl0=0.0)),
-           ("60m 100->95 close", dict(d0=60, v0=27.8, vl0=26.4))]
+           ("60m 100->95 close", dict(d0=60, v0=27.8, vl0=26.4)),
+           ("11/11 15:48 105m 106->62, lead slows -1.1 to 52", dict(d0=105, v0=29.4, vl0=17.1, lead_brake_at=0.3, lead_brake=-1.1, lead_brake_until=14.4)),
+           ("105m 106->62, lead slows -1.1 to a stop", dict(d0=105, v0=29.4, vl0=17.1, lead_brake_at=0.3, lead_brake=-1.1)),
+           ("105m 106->62, lead slows -1.1 for 2 s then -3 to a stop", dict(d0=105, v0=29.4, vl0=17.1, lead_brake_at=0.3, lead_brake=-1.1, lead_brake2_at=2.3, lead_brake2=-3.)),
+           ("105m 106->62, lead brakes -2.5 to a stop", dict(d0=105, v0=29.4, vl0=17.1, lead_brake_at=0.3, lead_brake=-2.5)),
+           ("90m 100->50, lead slows -1.5 to 20", dict(d0=90, v0=27.8, vl0=13.9, lead_brake_at=0.3, lead_brake=-1.5, lead_brake_until=5.6))]
   for name, c in cases:
     print(name)
     for mode in ("off", "floor", "early"):

@@ -88,6 +88,19 @@ FAR_LEAD_TTC_BP = [5., 7.]     # s, dRel / closing speed: no limit below 5 s, fu
 FAR_LEAD_MIN_CLOSING = 1.0     # m/s
 FAR_LEAD_MAX_LEAD_DECEL = -1.0  # m/s^2, lead braking harder than this: no limit
 FAR_LEAD_MIN_DECEL = -0.3      # the limit never asks for less braking than this
+# 11/11 15:48 (jam tail 105 m ahead at 62 km/h, 106 km/h, lead slowing at -1.1): once the lead braked harder than
+# FAR_LEAD_MAX_LEAD_DECEL there was no limit and the MPC went from -1.5 to -2.74 in 1 s; holding a steady -1.4 from the
+# moment the lead was taken would have settled behind it (driver: without the car that then cut in, no hard braking was
+# needed). A braking far lead is now limited too, but never to less than FAR_LEAD_BRAKING_FLOOR, and never to less than
+# FAR_LEAD_BRAKING_K x the constant deceleration that stops STOP_DISTANCE behind the point where the lead would stand if
+# it kept its deceleration to a stop (the worst case for a lead that is slowing). Same fade with distance and time to
+# contact as above, so a close or fast-closing lead is left to the MPC.
+# Between the two limits there is no step: from FAR_LEAD_MAX_LEAD_DECEL + FAR_LEAD_BRAKING_BLEND (-0.5) down to
+# FAR_LEAD_MAX_LEAD_DECEL the limit moves linearly from the one above to this one (first version: -2.00 -> -2.39 within
+# 0.2 s when the lead's deceleration came back above -1.0).
+FAR_LEAD_BRAKING_FLOOR = -2.0  # m/s^2
+FAR_LEAD_BRAKING_K = 1.0
+FAR_LEAD_BRAKING_BLEND = 0.5   # m/s^2 of lead deceleration
 FAR_LEAD_OFF_FILE = "/data/ars510_no_far_lead_soft"
 
 
@@ -96,7 +109,7 @@ def far_lead_accel_floor(lead, t_follow):
   if not (lead.present and lead.radar):
     return None
   closing = -lead.vRel
-  if closing < FAR_LEAD_MIN_CLOSING or lead.aLeadK < FAR_LEAD_MAX_LEAD_DECEL:
+  if closing < FAR_LEAD_MIN_CLOSING:
     return None
   ttc = lead.dRel / closing
   w = float(np.interp(lead.dRel, FAR_LEAD_D_BP, [0., 1.]) * np.interp(ttc, FAR_LEAD_TTC_BP, [0., 1.]))
@@ -107,6 +120,14 @@ def far_lead_accel_floor(lead, t_follow):
     return None
   a_req = closing ** 2 / (2. * gap)
   floor = min(min(lead.aLeadK, 0.) - FAR_LEAD_K * a_req, FAR_LEAD_MIN_DECEL)
+  k = (FAR_LEAD_MAX_LEAD_DECEL + FAR_LEAD_BRAKING_BLEND - lead.aLeadK) / FAR_LEAD_BRAKING_BLEND
+  if k > 0.:
+    v_lead = max(lead.vLead, 0.)
+    room = lead.dRel + v_lead ** 2 / (2. * -lead.aLeadK) - STOP_DISTANCE
+    if room <= 1.:
+      return None
+    braking = min(-FAR_LEAD_BRAKING_K * (v_lead + closing) ** 2 / (2. * room), FAR_LEAD_BRAKING_FLOOR)
+    floor += min(k, 1.) * (braking - floor)
   return floor, w
 
 
