@@ -82,6 +82,20 @@ FAR_OBJ_SAME_LEAD_M = 15.      # the far object within this range of the boxed r
 FAR_BOX_THICK = 3.0
 FAR_BOX_DASH, FAR_BOX_GAP = 12.0, 9.0
 
+# 11/11 driver: a pedestrian the radar reports while I drive PED_MIN_V or faster gets a solid pink marker, wherever it
+# is (roadside included) and whether or not openpilot is engaged: a person next to a fast road is worth a look.
+# The radar's class 4, settled tracks only, kept PED_HOLD_FRAMES after the last report. A person-sized filled box
+# (PED_W_M x PED_H_M at the radar's position, at least PED_MIN_W px wide). 35 h of logs: no such object at 75 km/h or
+# more, 8 at 60-75 km/h (all 4-11 m to the side, standing still, under 1.5 s; not checked against the video, some
+# may be posts). Display only. Off: /data/ars510_no_ped_mark.
+PED_OFF_FILE = "/data/ars510_no_ped_mark"
+PED_CLASS = 4
+PED_MIN_V = 70. / 3.6
+PED_W_M, PED_H_M = 0.6, 1.7
+PED_MIN_W = 40.0               # px
+PED_HOLD_FRAMES = 10           # ui frames (0.5 s)
+COLOR_PED = (255, 80, 170)     # pink
+
 T_FOLLOW_DEFAULT = 1.45
 T_FOLLOW_BY_PERSONALITY = {"relaxed": 2.0, "standard": 1.45, "aggressive": 1.25}   # = long_mpc.get_T_FOLLOW (not imported here)
 
@@ -124,9 +138,28 @@ class Ars510Tracks:
     self._far: tuple[float, float] | None = None   # (dRel, y right of the camera) of the radar-only far object
     self._far_frame = 0
     self._sizes: list[tuple] = []
+    self._ped_off = os.path.exists(PED_OFF_FILE)
+    self._peds: list[tuple] = []                   # (dRel, y left) of the radar's pedestrians
+    self._peds_frame = 0
     self._box_size: dict[str, list] = {}           # "lead" / "far" -> [d, width, height, time]
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
+    try:
+      if SERVICE in sm.data and sm.updated[SERVICE]:
+        self._sizes = parse_sizes(bytes(sm[SERVICE]))
+        peds = [(o[0], o[1]) for o in self._sizes if o[3] == PED_CLASS and not o[2]]
+        if peds:
+          self._peds, self._peds_frame = peds, sm.frame
+      if self._peds and sm.frame - self._peds_frame > PED_HOLD_FRAMES:
+        self._peds = []
+      if self._peds and not self._ped_off and sm['carState'].vEgo >= PED_MIN_V:
+        for d, y_left in self._peds:
+          r = self._box_rect(map_to_screen, d, -y_left + camera_offset, path_z(d) + path_offset_z, PED_W_M, PED_H_M, PED_MIN_W)
+          if r is not None:
+            rl.draw_rectangle_rec(rl.Rectangle(r.x - 3, r.y - 3, r.width + 6, r.height + 6), rl.Color(0, 0, 0, 170))
+            rl.draw_rectangle_rec(r, rl.Color(*COLOR_PED, 245))
+    except Exception:
+      self._peds = []
     try:
       if not self._box_off and "selfdriveState" in sm.data and sm["selfdriveState"].enabled:
         self._draw_boxes(sm, map_to_screen, path_z, path_y, camera_offset, path_offset_z, radar_state)
@@ -200,7 +233,7 @@ class Ars510Tracks:
     return w, h
 
   @staticmethod
-  def _box_rect(map_to_screen, d: float, y_right: float, z: float, w_m: float = BOX_W_M, h_m: float = BOX_H_M):
+  def _box_rect(map_to_screen, d: float, y_right: float, z: float, w_m: float = BOX_W_M, h_m: float = BOX_H_M, min_w: float | None = None):
     """Screen rectangle of a w_m x h_m box standing on the road at (d, y_right), or None when it is off screen."""
     p = map_to_screen(d, y_right, z)
     if p is None:
@@ -208,7 +241,7 @@ class Ars510Tracks:
     q = map_to_screen(d, y_right + 1.0, z) or map_to_screen(d, y_right - 1.0, z)
     if q is None:
       return None
-    w = max(w_m * abs(q[0] - p[0]), BOX_MIN_W * min(w_m / BOX_W_M, 1.0))
+    w = max(w_m * abs(q[0] - p[0]), BOX_MIN_W * min(w_m / BOX_W_M, 1.0) if min_w is None else min_w)
     h = w * h_m / w_m
     return rl.Rectangle(p[0] - w / 2, p[1] - h, w, h)
 
@@ -235,8 +268,6 @@ class Ars510Tracks:
 
   def _draw_boxes(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state):
     now = rl.get_time()
-    if SERVICE in sm.data and sm.updated[SERVICE]:
-      self._sizes = parse_sizes(bytes(sm[SERVICE]))
     a_target = sm['longitudinalPlan'].aTarget if 'longitudinalPlan' in sm.data else 0.
     lvl = 2 if a_target <= BOX_BRAKE else 1 if a_target <= BOX_LIFT else 0
     if lvl >= self._box_lvl:
