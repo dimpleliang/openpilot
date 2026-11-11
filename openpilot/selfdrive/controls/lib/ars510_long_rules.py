@@ -134,7 +134,15 @@ FAR_OBJ_HOLD = 10                   # planner cycles (0.5 s) the far object is k
 FAR_ACC_TRACK_ID_MAX = 64
 FAR_ACC_MIN_D = 80.                 # m
 FAR_RADAR_ONLY_MIN_V = 70. / 3.6    # m/s, both radar-only sources
-FAR_RADAR_ONLY_MAX_CLOSING = 12.    # m/s
+FAR_RADAR_ONLY_MAX_CLOSING = 12.    # m/s, the radar's ACC target as the radar-only source
+# 11/11 15:48 (jam tail after a double lane change, 106 km/h): the object list had the tail from 15:48:05 (120 m, 62 km/h,
+# in path), radard took it as the lead 2.4 s later and the MPC then needed -2.5 within 1.5 s; the far object was published
+# from 15:48:06.0 but closed at 12-16 m/s, just over the 12 m/s limit, so there was no coast. The object-list far object
+# now qualifies up to FAR_OBJ_MAX_CLOSING. Above FAR_RADAR_ONLY_MAX_CLOSING it stays a plain coast
+# (FAR_RADAR_ONLY_MAX_DECEL) and is not fused into a camera lead (fuse_far_object: that would allow FAR_EARLY_MAX_DECEL).
+# far_closing_eval.py, 2040 segments / 214 km above 70 km/h: 7 more episodes (0.6-2.4 s each), 3 became the lead,
+# the other 4 cost 0.6-1.1 s of coasting each. A stopped object at speed still closes faster than this and stays out.
+FAR_OBJ_MAX_CLOSING = 20.           # m/s, the object-list far object
 # 10/30 refinements: the cap also RISES at FAR_EARLY_JERK_UP (no throttle blip when the camera lead briefly reports a
 # too-small closing speed between the radar object and the radar lead); a camera-only lead takes the closing speed of a
 # radar object within FAR_FUSE_D_M of it; the radar object must lie within FAR_OBJ_PATH_Y_M of the model's path at its
@@ -169,7 +177,7 @@ def far_lead_accel_ceil(lead, t_follow, vision_max_decel=FAR_EARLY_MAX_DECEL_VIS
 def fuse_far_object(lead, fo):
   """A camera-only lead with a radar far object at about its range (FAR_FUSE_D_M or 15 % of range, the camera's
   distance error grows with range): the lead with the radar's closing speed if faster, and treated as radar-confirmed."""
-  if fo is None or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > max(FAR_FUSE_D_M, 0.15 * lead.dRel) or fo.vRel >= lead.vRel:
+  if fo is None or getattr(fo, "fast", False) or not lead.present or lead.radar or abs(fo.dRel - lead.dRel) > max(FAR_FUSE_D_M, 0.15 * lead.dRel) or fo.vRel >= lead.vRel:
     return lead
   return types.SimpleNamespace(present=True, radar=True, dRel=lead.dRel, vRel=fo.vRel, vLead=fo.vLead, aLeadK=min(lead.aLeadK, 0.), fused=True)
 
@@ -564,9 +572,9 @@ class FarLeadEarly(Rule):
     Both must lie near the model's path at their range."""
     if 'radarTracks' in sm.data and sm.updated['radarTracks'] and v_ego > FAR_RADAR_ONLY_MIN_V:
       pts = sm['radarTracks'].points
-      # closing faster than FAR_RADAR_ONLY_MAX_CLOSING is not a slower car (oncoming / roadside / stopped: the far-stopped-car
+      # closing faster than FAR_OBJ_MAX_CLOSING / FAR_RADAR_ONLY_MAX_CLOSING is not a slower car (oncoming / roadside / stopped: the far-stopped-car
       # path and the camera handle those) and is left alone (10/30 20:xx: 124 m, -16.9 m/s, gone 2 s later)
-      cands = [p for p in pts if p.trackId == FAR_OBJ_TRACK_ID and -p.vRel <= FAR_RADAR_ONLY_MAX_CLOSING] or \
+      cands = [p for p in pts if p.trackId == FAR_OBJ_TRACK_ID and -p.vRel <= FAR_OBJ_MAX_CLOSING] or \
               [p for p in pts if p.trackId < FAR_ACC_TRACK_ID_MAX and p.dRel >= FAR_ACC_MIN_D and -FAR_LEAD_MIN_CLOSING >= p.vRel >= -FAR_RADAR_ONLY_MAX_CLOSING]
       if cands:
         p = cands[0]
@@ -578,7 +586,8 @@ class FarLeadEarly(Rule):
         if abs(path_off) < float(np.interp(p.dRel, FAR_OBJ_PATH_Y_BP, FAR_OBJ_PATH_Y_V)):
           self.far_obj = types.SimpleNamespace(present=True, radar=True, dRel=float(p.dRel), vRel=float(p.vRel),
                                                vLead=float(v_ego + p.vRel), aLeadK=0., path_off=path_off,
-                                               src="obj" if p.trackId == FAR_OBJ_TRACK_ID else "acc")
+                                               src="obj" if p.trackId == FAR_OBJ_TRACK_ID else "acc",
+                                               fast=-float(p.vRel) > FAR_RADAR_ONLY_MAX_CLOSING)
           self.far_obj_age = 0
     if self.far_obj is not None:
       self.far_obj_age += 1
