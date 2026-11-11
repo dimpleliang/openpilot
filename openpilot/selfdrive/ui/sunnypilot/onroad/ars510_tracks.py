@@ -72,7 +72,7 @@ FAR_BOX_THICK = 3.0
 FAR_BOX_DASH, FAR_BOX_GAP = 12.0, 9.0
 
 T_FOLLOW_DEFAULT = 1.45
-T_FOLLOW_BY_PERSONALITY = {"relaxed": 1.75, "standard": 1.45, "aggressive": 1.25}   # = long_mpc.get_T_FOLLOW (not imported here)
+T_FOLLOW_BY_PERSONALITY = {"relaxed": 2.0, "standard": 1.45, "aggressive": 1.25}   # = long_mpc.get_T_FOLLOW (not imported here)
 
 # Radar object class (163|3) labels for vulnerable road users; validated on route 0000000e (7/9 pedestrians, 5/6
 # two-wheelers on sampled frames). Shown once the track has settled. Chinese only where the UI font carries the glyphs.
