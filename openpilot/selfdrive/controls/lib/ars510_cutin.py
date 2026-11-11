@@ -16,6 +16,7 @@ SERVICE = "customReservedRawData0"
 FMT_V1 = "<fffB"
 FMT = "<fffBH"  # v2: + native track id
 FMT_V3 = "<fffBHhB"  # v3: + radar lateral speed (cm/s, left-positive), lane-crossing code (2 / 5 cut-in from left / right)
+FMT_V4 = "<fffBHhBBB"  # v4 (11/11): + radar width, length (0.1 m, 0 = unknown); parse() ignores them, parse_sizes() reads them
 LEAD_MATCH_D_M = 2.0
 LEAD_MATCH_Y_M = 1.2
 SELF_LEAD_D_M = 3.0   # an object this near my lead's range (and its y, if radar) is the lead itself
@@ -96,9 +97,9 @@ CURVE_TRUST_K = 10.0   # m: offsets trusted up to sqrt(K x curve radius), see up
 
 def parse(payload: bytes) -> list[tuple]:
   """(d, y, vrel, sent, settling, class, track id, v_lat left-positive m/s, lane-crossing code)"""
-  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2, 3):
+  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] not in (1, 2, 3, 4):
     return []
-  fmt = {1: FMT_V1, 2: FMT, 3: FMT_V3}[payload[2]]
+  fmt = {1: FMT_V1, 2: FMT, 3: FMT_V3, 4: FMT_V4}[payload[2]]
   size = struct.calcsize(fmt)
   out = []
   for i in range(payload[3]):
@@ -109,6 +110,21 @@ def parse(payload: bytes) -> list[tuple]:
     d, y, v, flags = f[:4]
     out.append((d, y, v, bool(flags & 1), bool(flags & 2), (flags >> 2) & 7, f[4] if len(f) > 4 else -1,
                 f[5] / 100. if len(f) > 5 else float("nan"), f[6] if len(f) > 6 else 0))
+  return out
+
+
+def parse_sizes(payload: bytes) -> list[tuple]:
+  """(d, y, settling, class, width m, length m) per object of a v4 payload (0 = the radar gave no size); [] for older ones."""
+  if len(payload) < 4 or payload[:2] != b"A5" or payload[2] != 4:
+    return []
+  size = struct.calcsize(FMT_V4)
+  out = []
+  for i in range(payload[3]):
+    off = 4 + i * size
+    if off + size > len(payload):
+      break
+    f = struct.unpack_from(FMT_V4, payload, off)
+    out.append((f[0], f[1], bool(f[3] & 2), (f[3] >> 2) & 7, f[7] / 10., f[8] / 10.))
   return out
 
 

@@ -12,7 +12,7 @@ import os
 import numpy as np
 
 from openpilot.selfdrive.controls.lib import ars510_cutin as rule
-from openpilot.selfdrive.controls.lib.ars510_cutin import SERVICE, parse  # noqa: F401  (parse: tools import it from here)
+from openpilot.selfdrive.controls.lib.ars510_cutin import SERVICE, parse, parse_sizes  # noqa: F401  (parse: tools import it from here)
 import pyray as rl
 
 from openpilot.common.constants import CV
@@ -55,7 +55,18 @@ COLOR_LAMP_BRAKE = (255, 60, 40)
 # detection: far away it can sit a little off the car, and it is never drawn narrower than BOX_MIN_W.
 # Display only. Off: /data/ars510_no_lead_box.
 BOX_OFF_FILE = "/data/ars510_no_lead_box"
-BOX_W_M, BOX_H_M = 1.9, 1.5
+BOX_W_M, BOX_H_M = 1.9, 1.5    # when the radar object is not found / has no size yet
+# 11/11 driver: a more exact box. The object list carries the radar's own width and length for each object and its
+# class; the box takes the width from the radar and the height from the class (the radar does not measure height):
+# car 1.5 m, large vehicle 2.4 m (shorter than BOX_LONG_M: van, small truck) or 3.3 m (bus, truck), two-wheeler 1.6 m,
+# pedestrian 1.7 m. 11/11 route, 11 highway minutes, settled objects: cars 1.7-1.9 m wide (median 1.8), large vehicles
+# 1.8-2.4 m (median 2.1), the same at 20 m and at 120 m; within one track the width moves 0.2-0.3 m, so it is smoothed.
+# The lead / far object is paired with the object-list entry within BOX_MATCH_D_M / BOX_MATCH_Y_M of it.
+BOX_MATCH_D_M, BOX_MATCH_Y_M = 4.0, 1.5
+BOX_CLASS_SIZE = {2: (1.85, 1.5), 3: (2.3, 2.4), 4: (0.6, 1.7), 6: (0.8, 1.6)}   # class -> (width without a radar size, height) m
+BOX_LONG_M, BOX_LONG_H_M = 6.5, 3.3
+BOX_W_RANGE = {2: (1.5, 2.2), 3: (1.7, 2.6), 4: (0.4, 1.0), 6: (0.5, 1.2)}        # radar width accepted per class
+BOX_SIZE_TAU_S = 0.8
 BOX_MIN_W = 44.0               # px
 BOX_THICK = 5.0                # px
 BOX_LIFT, BOX_BRAKE = -0.25, -1.5   # m/s^2, longitudinalPlan.aTarget
@@ -112,6 +123,8 @@ class Ars510Tracks:
     self._box_lvl_until = 0.
     self._far: tuple[float, float] | None = None   # (dRel, y right of the camera) of the radar-only far object
     self._far_frame = 0
+    self._sizes: list[tuple] = []
+    self._box_size: dict[str, list] = {}           # "lead" / "far" -> [d, width, height, time]
 
   def draw(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state, rect: rl.Rectangle):
     try:
@@ -161,17 +174,42 @@ class Ars510Tracks:
     except Exception:
       self._points = []
 
+  def _box_size_m(self, key: str, d: float, y_left: float, now: float) -> tuple[float, float]:
+    """(width, height) in metres for the box at (d, y_left): the paired radar object's width and its class height."""
+    w, h = BOX_W_M, BOX_H_M
+    best = None
+    for (od, oy, settling, cls, ow, ol) in self._sizes:
+      if settling or abs(od - d) > BOX_MATCH_D_M or abs(oy - y_left) > BOX_MATCH_Y_M:
+        continue
+      cost = abs(od - d) / BOX_MATCH_D_M + abs(oy - y_left) / BOX_MATCH_Y_M
+      if best is None or cost < best[0]:
+        best = (cost, cls, ow, ol)
+    if best is not None and best[1] in BOX_CLASS_SIZE:
+      _, cls, ow, ol = best
+      w, h = BOX_CLASS_SIZE[cls]
+      lo, hi = BOX_W_RANGE[cls]
+      if lo <= ow <= hi:
+        w = ow
+      if cls == 3 and ol >= BOX_LONG_M:
+        h = BOX_LONG_H_M
+    prev = self._box_size.get(key)
+    if prev is not None and abs(prev[0] - d) < 2 * BOX_MATCH_D_M and 0 <= now - prev[3] < 1.0:   # the same car: smooth
+      k = min((now - prev[3]) / BOX_SIZE_TAU_S, 1.0)
+      w, h = prev[1] + k * (w - prev[1]), prev[2] + k * (h - prev[2])
+    self._box_size[key] = [d, w, h, now]
+    return w, h
+
   @staticmethod
-  def _box_rect(map_to_screen, d: float, y_right: float, z: float):
-    """Screen rectangle of a car-sized box standing on the road at (d, y_right), or None when it is off screen."""
+  def _box_rect(map_to_screen, d: float, y_right: float, z: float, w_m: float = BOX_W_M, h_m: float = BOX_H_M):
+    """Screen rectangle of a w_m x h_m box standing on the road at (d, y_right), or None when it is off screen."""
     p = map_to_screen(d, y_right, z)
     if p is None:
       return None
     q = map_to_screen(d, y_right + 1.0, z) or map_to_screen(d, y_right - 1.0, z)
     if q is None:
       return None
-    w = max(BOX_W_M * abs(q[0] - p[0]), BOX_MIN_W)
-    h = w * BOX_H_M / BOX_W_M
+    w = max(w_m * abs(q[0] - p[0]), BOX_MIN_W * min(w_m / BOX_W_M, 1.0))
+    h = w * h_m / w_m
     return rl.Rectangle(p[0] - w / 2, p[1] - h, w, h)
 
   @staticmethod
@@ -197,6 +235,8 @@ class Ars510Tracks:
 
   def _draw_boxes(self, sm, map_to_screen, path_z, path_y, camera_offset: float, path_offset_z: float, radar_state):
     now = rl.get_time()
+    if SERVICE in sm.data and sm.updated[SERVICE]:
+      self._sizes = parse_sizes(bytes(sm[SERVICE]))
     a_target = sm['longitudinalPlan'].aTarget if 'longitudinalPlan' in sm.data else 0.
     lvl = 2 if a_target <= BOX_BRAKE else 1 if a_target <= BOX_LIFT else 0
     if lvl >= self._box_lvl:
@@ -207,7 +247,8 @@ class Ars510Tracks:
     lead_d = None
     if lead is not None and lead.present and lead.radar:
       lead_d = lead.dRel
-      r = self._box_rect(map_to_screen, lead.dRel, -lead.yRel + camera_offset, path_z(lead.dRel) + path_offset_z)
+      w_m, h_m = self._box_size_m("lead", lead.dRel, lead.yRel, now)
+      r = self._box_rect(map_to_screen, lead.dRel, -lead.yRel + camera_offset, path_z(lead.dRel) + path_offset_z, w_m, h_m)
       if r is not None:
         self._draw_box(r, (COLOR_BOX, COLOR_CUTIN, COLOR_LAMP_BRAKE)[self._box_lvl], BOX_THICK, False)
     if 'radarTracks' not in sm.data:
@@ -225,7 +266,8 @@ class Ars510Tracks:
     if self._far is not None and sm.frame - self._far_frame > FAR_OBJ_HOLD_FRAMES:
       self._far = None
     if self._far is not None and (lead_d is None or abs(lead_d - self._far[0]) > FAR_OBJ_SAME_LEAD_M):
-      r = self._box_rect(map_to_screen, self._far[0], self._far[1], path_z(self._far[0]) + path_offset_z)
+      w_m, h_m = self._box_size_m("far", self._far[0], -(self._far[1] - camera_offset), now)
+      r = self._box_rect(map_to_screen, self._far[0], self._far[1], path_z(self._far[0]) + path_offset_z, w_m, h_m)
       if r is not None:
         self._draw_box(r, COLOR_CUTIN, FAR_BOX_THICK, True)
 

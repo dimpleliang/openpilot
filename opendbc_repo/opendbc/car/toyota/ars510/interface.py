@@ -600,7 +600,9 @@ class Ars510NativeRadarInterface:
             shown = None
             if obj.age >= DISPLAY_MIN_AGE:  # display: also the young (settling) tracks the publish age still holds back
                 shown = [float(d_out), float(y_out), vrel, False, obj.age < cfg.min_publish_age, obj.object_class or 0, int(tid) & 0xFFFF,
-                         yv, int(obj.lane_crossing_code or 0)]  # ego-frame lateral speed (yaw x range removed)
+                         yv, int(obj.lane_crossing_code or 0),  # ego-frame lateral speed (yaw x range removed)
+                         # 11/11: the radar's own width / length (0.1 m), for the size of the UI's lead box
+                         min(255, int(round((obj.width_m or 0.0) * 10))), min(255, int(round((obj.length_m or 0.0) * 10)))]
                 display.append(shown)
             if obj.age < cfg.min_publish_age:
                 self.settling_suppressed += 1
