@@ -4,7 +4,7 @@ from multiprocessing import Pool
 ROOT = os.path.expanduser('~/ars510_rlogs')
 sys.path[:0] = [os.path.join(ROOT, 'op'), os.path.join(ROOT, 'op', 'opendbc_repo')]
 FMTS = {1: '<fffB', 2: '<fffBH', 3: '<fffBHhB', 4: '<fffBHhBBB'}
-TF = 2.0
+TF = 2.0; MIND = float(os.environ.get("MIND", "30"))
 def seg(p):
   try: return seg0(p)
   except Exception as e: return dict(seg=os.path.basename(os.path.dirname(p)), km=0., A=[], B=[], err=str(e)[:80])
@@ -40,13 +40,13 @@ def seg0(p):
       F.append((t, v, a, brk, pr, rad, dr, vl))
       act = en and not gas
       # A
-      camok = act and pr and not rad and mp >= 0.5 and dr >= 50. and v > 8.
+      camok = act and pr and not rad and mp >= 0.5 and dr >= MIND and v > 8.
       if camok:
         dq.append((t, vl))
         while dq and t - dq[0][0] > 1.0: dq.popleft()
         vlf = max(min(x[1] for x in dq), 0.)
         gap = dr - (TF * vlf + 11.)
-        areq = (v - vlf) ** 2 / (2. * gap) if (gap > 1. and v - vlf > 1.) else 0.
+        areq = (v - vlf) ** 2 / (2. * gap) if (gap > 1. and v - vlf > 1. and vlf < 8.) else 0.
       else:
         areq = 0.
         if t - a_last > 0.3: dq.clear()

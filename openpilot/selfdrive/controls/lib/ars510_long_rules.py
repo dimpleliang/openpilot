@@ -238,8 +238,9 @@ def cutin_accel_ceil(obj, t_follow):
 # FAR_VISION_MIN_REQ for FAR_VISION_HOLD, the plan brakes at least FAR_VISION_K x that, never more than
 # FAR_VISION_MAX_DECEL, reached at FAR_VISION_JERK. Only below FAR_VISION_MAX_VLEAD: a faster camera lead at highway
 # speed gave 3 short false starts in 760 km of logs (11/07, 11/11, 11/12), the 6 left all needed -1.5..-3.8 or the
-# driver's brake (tools/ars510/mac/analysis/far_vision_eval.py, 2826 segments). Off: touch /data/ars510_no_far_vision.
-FAR_VISION_MIN_D = 50.         # m, dRel; nearer the MPC / near_stop / lead_stop take over
+# driver's brake (tools/ars510/mac/analysis/far_vision_eval.py, 2826 segments). Onset from FAR_VISION_MIN_D: nearer the radar
+# usually has the object and the MPC / near_stop / lead_stop decide; with 30 m instead of 50 m the logs give 7 onsets, all real. Off: touch /data/ars510_no_far_vision.
+FAR_VISION_MIN_D = 30.         # m, dRel at the onset (50 -> 30 on 11/14: one more onset in 767 km, 11/01 17:44, a real one; none false)
 FAR_VISION_MIN_V = 8.          # m/s, ego
 FAR_VISION_MIN_PROB = 0.5      # modelProb
 FAR_VISION_WIN = 1.0           # s
