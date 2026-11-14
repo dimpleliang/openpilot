@@ -9,6 +9,7 @@ the value is the "decider" (LongitudinalPlanner.decider, cloudlog "ARS510 decide
                                 (still goes through the min with MPC / cruise)
   1  far_soft    SOFTENS        less braking for a far, newly seen radar lead (lead0 only)  ars510_no_far_lead_soft
   2  far_early   cap            ease off early for a far slower lead / radar-only object    (same as far_soft)
+  2b far_vision  brake floor    brake in time for a far, slow / standing camera-only lead   ars510_no_far_vision
   3  near_stop   brake floor    firm enough to stop 4.5 m behind a stopped radar lead       ars510_no_near_stop
   4  lead_stop   brake floor    even braking to 4.5 m behind a lead slowing to a stop       ars510_no_lead_stop
   4b landing     SOFTENS        one brake application fading with the speed over the last    ars510_no_landing
@@ -225,6 +226,49 @@ def cutin_accel_ceil(obj, t_follow):
   gap = obj.dRel - (t_follow * max(obj.vLead, 0.) + STOP_DISTANCE + FAR_LEAD_MARGIN)
   a_req = closing ** 2 / (2. * gap) if gap > 1. else -CUTIN_MAX_DECEL
   return max(-a_req, CUTIN_MAX_DECEL), 1.0
+
+
+# --- 2b far_vision --------------------------------------------------------------------------------------------
+# ars510: brake in time for a far, slow or standing lead that only the camera has. 11/14 14:43 (rain, 56 km/h, three
+# scooters standing at a red light, first seen by the camera 90 m ahead; the radar's object list had them only from 46 m
+# and radard took one as the radar lead at 21 m): for 2.8 s the camera's lead speed jumped between 2 and 9 m/s (true: 0),
+# the MPC asked -0.6..-0.9 m/s^2 where a standing lead needed about -1.4, and the driver braked at 21 m. The lead's speed
+# is taken as the lowest of the last FAR_VISION_WIN (a standing object whose speed estimate jumps), and once the constant
+# deceleration that then stops the comfortable gap short of it (same gap as far_soft) has been at least
+# FAR_VISION_MIN_REQ for FAR_VISION_HOLD, the plan brakes at least FAR_VISION_K x that, never more than
+# FAR_VISION_MAX_DECEL, reached at FAR_VISION_JERK. Only below FAR_VISION_MAX_VLEAD: a faster camera lead at highway
+# speed gave 3 short false starts in 760 km of logs (11/07, 11/11, 11/12), the 6 left all needed -1.5..-3.8 or the
+# driver's brake (tools/ars510/mac/analysis/far_vision_eval.py, 2826 segments). Off: touch /data/ars510_no_far_vision.
+FAR_VISION_MIN_D = 50.         # m, dRel; nearer the MPC / near_stop / lead_stop take over
+FAR_VISION_MIN_V = 8.          # m/s, ego
+FAR_VISION_MIN_PROB = 0.5      # modelProb
+FAR_VISION_WIN = 1.0           # s
+FAR_VISION_MAX_VLEAD = 8.      # m/s, lowest lead speed of the window
+FAR_VISION_MIN_REQ = 0.8       # m/s^2
+FAR_VISION_HOLD = 1.0          # s
+FAR_VISION_GAP = 0.3           # s, the conditions may drop out this long (the camera lead flickers)
+FAR_VISION_K = 0.9
+FAR_VISION_MAX_DECEL = -2.0    # m/s^2 (= FAR_LEAD_BRAKING_FLOOR; sim: -1.5 left a -2.7 peak, -2.0 none)
+FAR_VISION_JERK = 1.0          # m/s^3
+# Once it brakes it keeps the object: the distance is never taken as larger than the last one minus the distance closed
+# since (14:43:37-40 the camera's distance stayed 11-25 m too long), a camera lead that drops out for up to
+# FAR_VISION_LOST is dead-reckoned (14:43:38.3: 0.4 s without a lead and the MPC planned +1.4; 71 % of 129 camera-lead
+# dropouts in the logs came back within 1 s), and it goes on down to FAR_VISION_KEEP_D / FAR_VISION_KEEP_V.
+FAR_VISION_LOST = 1.0          # s
+FAR_VISION_KEEP_D = 15.        # m
+FAR_VISION_KEEP_V = 3.         # m/s
+FAR_VISION_OFF_FILE = "/data/ars510_no_far_vision"
+
+
+def far_vision_req(d_rel, v_ego, v_lead_low, t_follow):
+  """Constant deceleration (> 0) that stops the comfortable gap short of a far camera-only lead; 0. when not applicable."""
+  v_lead = max(v_lead_low, 0.)
+  if v_lead >= FAR_VISION_MAX_VLEAD or v_ego - v_lead <= FAR_LEAD_MIN_CLOSING:
+    return 0.
+  gap = d_rel - (t_follow * v_lead + STOP_DISTANCE + FAR_LEAD_MARGIN)
+  if gap <= 1.:
+    return 0.
+  return (v_ego - v_lead) ** 2 / (2. * gap)
 
 
 # --- 3 near_stop --------------------------------------------------------------------------------------------
@@ -639,6 +683,76 @@ class FarLeadEarly(Rule):
     return self.cutin if self.cutin_cnt >= CUTIN_HOLD else None
 
 
+class FarVision(Rule):
+  """2b: brake floor for a far, slow / standing camera-only lead (see FAR_VISION_*)."""
+  name = "far_vision"
+
+  def __init__(self):
+    self.off = os.path.exists(FAR_VISION_OFF_FILE)
+    self.active = False
+    self._reset()
+
+  def _reset(self):
+    self.v_leads: list[float] = []
+    self.miss = 0
+    self.held = 0
+    self.low = 0
+    self.floor: float | None = None
+    self.d: float | None = None
+    self.v_low = 0.
+
+  def poll(self):
+    self.off = os.path.exists(FAR_VISION_OFF_FILE)
+
+  def apply(self, c, a):
+    lead = c.sm['radarState'].leadOne
+    gap_n = int(round(FAR_VISION_GAP / c.dt))
+    on = self.floor is not None
+    req = 0.
+    if not (c.long and not self.off and not c.reset_state and c.v_ego > (FAR_VISION_KEEP_V if on else FAR_VISION_MIN_V)):
+      self._reset()
+    elif (lead.present and not lead.radar and lead.modelProb >= FAR_VISION_MIN_PROB
+          and lead.dRel >= (FAR_VISION_KEEP_D if on else FAR_VISION_MIN_D)):
+      self.miss = 0
+      self.v_leads = (self.v_leads + [lead.vLead])[-int(round(FAR_VISION_WIN / c.dt)):]
+      self.v_low = max(min(self.v_leads), 0.)
+      d = lead.dRel
+      if on and self.d is not None:
+        d = min(d, self.d - (c.v_ego - self.v_low) * c.dt)   # a standing object cannot stay at the same distance
+      self.d = d
+      req = far_vision_req(d, c.v_ego, self.v_low, c.t_follow)
+    elif on and self.d is not None and self.miss * c.dt < FAR_VISION_LOST:
+      # the camera lead dropped out (or one radar frame): keep the object by dead reckoning
+      self.miss += 1
+      self.d -= (c.v_ego - self.v_low) * c.dt
+      if self.d >= FAR_VISION_KEEP_D:
+        req = far_vision_req(self.d, c.v_ego, self.v_low, c.t_follow)
+    else:
+      self.miss += 1
+      if on or self.miss > gap_n:
+        self._reset()
+        on = False
+    if req >= FAR_VISION_MIN_REQ:
+      self.held += 1
+      self.low = 0
+    else:
+      self.low += 1
+      if self.low > gap_n:
+        self.held = 0
+        self.floor = None
+    active = False
+    if req >= FAR_VISION_MIN_REQ and (on or self.held * c.dt >= FAR_VISION_HOLD):
+      target = max(-FAR_VISION_K * req, FAR_VISION_MAX_DECEL)
+      self.floor = max(target, (c.a_prev if self.floor is None else self.floor) - FAR_VISION_JERK * c.dt)
+      if a > self.floor:
+        a = self.floor
+        active = True
+    if active != self.active:
+      self.active = active
+      cloudlog.info(f"ARS510 far vision {'on' if active else 'off'} d={lead.dRel:.1f} vLead={lead.vLead:.1f} v={c.v_ego*3.6:.1f} a={a:.2f}")
+    return a
+
+
 class NearStop(Rule):
   """3: near-stop floor (see NEAR_STOP_K); applies whatever the source."""
   name = "near_stop"
@@ -989,7 +1103,7 @@ class Rules:
 
   def __init__(self, dt):
     self.e2e_fill = E2EFill()
-    self.rules: list[Rule] = [FarLeadSoft(), FarLeadEarly(), NearStop(), LeadStop(dt), Landing(), CutinConfirm(), CutinResponse(),
+    self.rules: list[Rule] = [FarLeadSoft(), FarLeadEarly(), FarVision(), NearStop(), LeadStop(dt), Landing(), CutinConfirm(), CutinResponse(),
                               HazardCoast(), TurnHold(), PosAccelCeiling()]
     self.by_name = {r.name: r for r in [self.e2e_fill] + self.rules}
     self.rain = ars510_rain.RainMode(dt)   # not a rule: scales t_follow / acceleration for the rules and the MPC
