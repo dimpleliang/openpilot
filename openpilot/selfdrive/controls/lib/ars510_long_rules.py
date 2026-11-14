@@ -707,12 +707,13 @@ class FarVision(Rule):
   def apply(self, c, a):
     lead = c.sm['radarState'].leadOne
     gap_n = int(round(FAR_VISION_GAP / c.dt))
-    on = self.floor is not None
-    req = 0.
+    on = self.floor is not None   # already braking for this object
+    req = 0.                      # constant deceleration needed this cycle (0. = no claim)
     if not (c.long and not self.off and not c.reset_state and c.v_ego > (FAR_VISION_KEEP_V if on else FAR_VISION_MIN_V)):
-      self._reset()
+      self._reset()   # not engaged / driver override / too slow: forget everything
     elif (lead.present and not lead.radar and lead.modelProb >= FAR_VISION_MIN_PROB
           and lead.dRel >= (FAR_VISION_KEEP_D if on else FAR_VISION_MIN_D)):
+      # a camera-only lead: lowest speed of the last FAR_VISION_WIN (a standing object whose speed estimate jumps)
       self.miss = 0
       self.v_leads = (self.v_leads + [lead.vLead])[-int(round(FAR_VISION_WIN / c.dt)):]
       self.v_low = max(min(self.v_leads), 0.)
@@ -732,6 +733,7 @@ class FarVision(Rule):
       if on or self.miss > gap_n:
         self._reset()
         on = False
+    # onset only after the need has lasted FAR_VISION_HOLD (dropouts up to FAR_VISION_GAP do not restart the count)
     if req >= FAR_VISION_MIN_REQ:
       self.held += 1
       self.low = 0
@@ -742,6 +744,7 @@ class FarVision(Rule):
         self.floor = None
     active = False
     if req >= FAR_VISION_MIN_REQ and (on or self.held * c.dt >= FAR_VISION_HOLD):
+      # the floor: K x the need, limited, ramped from the previous output; it only ever lowers the plan (min)
       target = max(-FAR_VISION_K * req, FAR_VISION_MAX_DECEL)
       self.floor = max(target, (c.a_prev if self.floor is None else self.floor) - FAR_VISION_JERK * c.dt)
       if a > self.floor:
