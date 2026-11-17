@@ -351,6 +351,19 @@ LAND_LEAD = 0.35               # s
 LAND_JERK = 0.8                # m/s^3
 LAND_URGENT = 0.3              # m/s^2
 LAND_OFF_FILE = "/data/ars510_no_landing"
+# 11/17 (driver: stops still end with a slight jolt). 25 system stops of 11/12-11/17 with the IMU (pitch rebound at the
+# true stop): the jolt follows the deceleration left at the true stop (r = 0.86), and for the same -0.30 request that
+# was anything from 0.03 to 0.38. Landings that started with a small k (0.00-0.09: the car crept in, a near-constant
+# -0.28 for 1.7-3.3 s) had jolts 0.47-0.53; short decisive ones (k 0.49-0.61, 1.7-2.5 s, the request clearly fading)
+# 0.18-0.25; stops without a landing 0.01-0.51 (median 0.36). So a landing only starts when its fade is real: k at the
+# start at least LAND_K_MIN, otherwise the plan / near_stop / longcontrol's brake hold stop the car as before.
+# At 3.7 km/h k = 0.45 starts at about 0.94 m of room (need 0.56); at 7 km/h it would need 0.8, so the landing then
+# simply does not start. Tunable on the car: a number in LAND_K_MIN_FILE (1/s, clipped to LAND_K_MIN_RANGE; 0 = the
+# 11/10-11/17 behaviour). Read once a second.
+LAND_K_MIN = 0.45              # 1/s
+LAND_K_MIN_FILE = "/data/ars510_land_k_min"
+LAND_K_MIN_RANGE = (0.0, 1.5)
+
 
 
 # --- 4 lead_stop --------------------------------------------------------------------------------------------
@@ -811,6 +824,15 @@ class LeadStop(Rule):
     return a
 
 
+def read_land_k_min() -> float:
+  """LAND_K_MIN, or the number in LAND_K_MIN_FILE (clipped to LAND_K_MIN_RANGE)."""
+  try:
+    with open(LAND_K_MIN_FILE) as f:
+      return float(np.clip(float(f.read().strip()), *LAND_K_MIN_RANGE))
+  except Exception:
+    return LAND_K_MIN
+
+
 def landing_k(v, room):
   """k of the fading stop a = LAND_END + k v that comes to rest in `room` from speed v (0 if LAND_END alone stops
   earlier). Distance of that stop: v / k - LAND_END / k^2 x ln(1 + k v / LAND_END), falling with k."""
@@ -837,9 +859,11 @@ class Landing(Rule):
     self.off = os.path.exists(LAND_OFF_FILE)
     self.k = None         # 1/s, None = not landing
     self.out = 0.         # the ramped request
+    self.k_min = read_land_k_min()   # 1/s, see LAND_K_MIN
 
   def poll(self):
     self.off = os.path.exists(LAND_OFF_FILE)
+    self.k_min = read_land_k_min()
 
   def _end(self, lead, c, why):
     if self.k is not None:
@@ -860,7 +884,10 @@ class Landing(Rule):
     if self.k is None:
       if not (NEAR_STOP_MIN_V <= v <= LAND_V_MAX and room >= LAND_ROOM_FREEZE and LAND_ON <= need <= LAND_MAX):
         return a
-      self.k = landing_k(v, room)
+      k0 = landing_k(v, room)
+      if k0 < self.k_min:   # the fade would be (almost) a constant floor: leave the stop to the plan (LAND_K_MIN)
+        return a
+      self.k = k0
       self.out = min(c.a_prev, 0.)
       cloudlog.info(f"ARS510 landing on d={lead.dRel:.1f} v={v*3.6:.1f} need={need:.2f} k={self.k:.2f} plan={a:.2f}")
     elif v < 0.05:
