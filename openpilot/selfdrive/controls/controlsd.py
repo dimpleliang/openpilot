@@ -143,8 +143,13 @@ class Controls(ControlsExt):
     if self.calibrated_pose is not None and self.pose_calibrator.calib_valid and \
        self.sm.valid['deviceMotion'] and self.sm.alive['deviceMotion']:
       pose_accel = float(self.calibrated_pose.acceleration.x)
+    # dimpleliang/ars510: road pitch for the standstill hold (deeper hold brake on a slope, see longcontrol HOLD_*)
+    pitch = None
+    if self.calibrated_pose is not None and self.pose_calibrator.calib_valid and \
+       self.sm.valid['deviceMotion'] and self.sm.alive['deviceMotion']:
+      pitch = float(self.calibrated_pose.orientation.pitch)
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
-                                            pose_accel=pose_accel))
+                                            pose_accel=pose_accel, pitch=pitch))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage

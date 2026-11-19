@@ -79,6 +79,15 @@ STOP_FLOOR_FILE = "/data/ars510_stop_floor"
 STOP_FLOOR_RANGE = (-0.40, -0.15)
 
 
+def read_hold_target():
+  """HOLD_TARGET_FILE value clipped to [-2.0, -0.5], or HOLD_TARGET."""
+  try:
+    with open(HOLD_TARGET_FILE) as f:
+      return float(np.clip(float(f.read().strip()), -2.0, -0.5))
+  except (OSError, ValueError):
+    return HOLD_TARGET
+
+
 def read_stop_floor():
   try:
     with open(STOP_FLOOR_FILE) as f:
@@ -137,7 +146,35 @@ SOFT_STOP_STILL_WHEEL_V = 0.01  # m/s
 # request does not jump to BRAKE_HOLD_ACCEL but ramps there at SOFT_STOP_STILL_RATE (0.18 s), so a car that was in fact
 # still creeping gets a firm but not abrupt brake; (3) if the wheels report rolling again (> SOFT_STOP_STILL_UNDO_V) the
 # stop verdict is withdrawn and the closed-loop rolling branch takes over.
-SOFT_STOP_STILL_RATE = 2.5      # m/s^3
+SOFT_STOP_STILL_RATE = 2.5      # m/s^3 (old hold, kept for HOLD_OLD_FILE and the roll-on fallback)
+# 11/19 review of 26 system stops (IMU forward accel, 5-sample smoothed): the true stop itself was soft (swing median
+# 0.12), but the hold ramp after it was not (median 0.47, bigger than the stop in 23 of 25), peaking while the request
+# passed -0.5 (end of the 2.5 m/s^3 step) and around -0.94..-1.2 (the 1.0 m/s^3 ramp to stopAccel -2.0): each extra
+# brake bite on a standing car rocks the body. -2.0 is only needed on a slope. The hold now ramps at HOLD_RAMP_RATE to
+# HOLD_TARGET on the flat and deeper with the road slope (HOLD_SLOPE_K x g x (|slope| - HOLD_SLOPE_DEADBAND), at most
+# stopAccel): 4% grade -> about -1.4, 7% -> about -1.9. If the pose sees the car pushed forward during the hold
+# (HOLD_ROLL_*), the old ramp at STOPPING_DECEL_RATE to stopAccel takes over for the rest of the stop; if the wheels
+# report rolling, APPROACH as before.
+# Slope: the calibrated pose pitch has an offset (11/19 rlogs, routes c7/cb: mean pitch while driving +0.012..+0.019 rad on
+# every segment, and +0.017 at the stops), i.e. the mounting / calibration error, not the road. It is learnt while
+# driving (EMA over HOLD_PITCH_BIAS_TAU above HOLD_PITCH_BIAS_V, the road grade averages out) and subtracted.
+# Replay check (tools/ars510/mac/analysis/hold_replay.py): the old ramp reacted to the body rebound right after the stop
+# (pose +0.25 for 0.3 s), so the push detector only arms HOLD_ROLL_ARM after the hold starts and needs HOLD_ROLL_T.
+# On a slope (beyond the deadband) the ramp runs at the stock STOPPING_DECEL_RATE: a firmer hold matters more there than
+# the comfort of the ramp.
+HOLD_RAMP_RATE = 0.3            # m/s^3
+HOLD_TARGET = -1.0              # m/s^2, flat road; tunable with HOLD_TARGET_FILE
+HOLD_SLOPE_K = 1.5              # margin on the gravity component
+HOLD_SLOPE_DEADBAND = 0.01      # rad, slope error of the bias estimate
+HOLD_PITCH_BIAS0 = 0.015        # rad, start value of the pitch offset (11/19 rlogs)
+HOLD_PITCH_BIAS_TAU = 300.      # s
+HOLD_PITCH_BIAS_V = 5.          # m/s
+HOLD_PITCH_BIAS_RANGE = (0.0, 0.03)  # rad, plausible mounting / calibration offset
+HOLD_ROLL_A = 0.15              # m/s^2, filtered pose acceleration above this in HOLD = being pushed / rolling
+HOLD_ROLL_ARM = 1.0             # s after the hold starts (the stop rebound is over)
+HOLD_ROLL_T = 0.3               # s the push must last
+HOLD_TARGET_FILE = "/data/ars510_hold_target"   # e.g. -0.8; range [-2.0, -0.5]
+HOLD_OLD_FILE = "/data/ars510_old_hold"         # exists = the hold before 11/19 (2.5 to -0.5, then 1.0 to -2.0)
 SOFT_STOP_STILL_UNDO_V = 0.2    # m/s
 # Pre-release (10/28): a human stops without a jolt by easing the pedal in the last tenths of a second, so there is no
 # deceleration left when the wheels stop. The PCM gives no light braking at crawl speed (either nothing or >= -0.3) and
@@ -287,6 +324,10 @@ class LongControl:
     self.pre_release_enabled = not os.path.exists(PRE_RELEASE_OFF_FILE)
     self.stop_floor = read_stop_floor()   # None = BRAKE_HOLD_MIN / PRE_RELEASE_ACCEL (see STOP_FLOOR_FILE)
     self.stop_floor_poll = 0
+    self.hold_target = read_hold_target()
+    self.hold_old = os.path.exists(HOLD_OLD_FILE)
+    self.pitch = None             # rad, pitch from the calibrated pose (None if unavailable)
+    self.pitch_bias = HOLD_PITCH_BIAS0
     # BEHAVIOUR KEPT (G1): these three are only set when a pre-release triggers and are never reset between stops;
     # pre_release_start is read by the release-failed recovery (also after an urgent plan cancelled a stop that never
     # released, i.e. with the value of an earlier stop)
@@ -333,6 +374,9 @@ class LongControl:
     self.pre_release_failed = False
     self.still_frames = 0
     self.hold_frames = 0
+    self.hold_rolled = False      # pose saw a push during this hold: old ramp to stopAccel
+    self.hold_push_frames = 0
+    self.hold_pitch = 0.0         # largest |pitch| seen during this hold
     self.still_set = False       # true_stopped was set by update_still (undo-able while the wheels still read 0)
 
   def _set_phase(self, phase, reason):
@@ -509,9 +553,27 @@ class LongControl:
     self.hold_frames += 1
     if self.hold_frames * DT_CTRL < SOFT_STOP_HOLD_DELAY:
       return output_accel
-    if output_accel > BRAKE_HOLD_ACCEL:
-      return max(self.ramp_to_stop(output_accel, SOFT_STOP_STILL_RATE), BRAKE_HOLD_ACCEL)
-    return self.ramp_to_stop(output_accel)
+    if self.hold_frames * DT_CTRL >= HOLD_ROLL_ARM and self.est.pose_a_f > HOLD_ROLL_A:
+      self.hold_push_frames += 1
+    else:
+      self.hold_push_frames = 0
+    if self.hold_push_frames * DT_CTRL >= HOLD_ROLL_T and not self.hold_rolled:
+      self.hold_rolled = True
+      cloudlog.info(f"ARS510 hold: pushed (pose {self.est.pose_a_f:.2f}), ramp to stopAccel")
+    if self.hold_old or self.hold_rolled:
+      if output_accel > BRAKE_HOLD_ACCEL:
+        return max(self.ramp_to_stop(output_accel, SOFT_STOP_STILL_RATE), BRAKE_HOLD_ACCEL)
+      return self.ramp_to_stop(output_accel)
+    # 11/19: soft hold (see HOLD_RAMP_RATE). The target only ever deepens within a stop (largest pitch seen).
+    if self.pitch is not None:
+      self.hold_pitch = max(self.hold_pitch, abs(self.pitch - self.pitch_bias) - HOLD_SLOPE_DEADBAND)
+    target = float(np.clip(self.hold_target - HOLD_SLOPE_K * 9.81 * self.hold_pitch,
+                           self.CP.stopAccel, self.hold_target))
+    if output_accel <= target:
+      return output_accel        # already firmer (urgent plan, or before 11/19 settings): keep, never release here
+    # on a slope the brake is wanted sooner (gravity works against a request near the PCM release point): stock rate
+    rate = STOPPING_DECEL_RATE if self.hold_pitch > 0. else HOLD_RAMP_RATE
+    return max(output_accel - rate * DT_CTRL, target)
 
   def _settle(self, output_accel):
     if self.settle_frames > 0:
@@ -618,7 +680,12 @@ class LongControl:
       self._set_phase(StopPhase.DRIVE, self._brake_hold_clear_reason if self.stop_phase == StopPhase.BRAKE_HOLD else "pid")
     return output_accel
 
-  def update(self, active, CS, a_target, should_stop, accel_limits, pose_accel=None):
+  def update(self, active, CS, a_target, should_stop, accel_limits, pose_accel=None, pitch=None):
+    self.pitch = None if pitch is None else float(pitch)
+    if self.pitch is not None and CS.vEgo > HOLD_PITCH_BIAS_V:
+      self.pitch_bias += (self.pitch - self.pitch_bias) * DT_CTRL / HOLD_PITCH_BIAS_TAU
+      # a long climb must not be learnt as offset (it would hide the slope at the next stop)
+      self.pitch_bias = float(np.clip(self.pitch_bias, *HOLD_PITCH_BIAS_RANGE))
     """Update longitudinal control. This updates the state machine and runs a PID loop.
     pose_accel: calibrated longitudinal acceleration from locationd (m/s^2), None if not valid."""
     self.pid.neg_limit = accel_limits[0]
@@ -629,6 +696,11 @@ class LongControl:
       if floor != self.stop_floor:
         cloudlog.info(f"ARS510 stop floor {self.stop_floor} -> {floor}")
         self.stop_floor = floor
+      hold_target = read_hold_target()
+      hold_old = os.path.exists(HOLD_OLD_FILE)
+      if (hold_target, hold_old) != (self.hold_target, self.hold_old):
+        cloudlog.info(f"ARS510 hold target {self.hold_target} -> {hold_target}, old hold {hold_old}")
+        self.hold_target, self.hold_old = hold_target, hold_old
     self.pid.pos_limit = accel_limits[1]
     self.est.update(CS.vEgoRaw, CS.aEgo, pose_accel)
 

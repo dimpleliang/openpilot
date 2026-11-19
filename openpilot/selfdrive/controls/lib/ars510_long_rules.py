@@ -296,6 +296,13 @@ NEAR_STOP_HOLD_VLEAD = 0.3     # m/s, the hold only behind a lead that has reall
 NEAR_STOP_FREE = -0.3          # m/s^2, a floor weaker than this is no reason to hold the car back
 NEAR_STOP_FREE_ACCEL = 0.5     # m/s^2, acceleration allowed when no braking is needed at all
 NEAR_STOP_OFF_FILE = "/data/ars510_no_near_stop"
+# 11/19 15:16: the car had stopped softly 3.5 m behind a stopped car; ~1 s later the lead read 3.49 m (< TOO_CLOSE) and
+# the -1.5 hold was requested in one step (-0.30 -> -1.5 -> -2.0 within 0.3 s): IMU swing 1.26, the biggest jolt of the
+# day. The hold is meant to stop a car that is still rolling; once it stands (vEgo below NEAR_STOP_STANDSTILL_V) the
+# stop logic in longcontrol holds it. The plan is then only kept at NEAR_STOP_STANDSTILL_ACCEL (no pull-away toward the
+# lead, no extra brake).
+NEAR_STOP_STANDSTILL_V = 0.05  # m/s
+NEAR_STOP_STANDSTILL_ACCEL = NEAR_STOP_FREE  # m/s^2, = the stop floor region: adds no brake to the hold
 
 
 def near_stop_accel_floor(lead, v_ego):
@@ -303,6 +310,8 @@ def near_stop_accel_floor(lead, v_ego):
   if not (lead.present and lead.radar) or lead.dRel > NEAR_STOP_D_MAX or lead.vLead > NEAR_STOP_VLEAD_MAX:
     return None
   if lead.dRel < NEAR_STOP_TOO_CLOSE and lead.vLead < NEAR_STOP_HOLD_VLEAD:
+    if v_ego < NEAR_STOP_STANDSTILL_V:
+      return NEAR_STOP_STANDSTILL_ACCEL   # already standing: keep the plan from pulling away, no brake step (11/19)
     return NEAR_STOP_HOLD_ACCEL
   if v_ego < NEAR_STOP_MIN_V:
     return None
@@ -360,7 +369,7 @@ LAND_OFF_FILE = "/data/ars510_no_landing"
 # At 3.7 km/h k = 0.45 starts at about 0.94 m of room (need 0.56); at 7 km/h it would need 0.8, so the landing then
 # simply does not start. Tunable on the car: a number in LAND_K_MIN_FILE (1/s, clipped to LAND_K_MIN_RANGE; 0 = the
 # 11/10-11/17 behaviour). Read once a second.
-LAND_K_MIN = 0.45              # 1/s
+LAND_K_MIN = 0.0               # 1/s (11/19: 0.45 reverted, the stop jolt was the hold ramp, not the landing)
 LAND_K_MIN_FILE = "/data/ars510_land_k_min"
 LAND_K_MIN_RANGE = (0.0, 1.5)
 
