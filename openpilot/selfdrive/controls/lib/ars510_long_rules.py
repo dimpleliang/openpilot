@@ -372,6 +372,21 @@ LAND_OFF_FILE = "/data/ars510_no_landing"
 LAND_K_MIN = 0.0               # 1/s (11/19: 0.45 reverted, the stop jolt was the hold ramp, not the landing)
 LAND_K_MIN_FILE = "/data/ars510_land_k_min"
 LAND_K_MIN_RANGE = (0.0, 1.5)
+# 11/22 (driver: "what if the last weak braking lasted a little longer?"). 38 system stops at the -0.30 floor
+# (11/07-11/19), by how long the request sat at the floor before the wheel speed dropped out: < 0.4 s jolt median 0.43
+# (0 of 9 soft), 0.4-1.0 s 0.05-0.14 (12 of 17 soft), > 1.5 s 0.29. The late ones are almost all landings: a = E + k v
+# only reaches E as v -> 0, so the request was still -0.40..-0.46 one second before the stop and reached the floor
+# ~0.3 s before it. The fade now ends at LAND_V_FLOOR: a = LAND_END + k x max(v - LAND_V_FLOOR, 0), i.e. a little more
+# brake earlier and the floor held over the last ~0.1-0.2 m. Simulation (PCM lag 0.4 s, starts 1.0-1.8 m/s, need
+# 0.35-0.5): floor held 0.46-1.09 s before the wheel stop (was 0.01-0.47), stop position +0.00..+0.17 m (was
+# +0.00..+0.14), peak request -0.62..-0.64 (was -0.59..-0.61). Open-loop replay of 88 landings 11/07-11/19
+# (tools/ars510/mac/analysis/land_vfloor_replay.py): the 50 with the floor reached < 0.4 s before the wheel stop now hold it
+# median 0.80 s (p10 0.61, p90 1.27; 35 of 50 within 0.4-1.0 s); stopping distance -0.13..+0.14 m (median -0.02); peak
+# request firmer by <= 0.02. 0.30 held it 0.95 s (p90 1.56), longer than the 0.4-1.0 s window. Long crawls (floor
+# already > 1 s, k ~ 0) are unchanged. Tunable: LAND_V_FLOOR_FILE (m/s, LAND_V_FLOOR_RANGE; 0 = before 11/22).
+LAND_V_FLOOR = 0.25            # m/s
+LAND_V_FLOOR_FILE = "/data/ars510_land_v_floor"
+LAND_V_FLOOR_RANGE = (0.0, 0.6)
 
 
 
@@ -842,15 +857,32 @@ def read_land_k_min() -> float:
     return LAND_K_MIN
 
 
-def landing_k(v, room):
-  """k of the fading stop a = LAND_END + k v that comes to rest in `room` from speed v (0 if LAND_END alone stops
-  earlier). Distance of that stop: v / k - LAND_END / k^2 x ln(1 + k v / LAND_END), falling with k."""
+def read_land_v_floor():
+  """LAND_V_FLOOR, or the number in LAND_V_FLOOR_FILE (clipped to LAND_V_FLOOR_RANGE)."""
+  try:
+    with open(LAND_V_FLOOR_FILE) as f:
+      return float(np.clip(float(f.read().strip()), *LAND_V_FLOOR_RANGE))
+  except (OSError, ValueError):
+    return LAND_V_FLOOR
+
+
+def landing_dist(v, k, vf=0.):
+  """Distance of the stop a = LAND_END + k max(u - vf, 0) from speed v: with W = v - vf,
+  W / k + (vf - LAND_END / k) / k x ln(1 + k W / LAND_END) + vf^2 / (2 LAND_END); falls with k (vf = 0: the 11/10 form)."""
+  w = v - vf
+  if w <= 0. or k <= 1e-9:
+    return v * v / (2. * LAND_END)
+  return w / k + (vf - LAND_END / k) / k * math.log(1. + k * w / LAND_END) + vf * vf / (2. * LAND_END)
+
+
+def landing_k(v, room, vf=0.):
+  """k of the fading stop that comes to rest in `room` from speed v (0 if LAND_END alone stops earlier)."""
   if v <= 0. or v * v / (2. * LAND_END) <= room:
     return 0.
   lo, hi = 0., LAND_K_MAX
   for _ in range(24):
     k = 0.5 * (lo + hi)
-    if v / k - LAND_END / (k * k) * math.log(1. + k * v / LAND_END) > room:
+    if landing_dist(v, k, vf) > room:
       lo = k
     else:
       hi = k
@@ -869,10 +901,12 @@ class Landing(Rule):
     self.k = None         # 1/s, None = not landing
     self.out = 0.         # the ramped request
     self.k_min = read_land_k_min()   # 1/s, see LAND_K_MIN
+    self.v_floor = read_land_v_floor()   # m/s, see LAND_V_FLOOR
 
   def poll(self):
     self.off = os.path.exists(LAND_OFF_FILE)
     self.k_min = read_land_k_min()
+    self.v_floor = read_land_v_floor()
 
   def _end(self, lead, c, why):
     if self.k is not None:
@@ -893,7 +927,7 @@ class Landing(Rule):
     if self.k is None:
       if not (NEAR_STOP_MIN_V <= v <= LAND_V_MAX and room >= LAND_ROOM_FREEZE and LAND_ON <= need <= LAND_MAX):
         return a
-      k0 = landing_k(v, room)
+      k0 = landing_k(v, room, self.v_floor)
       if k0 < self.k_min:   # the fade would be (almost) a constant floor: leave the stop to the plan (LAND_K_MIN)
         return a
       self.k = k0
@@ -906,9 +940,9 @@ class Landing(Rule):
       self._end(lead, c, "speed / need")
       return a
     elif room >= LAND_ROOM_FREEZE and v >= NEAR_STOP_MIN_V:
-      self.k += (landing_k(v, room) - self.k) * c.dt / (LAND_K_TAU + c.dt)
+      self.k += (landing_k(v, room, self.v_floor) - self.k) * c.dt / (LAND_K_TAU + c.dt)
     # the brake answers about LAND_LEAD late: shape the request on the speed the car will have by then
-    target = -(LAND_END + self.k * max(v + self.out * LAND_LEAD, 0.))
+    target = -(LAND_END + self.k * max(v + self.out * LAND_LEAD - self.v_floor, 0.))
     if a < target - LAND_URGENT:
       self._end(lead, c, "plan firmer")
       return a
