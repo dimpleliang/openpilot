@@ -172,6 +172,15 @@ class Controls(ControlsExt):
       actuators.curvature = float(lateral_output)
     else:
       actuators.steeringAngleDeg = float(lateral_output)
+      # TEST BRANCH ars510-test-angle: standstill steering-angle test. While /data/ars510_angle_test exists, the car is
+      # (nearly) stopped and lateral is active, the angle command comes from /dev/shm/ars510_angle_target (written by
+      # tools/ars510/angle_test.py); the carcontroller rate limits still apply.
+      if CC.latActive and CS.vEgo < 0.5 and os.path.exists('/data/ars510_angle_test'):
+        try:
+          with open('/dev/shm/ars510_angle_target') as f:
+            actuators.steeringAngleDeg = float(f.read().strip())
+        except (OSError, ValueError):
+          pass
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)

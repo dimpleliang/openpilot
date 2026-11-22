@@ -23,7 +23,8 @@ class CarControllerParams:
   # Lane Tracing Assist (LTA) control limits
   ANGLE_LIMITS: AngleSteeringLimits = AngleSteeringLimits(
     # EPS ignores commands above this angle and causes PCS to fault
-    94.9461,  # deg
+    180.0,  # deg  TEST BRANCH ars510-test-angle (11/22): 94.9461 -> 180 for the standstill >95 deg test; above
+            # LTA_TEST_MAX_V the controller still clips to LTA_STOCK_MAX_ANGLE (carcontroller)
     # Assuming a steering ratio of 13.7:
     # Limit to ~2.0 m/s^3 up (7.5 deg/s), ~3.5 m/s^3 down (13 deg/s) at 75 mph
     # Worst case, the low speed limits will allow ~4.0 m/s^3 up (15 deg/s) and ~4.9 m/s^3 down (18 deg/s) at 75 mph,
@@ -62,7 +63,9 @@ class CarControllerParams:
   # dimpleliang/ars510: LTA fault avoidance - drop the LTA request while the wheel turns faster than LTA_CUT_RATE or
   # is beyond LTA_CUT_ANGLE (the EPS ignores commands above ~94.95 deg), and for LTA_CUT_HOLD_FRAMES (0.2 s) after
   LTA_CUT_RATE = 100.0  # deg/s, as MAX_STEER_RATE for LKA torque control
-  LTA_CUT_ANGLE = 100.0  # deg, above the ~94.95 deg command limit so openpilot at its own limit never trips it
+  LTA_CUT_ANGLE = 190.0  # deg  TEST BRANCH (was 100.0)
+  LTA_STOCK_MAX_ANGLE = 94.9461  # deg, the command limit outside the test
+  LTA_TEST_MAX_V = 2.0  # m/s, >94.95 deg commands only below this (test branch)
   LTA_CUT_HOLD_FRAMES = 10
   # dimpleliang/ars510: LTA measured EPS torque above which TORQUE_WIND_DOWN ramps torque out, by speed (m/s).
   # 2500 up to 70 km/h, back to the stock 1500 from 80 km/h. Must match TOYOTA_LTA_MAX_MEAS_TORQUE_LOOKUP in

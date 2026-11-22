@@ -188,10 +188,16 @@ class CarController(CarControllerBase, GasInterceptorCarController):
           band = self.params.OVERRIDE_RELEASE_BAND_DEG * (self.release_frames + 1) / self.params.OVERRIDE_RELEASE_RAMP_FRAMES
           apply_angle = measured_angle + float(np.clip(apply_angle - measured_angle, -band, band))
 
+        # TEST BRANCH ars510-test-angle: beyond the stock 94.95 deg only at standstill / walking pace
+        if CS.out.vEgoRaw > self.params.LTA_TEST_MAX_V:
+          apply_angle = float(np.clip(apply_angle, -self.params.LTA_STOCK_MAX_ANGLE, self.params.LTA_STOCK_MAX_ANGLE))
+
         # Angular rate limit based on speed
         self.last_angle = apply_std_steer_angle_limits(apply_angle, self.last_angle, CS.out.vEgoRaw,
                                                        measured_angle, CC.latActive and not self.lta_cut,
                                                        self.params.ANGLE_LIMITS)
+        if CS.out.vEgoRaw > self.params.LTA_TEST_MAX_V:
+          self.last_angle = float(np.clip(self.last_angle, -self.params.LTA_STOCK_MAX_ANGLE, self.params.LTA_STOCK_MAX_ANGLE))
 
     self.last_torque = apply_torque
 

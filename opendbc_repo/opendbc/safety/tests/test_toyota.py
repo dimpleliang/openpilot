@@ -288,7 +288,7 @@ class TestToyotaSafetyTorqueGasInterceptor(TestToyotaSafetyGasInterceptorBase, T
 class TestToyotaSafetyAngle(TestToyotaSafetyBase, common.AngleSteeringSafetyTest):
 
   # Angle control limits
-  STEER_ANGLE_MAX = 94.9461  # deg
+  STEER_ANGLE_MAX = 180.0  # deg  TEST BRANCH ars510-test-angle (was 94.9461)
   DEG_TO_CAN = 17.452007  # 1 / 0.0573 deg to can
 
   ANGLE_RATE_BP = [5., 10., 25.]
