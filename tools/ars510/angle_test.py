@@ -95,6 +95,12 @@ def main():
   open(FLAG, 'w').close()
   results = []
   try:
+    # the flag also lets lateral be active at standstill (controlsd); wait for latActive before the first step
+    t = time.monotonic()
+    while not sm['carControl'].latActive:
+      sm.update(20)
+      if time.monotonic() - t > 2.0:
+        raise Abort('lateral did not become active at standstill (is LKAS / MADS on?)')
     sides = {'left': [1], 'right': [-1], 'both': [1, -1]}[args.side]
     for s in sides:
       for a in [x for x in STEPS if x <= args.max]:

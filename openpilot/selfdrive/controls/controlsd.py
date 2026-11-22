@@ -118,8 +118,11 @@ class Controls(ControlsExt):
     # Get which state to use for active lateral control
     _lat_active = self.get_lat_active(self.sm)
 
+    # TEST BRANCH ars510-test-angle: Toyota has steerAtStandstill=False, so lateral is never active when stopped;
+    # allow it at standstill only while the angle test flag exists (tools/ars510/angle_test.py)
+    angle_test = os.path.exists('/data/ars510_angle_test')
     CC.latActive = _lat_active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
-                   (not standstill or self.CP.steerAtStandstill)
+                   (not standstill or self.CP.steerAtStandstill or angle_test)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and \
                     (self.CP.openpilotLongitudinalControl or not self.CP_SP.pcmCruiseSpeed)
 
@@ -175,7 +178,7 @@ class Controls(ControlsExt):
       # TEST BRANCH ars510-test-angle: standstill steering-angle test. While /data/ars510_angle_test exists, the car is
       # (nearly) stopped and lateral is active, the angle command comes from /dev/shm/ars510_angle_target (written by
       # tools/ars510/angle_test.py); the carcontroller rate limits still apply.
-      if CC.latActive and CS.vEgo < 0.5 and os.path.exists('/data/ars510_angle_test'):
+      if CC.latActive and CS.vEgo < 0.5 and angle_test:
         try:
           with open('/dev/shm/ars510_angle_target') as f:
             actuators.steeringAngleDeg = float(f.read().strip())
