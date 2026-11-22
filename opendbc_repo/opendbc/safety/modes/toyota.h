@@ -236,13 +236,14 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
     .max_angle = 1657,  // EPS only accepts up to 94.9461
     .angle_deg_to_can = 17.452007,
     // dimpleliang/ars510: low-speed rates raised, unchanged from 25 m/s up; must match ANGLE_LIMITS in opendbc/car/toyota/values.py
+    // 11/22: 10 m/s row 0.5/0.6 -> 0.7/0.8 deg/frame (35/40 deg/s), see values.py
     .angle_rate_up_lookup = {
       {5., 10., 25.},
-      {1.0, 0.5, 0.15}
+      {1.0, 0.7, 0.15}
     },
     .angle_rate_down_lookup = {
       {5., 10., 25.},
-      {1.2, 0.6, 0.26}
+      {1.2, 0.8, 0.26}
     },
   };
 

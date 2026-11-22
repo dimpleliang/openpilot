@@ -40,9 +40,15 @@ class CarControllerParams:
     # torque 1900-2100 and lateral accel were not the binding limits. Interpolation to the unchanged 25 m/s row also lifts
     # 54 km/h to 19/24 deg/s and 72 km/h to 13/19 deg/s. Worst-case kinematic lateral jerk: 1.18/1.42 at 36 km/h,
     # 2.04/2.59 at 54, 2.53/3.54 at 72, all below the stock 25 m/s row's 3.85 (control-side clip_curvature stays 5.0).
+    # 11/22: the 10 m/s row raised again 0.5/0.6 -> 0.7/0.8 (25/30 -> 35/40 deg/s). 11/12-11/19 (21 routes, 212 min of
+    # openpilot steering): all 4 steerSaturated alerts were at 35-46 km/h with the command at the rate limit, 4-8 deg behind;
+    # EPS torque 1490-2330 (one at 2330, close to the 2500 wind-down), lateral accel <= 2.55, 0 steer faults. Interpolated:
+    # 20 km/h 47 -> 48, 30 km/h 33 -> 40, 45 km/h 22 -> 30, 54 km/h 19 -> 26, 72 km/h 13 -> 17 deg/s (up), 90 km/h unchanged.
+    # Worst-case kinematic lateral jerk (SR 13.7, up/down): 36 km/h 1.66/1.90, 54 km/h 2.75/3.30, 72 km/h 3.17/4.17 m/s^3
+    # (72 km/h unwind above the stock 25 m/s row's 3.85, below the control-side clip_curvature 5.0).
     # Must match TOYOTA_ANGLE_STEERING_LIMITS in opendbc/safety/modes/toyota.h (panda firmware).
-    ([5, 10, 25], [1.0, 0.5, 0.15]),
-    ([5, 10, 25], [1.2, 0.6, 0.26]),
+    ([5, 10, 25], [1.0, 0.7, 0.15]),
+    ([5, 10, 25], [1.2, 0.8, 0.26]),
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes
