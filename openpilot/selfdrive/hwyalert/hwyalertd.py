@@ -81,6 +81,11 @@ MAPD_POS_PARAMS_DIR = "/dev/shm/params"   # sunnypilot mapd reads its position f
 MAPD_POS_KEY = "LastGPSPosition"
 MAPD_POS_PERIOD_S = 1.0
 SAY_OFF_FILE = "/data/hwyalert_voice_off"
+# dimpleliang/ars510 11/26 (driver): roadworks only on the bottom status strip, no banner and no voice (busy freeways
+# have several works notices every few km). The strip names the nearest works event from 0 km (inside its range:
+# 本路段). Touch WORKS_BANNER_FILE to show works as banners again.
+WORKS = ("施工維護", "移動性施工")
+WORKS_BANNER_FILE = "/data/hwyalert_works_banner"
 
 
 # every character an alert text can contain (the UI loads only these glyphs)
@@ -298,6 +303,14 @@ def _k(v: float) -> str:
   return f"{v:.0f}K" if abs(v - round(v)) < 0.05 else f"{v:.1f}K"
 
 
+def strip_text(d_km: float, ev: dict) -> str:
+  """Status-strip text for a works event within ALERT_KM: 本路段 移動施工 / 前方 1.5 km 施工 (no lanes / tag, the strip is short)."""
+  name = SHORT.get(ev["name"], ev["name"])
+  if ev.get("range"):
+    return f"本路段 {name}"
+  return f"前方 {name}" if d_km < 0.1 else f"前方 {d_km:.1f} km {name}"
+
+
 def alert_text(d_km: float, ev: dict) -> str:
   if ev.get("range"):
     lo, hi = ev["range"]
@@ -366,6 +379,7 @@ class Tracker:
     self.spoken: dict[str, float] = {}   # event id -> distance (km) at the first announcement
     self.reminded: set[str] = set()
     self.last_say_t = -1e9
+    self.works_banner = False             # 11/26: works as banners (WORKS_BANNER_FILE), else status strip only
 
   def locate(self, t, fix, v):
     """fix = (lon, lat, bearing) or None -> matches"""
@@ -415,11 +429,17 @@ class Tracker:
     if not m or self.streak < MATCH_FRAMES or not self.fast_ok:
       return state, None
     pos, brg = (fix[:2], fix[2]) if fix else (None, 0.)
-    found = ahead(m, events, pos, brg)[:MAX_ALERTS]
+    near = ahead(m, events, pos, brg)
+    found = [(d, e) for d, e in near if self.works_banner or e["name"] not in WORKS][:MAX_ALERTS]
     # bottom status strip: where we are, and the nearest event further ahead (so a jam's cause shows before 3 km)
     # km posts only (pos=None): over 15 km the straight-line / heading test would drop events beyond a bend (11/02 review)
     far = [(d, e) for d, e in ahead(m, events, None, 0., LOOKAHEAD_KM) if e["id"] not in {x["id"] for _, x in found}]
-    nxt = f"前方 {far[0][0]:.0f} km {SHORT.get(far[0][1]['name'], far[0][1]['name'])}" if far and far[0][0] >= 1.0 else ""
+    works_near = [(d, e) for d, e in near if e["name"] in WORKS and e["id"] not in {x["id"] for _, x in found}]
+    if works_near and not (far and far[0][0] >= 1.0 and far[0][0] < works_near[0][0]):
+      d, e = works_near[0]   # 11/26: works within ALERT_KM go to the strip (no 1 km minimum), with the in-range text
+      nxt = strip_text(d, e)
+    else:
+      nxt = f"前方 {far[0][0]:.0f} km {SHORT.get(far[0][1]['name'], far[0][1]['name'])}" if far and far[0][0] >= 1.0 else ""
     state.update(road=f"{key[0]}{key[1]}", km=round(m[0][3], 2), dr=fix is None,
                  where=f"{road_text(key)} {m[0][3]:.1f}K", next=nxt,
                  alerts=[dict(text=alert_text(d, e), dist=round(d, 2), name=e["name"], id=e["id"]) for d, e in found])
@@ -488,6 +508,7 @@ def main():
         road_name = str(lm.roadName) if sm.recv_frame["liveMapDataSP"] > 0 else ""
         map_fw = any(w in road_name for w in MAP_FREEWAY_WORDS) or (lm.speedLimitValid and lm.speedLimit >= MAP_FREEWAY_LIMIT)
         # feed_age only gates the 1 km reminder, which expressway events (30-min-old data) never get
+        tracker.works_banner = os.path.exists(WORKS_BANNER_FILE)
         state, say = tracker.step(time.monotonic(), fix, sm["carState"].vEgo, feed.get() + thb_feed.get(), feed.age(), map_fw)
         if road_name != last_road_name:
           cloudlog.info(f"hwyalert map road: {road_name!r} limit={lm.speedLimit * 3.6:.0f} freeway={map_fw} matched={state['road']!r}")
