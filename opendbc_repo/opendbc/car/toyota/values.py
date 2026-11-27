@@ -46,9 +46,17 @@ class CarControllerParams:
     # 20 km/h 47 -> 48, 30 km/h 33 -> 40, 45 km/h 22 -> 30, 54 km/h 19 -> 26, 72 km/h 13 -> 17 deg/s (up), 90 km/h unchanged.
     # Worst-case kinematic lateral jerk (SR 13.7, up/down): 36 km/h 1.66/1.90, 54 km/h 2.75/3.30, 72 km/h 3.17/4.17 m/s^3
     # (72 km/h unwind above the stock 25 m/s row's 3.85, below the control-side clip_curvature 5.0).
+    # 11/27: freeway ramps (driver: "the ramp turn is still too slow"). 11/23-26: at 30-45 km/h the model asked for
+    # 116-143 deg/s, the command was held at ~34 deg/s and fell 5-8 deg behind (wheel 9-17 deg), the driver took over each
+    # time; nothing lagged above 45 km/h. Breakpoints move to [10, 15, 25] m/s (panda lookups hold 3 points; below 10 m/s
+    # the 10 m/s value holds): 10 m/s 0.7/0.8 -> 1.2/1.3 (60/65 deg/s), new 15 m/s point 0.6/0.7 (30/35 deg/s), 25 m/s
+    # unchanged. Up/down: 18 km/h 50/60 -> 60/65, 36 km/h 35/40 -> 60/65, 45 km/h 31/36 -> 45/50, 54 km/h 26/31 -> 30/35,
+    # 72 km/h 17/24 -> 19/24 deg/s, 90 km/h unchanged. Worst-case kinematic lateral jerk (SR 13.7, L 2.69, up/down):
+    # 18 km/h 0.71/0.77, 36 km/h 2.84/3.08, 45 km/h 3.33/3.70, 54 km/h 3.20/3.73, 72 km/h 3.55/4.55 m/s^3, below the
+    # control-side clip_curvature 5.0; 60 deg/s stays below LTA_CUT_RATE (100 deg/s).
     # Must match TOYOTA_ANGLE_STEERING_LIMITS in opendbc/safety/modes/toyota.h (panda firmware).
-    ([5, 10, 25], [1.0, 0.7, 0.15]),
-    ([5, 10, 25], [1.2, 0.8, 0.26]),
+    ([10, 15, 25], [1.2, 0.6, 0.15]),
+    ([10, 15, 25], [1.3, 0.7, 0.26]),
   )
 
   MAX_LTA_DRIVER_TORQUE_ALLOWANCE = 150  # slightly above steering pressed allows some resistance when changing lanes

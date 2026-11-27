@@ -237,13 +237,14 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
     .angle_deg_to_can = 17.452007,
     // dimpleliang/ars510: low-speed rates raised, unchanged from 25 m/s up; must match ANGLE_LIMITS in opendbc/car/toyota/values.py
     // 11/22: 10 m/s row 0.5/0.6 -> 0.7/0.8 deg/frame (35/40 deg/s), see values.py
+    // 11/27: freeway ramps: breakpoints [10, 15, 25] m/s, 10 m/s 1.2/1.3 (60/65 deg/s), 15 m/s 0.6/0.7, 25 m/s unchanged
     .angle_rate_up_lookup = {
-      {5., 10., 25.},
-      {1.0, 0.7, 0.15}
+      {10., 15., 25.},
+      {1.2, 0.6, 0.15}
     },
     .angle_rate_down_lookup = {
-      {5., 10., 25.},
-      {1.2, 0.8, 0.26}
+      {10., 15., 25.},
+      {1.3, 0.7, 0.26}
     },
   };
 
